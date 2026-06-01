@@ -153,6 +153,31 @@
         </div>
     </div>
 
+    <!-- 115目录选择模态框 -->
+    <div class="modal fade" id="dirSelectorModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">选择转存目录</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">当前目录: <span id="currentDirPath">根目录</span></label>
+                        <input type="hidden" id="currentDirId" value="0">
+                    </div>
+                    <div id="dirList" style="max-height: 400px; overflow-y: auto;">
+                        <p class="text-muted text-center">加载中...</p>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="navigateToParent()">返回上级</button>
+                    <button type="button" class="btn btn-primary" onclick="setAsDefaultDir()">设为默认目录</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
     <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toastContainer"></div>
@@ -353,6 +378,81 @@
             } catch (e) {
                 statusEl.innerHTML = '<span class="text-danger">验证请求失败</span>';
             }
+        }
+
+        let currentDirId = '0';
+        let dirPathStack = [{id: '0', name: '根目录'}];
+
+        async function openDirSelector() {
+            currentDirId = '0';
+            dirPathStack = [{id: '0', name: '根目录'}];
+            document.getElementById('currentDirId').value = '0';
+            document.getElementById('currentDirPath').textContent = '根目录';
+            await loadDirs('0');
+            new bootstrap.Modal(document.getElementById('dirSelectorModal')).show();
+        }
+
+        async function loadDirs(cid) {
+            const dirListEl = document.getElementById('dirList');
+            dirListEl.innerHTML = '<p class="text-muted text-center">加载中...</p>';
+            
+            try {
+                const resp = await fetch(`/cloud115/dirs?cid=${cid}`);
+                const result = await resp.json();
+                
+                if (result.success && result.dirs.length > 0) {
+                    let html = '<div class="list-group">';
+                    result.dirs.forEach(dir => {
+                        html += `<button type="button" class="list-group-item list-group-item-action" onclick="navigateToDir('${dir.cid}', '${dir.name}')">
+                            📁 ${dir.name}
+                        </button>`;
+                    });
+                    html += '</div>';
+                    dirListEl.innerHTML = html;
+                } else {
+                    dirListEl.innerHTML = '<p class="text-muted text-center">此目录为空</p>';
+                }
+            } catch (e) {
+                dirListEl.innerHTML = '<p class="text-danger text-center">加载失败</p>';
+            }
+        }
+
+        async function navigateToDir(cid, name) {
+            currentDirId = cid;
+            dirPathStack.push({id: cid, name: name});
+            document.getElementById('currentDirId').value = cid;
+            document.getElementById('currentDirPath').textContent = dirPathStack.map(d => d.name).join(' / ');
+            await loadDirs(cid);
+        }
+
+        async function navigateToParent() {
+            if (dirPathStack.length > 1) {
+                dirPathStack.pop();
+                const parent = dirPathStack[dirPathStack.length - 1];
+                currentDirId = parent.id;
+                document.getElementById('currentDirId').value = parent.id;
+                document.getElementById('currentDirPath').textContent = dirPathStack.map(d => d.name).join(' / ');
+                await loadDirs(parent.id);
+            }
+        }
+
+        async function setAsDefaultDir() {
+            showLoading();
+            try {
+                const resp = await fetch('/cloud115/save_path', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `path_id=${currentDirId}`
+                });
+                const result = await resp.json();
+                showToast(result.message, result.success ? 'success' : 'danger');
+                if (result.success) {
+                    bootstrap.Modal.getInstance(document.getElementById('dirSelectorModal')).hide();
+                }
+            } catch (e) {
+                showToast('设置失败', 'danger');
+            }
+            hideLoading();
         }
 
         {% block extra_script %}{% endblock %}

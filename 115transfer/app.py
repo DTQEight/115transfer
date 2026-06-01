@@ -370,6 +370,26 @@ def cloud115_tasks():
     return jsonify({'success': success, 'message': msg, 'tasks': tasks})
 
 
+@app.route('/cloud115/dirs', methods=['GET'])
+def cloud115_dirs():
+    cid = request.args.get('cid', '0')
+    success, msg, dirs = cloud115.get_dir_list(cid)
+    return jsonify({'success': success, 'message': msg, 'dirs': dirs})
+
+
+@app.route('/cloud115/save_path', methods=['GET'])
+def cloud115_get_save_path():
+    path_id = cloud115.get_default_save_path()
+    return jsonify({'success': True, 'path_id': path_id})
+
+
+@app.route('/cloud115/save_path', methods=['POST'])
+def cloud115_set_save_path():
+    path_id = request.form.get('path_id', '0')
+    cloud115.set_default_save_path(path_id)
+    return jsonify({'success': True, 'message': '默认保存目录已更新'})
+
+
 if __name__ == '__main__':
     debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
-    app.run(host='0.0.0.0', port=5000, debug=debug)
+    app.run(host='0.0.0.0', port=3698, debug=debug)

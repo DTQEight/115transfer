@@ -1,6 +1,6 @@
 services:
   115transfer:
-    image: ghcr.io/dtqeight/115transfer:latest
+    image: ghcr.io/dtqeight/115transfer:master
     container_name: 115transfer
     ports:
       - "3698:3698"

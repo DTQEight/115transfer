@@ -118,7 +118,9 @@ def get_task_list(page=1):
         return False, f'获取失败: {str(e)}', []
 
 
-def batch_add_offline_tasks(magnet_urls, save_path_id='0'):
+def batch_add_offline_tasks(magnet_urls, save_path_id=None):
+    if save_path_id is None:
+        save_path_id = get_default_save_path()
     results = []
     for magnet in magnet_urls:
         success, msg = add_offline_task(magnet, save_path_id)

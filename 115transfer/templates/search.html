@@ -50,6 +50,10 @@
                                         data-magnet={{ movie.magnet|tojson }}>编辑</button>
                                 <button onclick="deleteMovie({{ movie.id }})" 
                                         class="btn btn-sm btn-danger">删除</button>
+                                {% if not movie.is_empty %}
+                                <button onclick="transferTo115({{ movie.id }}, {{ movie.page }})" 
+                                        class="btn btn-sm btn-info">转存115</button>
+                                {% endif %}
                             </td>
                         </tr>
                         {% else %}

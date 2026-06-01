@@ -106,14 +106,23 @@ def get_task_list(page=1):
         return False, '未配置115 Cookie', []
 
     try:
-        url = f'https://115.com/web/lixian/?ct=lixian&ac=task_progress&page={page}'
+        url = f'https://115.com/web/lixian/?ct=lixian&ac=task_list&page={page}'
         resp = requests.get(url, headers=_get_headers(), timeout=15)
-        result = resp.json()
+        
+        if resp.status_code != 200:
+            return False, f'请求失败，状态码: {resp.status_code}', []
+        
+        try:
+            result = resp.json()
+        except json.JSONDecodeError:
+            return False, '响应格式错误', []
 
         if result.get('state') is True or result.get('state') == 1:
-            tasks = result.get('result', [])
-            return True, '获取成功', tasks
-        return False, '获取任务列表失败', []
+            tasks = result.get('result', result.get('data', []))
+            if isinstance(tasks, dict):
+                tasks = tasks.get('tasks', tasks.get('list', []))
+            return True, '获取成功', tasks if isinstance(tasks, list) else []
+        return False, result.get('error_msg', result.get('error', '获取任务列表失败')), []
     except Exception as e:
         return False, f'获取失败: {str(e)}', []
 
@@ -169,11 +178,3 @@ def set_default_save_path(path_id):
     config = load_config()
     config['save_path_id'] = path_id
     save_config(config)
-
-
-def generate_sign(uid):
-    timestamp = str(int(time.time()))
-    rand = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    raw = f'{uid}{timestamp}{rand}'
-    sign = hashlib.md5(raw.encode()).hexdigest()
-    return sign, timestamp, rand

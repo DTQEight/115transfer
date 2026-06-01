@@ -1,0 +1,13 @@
+services:
+  115transfer:
+    image: ghcr.io/dtqeight/115transfer:main
+    container_name: 115transfer
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    environment:
+      - FLASK_DEBUG=false
+      - TZ=Asia/Shanghai
+      - DATA_DIR=/app/data

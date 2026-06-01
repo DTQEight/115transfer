@@ -45,7 +45,7 @@ def verify_cookie():
         return False, '未配置115 Cookie'
 
     try:
-        url = 'https://passportapi.115.com/app/1.0/web/1.0/checkLoginInfo'
+        url = 'https://my.115.com/?ct=ajax&ac=nav'
         headers = {
             'User-Agent': USER_AGENT,
             'Cookie': cookie,
@@ -57,19 +57,12 @@ def verify_cookie():
         
         try:
             data = resp.json()
-            if data.get('state') == 1 and data.get('data', {}).get('USER_ID'):
-                user_id = data['data']['USER_ID']
-                return True, f'验证成功 (UID: {user_id})'
+            if data.get('state') is True and data.get('data'):
+                user_name = data['data'].get('user_name', '未知')
+                return True, f'验证成功 (用户: {user_name})'
             return False, f'Cookie已失效，请重新获取'
         except json.JSONDecodeError:
-            text = resp.text
-            if 'UID=' in text:
-                import re
-                uid_match = re.search(r'UID=(\d+)', text)
-                if uid_match:
-                    uid = uid_match.group(1)
-                    return True, f'验证成功 (UID: {uid})'
-            return False, f'Cookie格式无效，响应: {text[:200]}'
+            return False, f'响应格式错误'
     except requests.exceptions.Timeout:
         return False, '请求超时，请检查网络连接'
     except requests.exceptions.ConnectionError:

@@ -69,7 +69,8 @@ def verify_cookie():
                 if uid_match:
                     uid = uid_match.group(1)
                     return True, f'验证成功 (UID: {uid})'
-            return False, f'Cookie格式无效'
+                return False, f'Cookie格式无效，响应: {text[:200]}'
+            return False, f'Cookie格式无效，响应: {text[:200]}'
     except requests.exceptions.Timeout:
         return False, '请求超时，请检查网络连接'
     except requests.exceptions.ConnectionError:

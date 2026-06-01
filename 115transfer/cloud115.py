@@ -51,11 +51,29 @@ def verify_cookie():
             'Cookie': cookie,
         }
         resp = requests.get(url, headers=headers, timeout=10)
-        data = resp.json()
-        if data.get('state') == 1 and data.get('data', {}).get('USER_ID'):
-            user_id = data['data']['USER_ID']
-            return True, f'验证成功 (UID: {user_id})'
-        return False, 'Cookie已失效，请重新获取'
+        
+        if resp.status_code != 200:
+            return False, f'请求失败，状态码: {resp.status_code}'
+        
+        try:
+            data = resp.json()
+            if data.get('state') == 1 and data.get('data', {}).get('USER_ID'):
+                user_id = data['data']['USER_ID']
+                return True, f'验证成功 (UID: {user_id})'
+            return False, f'Cookie已失效，请重新获取'
+        except json.JSONDecodeError:
+            text = resp.text
+            if 'UID=' in text:
+                import re
+                uid_match = re.search(r'UID=(\d+)', text)
+                if uid_match:
+                    uid = uid_match.group(1)
+                    return True, f'验证成功 (UID: {uid})'
+            return False, f'Cookie格式无效，响应: {text[:200]}'
+    except requests.exceptions.Timeout:
+        return False, '请求超时，请检查网络连接'
+    except requests.exceptions.ConnectionError:
+        return False, '连接失败，请检查网络'
     except Exception as e:
         return False, f'验证失败: {str(e)}'
 

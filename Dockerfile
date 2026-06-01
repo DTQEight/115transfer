@@ -12,6 +12,6 @@ COPY VERSION .
 
 VOLUME /app/data
 
-EXPOSE 5000
+EXPOSE 3698
 
 CMD ["python", "app.py"]

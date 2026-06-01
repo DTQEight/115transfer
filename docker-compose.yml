@@ -3,7 +3,7 @@ services:
     image: ghcr.io/dtqeight/115transfer:main
     container_name: 115transfer
     ports:
-      - "5000:5000"
+      - "3698:3698"
     volumes:
       - ./data:/app/data
     restart: unless-stopped

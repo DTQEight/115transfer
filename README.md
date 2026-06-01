@@ -1,6 +1,6 @@
-# 🎬 电影磁力链接管理程序
+# 🎬 115Transfer - 电影磁力链接管理与115转存工具
 
-一个基于 Flask 的电影磁力链接管理 Web 应用，可以部署在 NAS 上通过浏览器访问。
+一个基于 Flask 的电影磁力链接管理 Web 应用，支持115网盘离线转存，可以部署在 NAS 上通过浏览器访问。
 
 ## ✨ 功能特点
 
@@ -11,25 +11,31 @@
 - 📋 点击复制磁力链接
 - 🔴 空磁力链接标红显示
 - 💾 数据自动保存到 Excel
+- ☁️ 支持115网盘离线转存（单个/批量）
 
 ## 🐳 Docker 部署
 
-### 构建镜像
+### 使用 docker-compose（推荐）
 ```bash
-docker build -t movie-manager .
+docker-compose up -d
+```
+
+### 手动构建镜像
+```bash
+docker build -t 115transfer .
 ```
 
 ### 运行容器
 ```bash
 docker run -d \
-  -p 5000:5000 \
+  -p 3698:3698 \
   -v /path/to/your/data:/app/data \
-  --name movie-manager \
-  movie-manager
+  --name 115transfer \
+  115transfer
 ```
 
 ### 访问
-打开浏览器访问：`http://your-nas-ip:5000`
+打开浏览器访问：`http://your-nas-ip:3698`
 
 ## 📁 项目结构
 

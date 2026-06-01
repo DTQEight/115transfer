@@ -6,6 +6,7 @@ on:
     paths-ignore:
       - 'VERSION'
       - '115transfer/VERSION'
+  workflow_dispatch:
 
 jobs:
   build:

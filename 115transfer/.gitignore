@@ -1,0 +1,25 @@
+# Python 编译文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 数据文件（不要上传个人数据）
+movies_data.xlsx
+data/
+backups/
+
+# 虚拟环境
+venv/
+env/
+.env
+
+# Docker 相关
+.dockerignore
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log

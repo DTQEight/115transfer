@@ -1,0 +1,13 @@
+services:
+  movie-manager:
+    image: ghcr.io/dtqeight/movie-manager:latest
+    container_name: movie-manager
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    environment:
+      - FLASK_DEBUG=false
+      - TZ=Asia/Shanghai
+      - DATA_DIR=/app/data

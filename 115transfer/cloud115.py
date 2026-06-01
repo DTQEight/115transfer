@@ -143,17 +143,19 @@ def get_dir_list(cid='0'):
             return False, f'请求失败，状态码: {resp.status_code}', []
         
         data = resp.json()
-        if data.get('state') is True or data.get('errno') == 0:
+        if data.get('errno') == 0 or data.get('state') is True:
             dirs = []
-            for item in data.get('data', []):
-                if item.get('cid') and item.get('n'):
-                    dirs.append({
-                        'cid': item['cid'],
-                        'name': item['n'],
-                        'parent_id': item.get('pid', '0')
-                    })
+            items = data.get('data', [])
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict) and item.get('cid') and item.get('n'):
+                        dirs.append({
+                            'cid': str(item['cid']),
+                            'name': item['n'],
+                            'parent_id': str(item.get('pid', '0'))
+                        })
             return True, '获取成功', dirs
-        return False, '获取目录列表失败', []
+        return False, f'获取目录列表失败: {data.get("error", "未知错误")}', []
     except Exception as e:
         return False, f'获取失败: {str(e)}', []
 

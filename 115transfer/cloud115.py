@@ -83,7 +83,7 @@ def add_offline_task(magnet_url, save_path_id=None):
         url = 'https://115.com/web/lixian/?ct=lixian&ac=add_task_url'
         data = {
             'url': magnet_url,
-            'savepath_id': save_path_id,
+            'wp_path_id': save_path_id,
         }
         resp = requests.post(url, headers=_get_headers(), data=data, timeout=30)
         result = resp.json()

@@ -57,13 +57,19 @@ def verify_cookie():
         
         try:
             data = resp.json()
+            if data.get('state') == 1 and data.get('data', {}).get('USER_ID'):
+                user_id = data['data']['USER_ID']
+                return True, f'验证成功 (UID: {user_id})'
+            return False, f'Cookie已失效，请重新获取'
         except json.JSONDecodeError:
-            return False, f'响应不是有效JSON，内容: {resp.text[:100]}'
-        
-        if data.get('state') == 1 and data.get('data', {}).get('USER_ID'):
-            user_id = data['data']['USER_ID']
-            return True, f'验证成功 (UID: {user_id})'
-        return False, f'Cookie已失效，请重新获取。响应: {data}'
+            text = resp.text
+            if 'UID=' in text:
+                import re
+                uid_match = re.search(r'UID=(\d+)', text)
+                if uid_match:
+                    uid = uid_match.group(1)
+                    return True, f'验证成功 (UID: {uid})'
+            return False, f'Cookie格式无效'
     except requests.exceptions.Timeout:
         return False, '请求超时，请检查网络连接'
     except requests.exceptions.ConnectionError:

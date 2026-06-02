@@ -466,6 +466,8 @@ def wechat_callback():
     crypto = wechat_work.WeChatCrypto(token, encoding_aes_key, corpid) if encoding_aes_key else None
 
     if request.method == 'GET':
+        if not msg_signature or not timestamp or not nonce:
+            return 'success'
         if crypto:
             is_valid = crypto.verify_signature(msg_signature, timestamp, nonce, echostr)
             print(f'[WeChat Callback] Signature valid: {is_valid}')

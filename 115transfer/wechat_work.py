@@ -214,7 +214,7 @@ def handle_text_message(content):
     import re
     content = content.strip()
 
-    magnet_match = re.search(r'(magnet:\?[^\s,，]+)', content, re.IGNORECASE)
+    magnet_match = re.search(r'(magnet:\?[^\s,，。！？.!?]+)', content, re.IGNORECASE)
     if magnet_match:
         magnet = magnet_match.group(1)
         before_magnet = content[:magnet_match.start()].strip()

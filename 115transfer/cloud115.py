@@ -2,9 +2,6 @@ import requests
 import json
 import os
 import time
-import hashlib
-import random
-import string
 
 CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'cloud115_config.json')
 

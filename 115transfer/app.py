@@ -121,7 +121,7 @@ def search():
         if not keyword or df.empty:
             return redirect(url_for('index'))
         
-        mask = df['电影名'].str.lower().str.contains(keyword.lower(), na=False)
+        mask = df['电影名'].str.lower().str.contains(keyword.lower(), na=False, regex=False)
         result_df = df[mask]
         movies = build_movie_list(result_df)
         

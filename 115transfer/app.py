@@ -530,6 +530,54 @@ def wechat_callback():
         return 'success'
 
 
+@app.route('/wechat/proxy', methods=['POST'])
+def wechat_proxy():
+    try:
+        content_type = request.content_type or ''
+
+        if 'json' in content_type:
+            data = request.get_json(force=True, silent=True) or {}
+            content = data.get('content', data.get('text', data.get('msg', '')))
+            from_user = data.get('from_user', data.get('user', data.get('from', '')))
+        else:
+            content = request.form.get('content', request.form.get('text', request.form.get('msg', '')))
+            from_user = request.form.get('from_user', request.form.get('user', request.form.get('from', '')))
+
+        if not content:
+            content = request.args.get('content', request.args.get('text', ''))
+            from_user = from_user or request.args.get('from_user', request.args.get('user', ''))
+
+        if not content:
+            return jsonify({'success': False, 'message': '未收到消息内容'}), 400
+
+        result = wechat_work.handle_text_message(content)
+
+        if isinstance(result, dict):
+            try:
+                with data_lock:
+                    df = load_movies()
+                    page_df = df[df['页码'] == result['page']]
+                    new_id = int(page_df['序号'].max()) + 1 if not page_df.empty else 1
+                    new_movie = {
+                        '序号': new_id,
+                        '页码': result['page'],
+                        '电影名': result['name'],
+                        '磁力链接': result['magnet'],
+                        '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
+                    save_movies(df)
+                reply = f'添加成功\n页码: {result["page"]}\n电影名: {result["name"]}'
+            except Exception as e:
+                reply = f'添加失败: {str(e)}'
+        else:
+            reply = result
+
+        return jsonify({'success': True, 'message': reply})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 if __name__ == '__main__':
     debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
     app.run(host='0.0.0.0', port=3698, debug=debug)

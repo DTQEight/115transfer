@@ -186,12 +186,20 @@
                         <input type="text" id="wechatEncodingAesKey" class="form-control" placeholder="在应用接收消息设置中获取">
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">回调URL</label>
+                        <label class="form-label">回调URL（直接对接）</label>
                         <div class="input-group">
                             <input type="text" id="wechatCallbackUrl" class="form-control">
                             <button class="btn btn-outline-secondary" onclick="copyWechatCallbackUrl()">复制</button>
                         </div>
-                        <div class="form-text">将此URL填写到企业微信应用的"接收消息"设置中（可通过内网穿透域名访问）</div>
+                        <div class="form-text">如果不用代理，将此URL填写到企业微信应用的"接收消息"设置中</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">代理转发URL（wxchat代理）</label>
+                        <div class="input-group">
+                            <input type="text" id="wechatProxyUrl" class="form-control" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyWechatProxyUrl()">复制</button>
+                        </div>
+                        <div class="form-text">如果使用wxchat代理，将此URL配置到代理服务器的转发目标</div>
                     </div>
                     <div id="wechatStatus" class="mb-3"></div>
                 </div>
@@ -439,6 +447,8 @@
                 if (result.encoding_aes_key) document.getElementById('wechatEncodingAesKey').value = result.encoding_aes_key;
                 const callbackUrl = window.location.origin + '/wechat/callback';
                 document.getElementById('wechatCallbackUrl').value = callbackUrl;
+                const proxyUrl = window.location.origin + '/wechat/proxy';
+                document.getElementById('wechatProxyUrl').value = proxyUrl;
                 document.getElementById('wechatStatus').innerHTML = result.configured ?
                     '<span class="text-success">已配置</span>' : '<span class="text-warning">未配置</span>';
             } catch (e) {}
@@ -475,6 +485,11 @@
 
         function copyWechatCallbackUrl() {
             const url = document.getElementById('wechatCallbackUrl').value;
+            copyToClipboard(url);
+        }
+
+        function copyWechatProxyUrl() {
+            const url = document.getElementById('wechatProxyUrl').value;
             copyToClipboard(url);
         }
 

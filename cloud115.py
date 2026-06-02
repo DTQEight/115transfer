@@ -168,12 +168,13 @@ def get_dir_list(cid='0'):
 
 def get_default_save_path():
     config = load_config()
-    return config.get('save_path_id', '0')
+    return config.get('save_path_id', '0'), config.get('save_path_name', '根目录')
 
 
-def set_default_save_path(path_id):
+def set_default_save_path(path_id, path_name='根目录'):
     config = load_config()
     config['save_path_id'] = path_id
+    config['save_path_name'] = path_name
     save_config(config)
 
 

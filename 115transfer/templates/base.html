@@ -598,11 +598,23 @@
                     document.getElementById('cookie115Status').innerHTML = '<span class="text-warning"><i class="bi bi-exclamation-circle me-1"></i>未配置Cookie</span>';
                 }
             } catch (e) {}
-            currentDirId = '0';
-            dirPathStack = [{id: '0', name: '根目录'}];
-            document.getElementById('currentDirId').value = '0';
-            document.getElementById('currentDirPath').textContent = '根目录';
-            await loadDirs('0');
+            try {
+                const pathResp = await fetch('/cloud115/save_path');
+                const pathResult = await pathResp.json();
+                const savedId = pathResult.path_id || '0';
+                const savedName = pathResult.path_name || '根目录';
+                currentDirId = savedId;
+                dirPathStack = [{id: savedId, name: savedName}];
+                document.getElementById('currentDirId').value = savedId;
+                document.getElementById('currentDirPath').textContent = savedName;
+                await loadDirs(savedId);
+            } catch (e) {
+                currentDirId = '0';
+                dirPathStack = [{id: '0', name: '根目录'}];
+                document.getElementById('currentDirId').value = '0';
+                document.getElementById('currentDirPath').textContent = '根目录';
+                await loadDirs('0');
+            }
             new bootstrap.Modal(document.getElementById('settings115Modal')).show();
         }
 
@@ -775,10 +787,11 @@
         async function setAsDefaultDir() {
             showLoading();
             try {
+                const pathName = dirPathStack.map(d => d.name).join('/');
                 const resp = await fetch('/cloud115/save_path', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: `path_id=${currentDirId}`
+                    body: `path_id=${currentDirId}&path_name=${encodeURIComponent(pathName)}`
                 });
                 const result = await resp.json();
                 showToast(result.message, result.success ? 'success' : 'danger');

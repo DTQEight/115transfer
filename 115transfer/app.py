@@ -393,14 +393,15 @@ def cloud115_dirs():
 
 @app.route('/cloud115/save_path', methods=['GET'])
 def cloud115_get_save_path():
-    path_id = cloud115.get_default_save_path()
-    return jsonify({'success': True, 'path_id': path_id})
+    path_id, path_name = cloud115.get_default_save_path()
+    return jsonify({'success': True, 'path_id': path_id, 'path_name': path_name})
 
 
 @app.route('/cloud115/save_path', methods=['POST'])
 def cloud115_set_save_path():
     path_id = request.form.get('path_id', '0')
-    cloud115.set_default_save_path(path_id)
+    path_name = request.form.get('path_name', '根目录')
+    cloud115.set_default_save_path(path_id, path_name)
     return jsonify({'success': True, 'message': '默认保存目录已更新'})
 
 
@@ -576,7 +577,7 @@ def wechat_callback():
                     reply = '请输入页码数字'
             elif state and state['action'] == 'browse_dir':
                 if content == '确认':
-                    cloud115.set_default_save_path(state['cid'])
+                    cloud115.set_default_save_path(state['cid'], state['path'])
                     reply = f'已设置转存目录: {state["path"]}'
                     del user_states[from_user]
                 elif content == '新建':

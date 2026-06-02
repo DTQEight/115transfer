@@ -169,7 +169,19 @@ def create_menu(agentid):
 
 
 def handle_text_message(content):
+    import re
     content = content.strip()
+
+    magnet_match = re.search(r'(magnet:\?xt=urn:btih:[^\s]+)', content, re.IGNORECASE)
+    if magnet_match:
+        magnet = magnet_match.group(1)
+        before_magnet = content[:magnet_match.start()].strip()
+        page_match = re.match(r'^(\d+)\s*(.+)$', before_magnet)
+        if page_match:
+            page = int(page_match.group(1))
+            name = page_match.group(2).strip()
+            return {'page': page, 'name': name, 'magnet': magnet}
+
     lines = content.split('\n')
     if len(lines) >= 3:
         page = lines[0].strip()
@@ -184,10 +196,9 @@ def handle_text_message(content):
         return {'page': page, 'name': name, 'magnet': magnet}
     elif content.lower() in ['帮助', 'help', '?']:
         return ('使用方法:\n'
-                '格式: 页码\\n电影名\\n磁力链接\n'
+                '格式1: 页码 电影名 磁力链接\n'
+                '格式2: 页码\\n电影名\\n磁力链接\n'
                 '示例:\n'
-                '1\n'
-                '电影名\n'
-                'magnet:?xt=...')
+                '1 电影名 magnet:?xt=...')
     else:
-        return '格式错误，请按以下格式发送:\n页码\\n电影名\\n磁力链接\n\n发送"帮助"查看详细说明'
+        return '格式错误，请按以下格式发送:\n页码 电影名 磁力链接\n或\n页码\\n电影名\\n磁力链接\n\n发送"帮助"查看详细说明'

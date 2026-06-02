@@ -74,7 +74,7 @@ class WeChatCrypto:
         random_str = ''.join(random.choices(string.ascii_letters + string.digits, k=16)).encode('utf-8')
         msg_len = struct.pack('>I', len(msg))
         text = random_str + msg_len + msg + from_user
-        block_size = 16
+        block_size = 32
         pad_len = block_size - (len(text) % block_size)
         text += bytes([pad_len] * pad_len)
         iv = self.key[:16]
@@ -114,8 +114,16 @@ def build_reply_xml(to_user, from_user, content, crypto=None):
     timestamp = str(int(time.time()))
     nonce = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
 
+    reply_msg = f"""<xml>
+<ToUserName><![CDATA[{to_user}]]></ToUserName>
+<FromUserName><![CDATA[{from_user}]]></FromUserName>
+<CreateTime>{timestamp}</CreateTime>
+<MsgType><![CDATA[text]]></MsgType>
+<Content><![CDATA[{content}]]></Content>
+</xml>"""
+
     if crypto:
-        encrypted = crypto.encrypt_message(content, from_user)
+        encrypted = crypto.encrypt_message(reply_msg, crypto.corp_id)
         msg_signature = hashlib.sha1(
             ''.join(sorted([crypto.token, timestamp, nonce, encrypted])).encode('utf-8')
         ).hexdigest()
@@ -126,13 +134,7 @@ def build_reply_xml(to_user, from_user, content, crypto=None):
 <Nonce><![CDATA[{nonce}]]></Nonce>
 </xml>"""
     else:
-        return f"""<xml>
-<ToUserName><![CDATA[{to_user}]]></ToUserName>
-<FromUserName><![CDATA[{from_user}]]></FromUserName>
-<CreateTime>{timestamp}</CreateTime>
-<MsgType><![CDATA[text]]></MsgType>
-<Content><![CDATA[{content}]]></Content>
-</xml>"""
+        return reply_msg
 
 
 def handle_text_message(content):

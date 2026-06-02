@@ -6,6 +6,7 @@ import glob as glob_mod
 from datetime import datetime
 import zoneinfo
 import threading
+import hashlib
 import cloud115
 
 def get_beijing_time():
@@ -19,6 +20,7 @@ EXCEL_FILE = os.path.join(DATA_DIR, 'movies_data.xlsx')
 BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
 MAX_BACKUPS = 10
 data_lock = threading.Lock()
+_movie_cache = {'hash': None, 'data': None}
 
 # 版本号
 VERSION = "1.0.0"
@@ -29,12 +31,19 @@ except:
     pass
 
 def load_movies():
-    if os.path.exists(EXCEL_FILE):
-        return pd.read_excel(EXCEL_FILE)
-    else:
+    if not os.path.exists(EXCEL_FILE):
         df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间'])
         df.to_excel(EXCEL_FILE, index=False)
         return df
+
+    current_hash = hashlib.md5(open(EXCEL_FILE, 'rb').read()).hexdigest()
+    if _movie_cache['hash'] == current_hash and _movie_cache['data'] is not None:
+        return _movie_cache['data'].copy()
+
+    df = pd.read_excel(EXCEL_FILE)
+    _movie_cache['hash'] = current_hash
+    _movie_cache['data'] = df
+    return df.copy()
 
 def backup_movies():
     if not os.path.exists(EXCEL_FILE):
@@ -50,6 +59,8 @@ def backup_movies():
 def save_movies(df):
     backup_movies()
     df.to_excel(EXCEL_FILE, index=False)
+    _movie_cache['hash'] = None
+    _movie_cache['data'] = None
 
 def build_movie_list(df):
     movies = []

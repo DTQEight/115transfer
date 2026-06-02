@@ -507,29 +507,44 @@ def wechat_callback():
         to_user = msg.get('ToUserName', '')
 
         if msg_type == 'text':
-            content = msg.get('Content', '')
-            result = wechat_work.handle_text_message(content)
+            content = msg.get('Content', '').strip()
 
-            if isinstance(result, dict):
-                try:
-                    with data_lock:
-                        df = load_movies()
-                        page_df = df[df['页码'] == result['page']]
-                        new_id = int(page_df['序号'].max()) + 1 if not page_df.empty else 1
-                        new_movie = {
-                            '序号': new_id,
-                            '页码': result['page'],
-                            '电影名': result['name'],
-                            '磁力链接': result['magnet'],
-                            '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
-                        }
-                        df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
-                        save_movies(df)
-                    reply = f'添加成功\n页码: {result["page"]}\n电影名: {result["name"]}'
-                except Exception as e:
-                    reply = f'添加失败: {str(e)}'
+            if content.isdigit():
+                page_num = int(content)
+                with data_lock:
+                    df = load_movies()
+                page_df = df[df['页码'] == page_num]
+                if page_df.empty:
+                    reply = f'第 {page_num} 页没有电影'
+                else:
+                    reply = f'第 {page_num} 页 ({len(page_df)} 部电影):\n\n'
+                    for _, row in page_df.iterrows():
+                        name = row.get('电影名', '未知')
+                        magnet = row.get('磁力链接', '无')
+                        reply += f'{name}\n{magnet}\n\n'
             else:
-                reply = result
+                result = wechat_work.handle_text_message(content)
+
+                if isinstance(result, dict):
+                    try:
+                        with data_lock:
+                            df = load_movies()
+                            page_df = df[df['页码'] == result['page']]
+                            new_id = int(page_df['序号'].max()) + 1 if not page_df.empty else 1
+                            new_movie = {
+                                '序号': new_id,
+                                '页码': result['page'],
+                                '电影名': result['name'],
+                                '磁力链接': result['magnet'],
+                                '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+                            }
+                            df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
+                            save_movies(df)
+                        reply = f'添加成功\n页码: {result["page"]}\n电影名: {result["name"]}'
+                    except Exception as e:
+                        reply = f'添加失败: {str(e)}'
+                else:
+                    reply = result
 
             print(f'[WeChat Reply] To: {from_user}, From: {to_user}, Content: {reply[:50]}', flush=True)
             if crypto:
@@ -549,9 +564,14 @@ def wechat_callback():
                 if event_key == 'view_movies':
                     with data_lock:
                         df = load_movies()
-                    total = len(df)
-                    pages = df['页码'].nunique() if not df.empty else 0
-                    reply = f'当前共有 {total} 部电影，分布在 {pages} 页\n\n访问电影列表: {request.host_url}'
+                    if df.empty:
+                        reply = '暂无电影数据'
+                    else:
+                        total = len(df)
+                        page_list = sorted(df['页码'].unique().tolist())
+                        reply = f'共 {total} 部电影，请回复页码查看:\n\n'
+                        reply += ' | '.join([str(p) for p in page_list])
+                        reply += '\n\n直接回复页码即可查看该页所有电影'
                 elif event_key == 'transfer_115':
                     reply = '请按以下格式发送磁力链接:\n页码\n电影名\n磁力链接\n\n发送"帮助"查看详细说明'
                 else:

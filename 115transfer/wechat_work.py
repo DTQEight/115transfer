@@ -119,13 +119,9 @@ def build_reply_xml(to_user, from_user, content, crypto=None):
             ''.join(sorted([crypto.token, timestamp, nonce, encrypted])).encode('utf-8')
         ).hexdigest()
         return f"""<xml>
-<ToUserName><![CDATA[{to_user}]]></ToUserName>
-<FromUserName><![CDATA[{from_user}]]></FromUserName>
-<CreateTime>{timestamp}</CreateTime>
-<MsgType><![CDATA[text]]></MsgType>
-<Content><![CDATA[{content}]]></Content>
 <Encrypt><![CDATA[{encrypted}]]></Encrypt>
 <MsgSignature><![CDATA[{msg_signature}]]></MsgSignature>
+<TimeStamp>{timestamp}</TimeStamp>
 <Nonce><![CDATA[{nonce}]]></Nonce>
 </xml>"""
     else:

@@ -175,3 +175,24 @@ def set_default_save_path(path_id):
     config = load_config()
     config['save_path_id'] = path_id
     save_config(config)
+
+
+def create_dir(parent_cid, dir_name):
+    cookie = get_cookie_string()
+    if not cookie:
+        return False, '未配置115 Cookie'
+
+    try:
+        url = 'https://webapi.115.com/files/add'
+        data = {
+            'pid': parent_cid,
+            'cname': dir_name,
+        }
+        resp = requests.post(url, headers=_get_headers(), data=data, timeout=15)
+        result = resp.json()
+        if result.get('errno') == 0 or result.get('state') is True:
+            cid = result.get('cid', result.get('file_id', ''))
+            return True, f'目录创建成功'
+        return False, f'创建失败: {result.get("error", "未知错误")}'
+    except Exception as e:
+        return False, f'创建失败: {str(e)}'

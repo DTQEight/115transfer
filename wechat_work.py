@@ -148,6 +148,21 @@ def create_menu(agentid):
                 "type": "click",
                 "name": "查看电影",
                 "key": "view_movies"
+            },
+            {
+                "name": "115网盘",
+                "sub_button": [
+                    {
+                        "type": "click",
+                        "name": "目录",
+                        "key": "115_dir"
+                    },
+                    {
+                        "type": "click",
+                        "name": "创建",
+                        "key": "115_create"
+                    }
+                ]
             }
         ]
     }

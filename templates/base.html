@@ -323,14 +323,36 @@
                         <div class="form-text">请从浏览器开发者工具中获取115.com的Cookie</div>
                     </div>
                     <div id="cookie115Status" class="mb-3"></div>
+                    <hr>
+                    <div class="mb-3">
+                        <label class="form-label"><i class="bi bi-folder2 me-1"></i>转存目录</label>
+                        <div class="mb-2">
+                            <span class="text-muted small">当前目录: </span>
+                            <span id="currentDirPath" class="fw-bold">根目录</span>
+                            <input type="hidden" id="currentDirId" value="0">
+                        </div>
+                        <div id="dirList" style="max-height: 250px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 0.5rem;">
+                            <p class="text-muted text-center mb-0">点击下方按钮加载目录</p>
+                        </div>
+                    </div>
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-outline-secondary" onclick="verify115Cookie()">
-                        <i class="bi bi-check-circle me-1"></i>验证Cookie
-                    </button>
-                    <button type="button" class="btn btn-primary" onclick="save115Cookie()">
-                        <i class="bi bi-save me-1"></i>保存
-                    </button>
+                <div class="modal-footer justify-content-between">
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="navigateToParent()">
+                            <i class="bi bi-arrow-left me-1"></i>返回上级
+                        </button>
+                        <button type="button" class="btn btn-outline-primary btn-sm" onclick="setAsDefaultDir()">
+                            <i class="bi bi-check-lg me-1"></i>设为默认
+                        </button>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-outline-secondary" onclick="verify115Cookie()">
+                            <i class="bi bi-check-circle me-1"></i>验证Cookie
+                        </button>
+                        <button type="button" class="btn btn-primary" onclick="save115Cookie()">
+                            <i class="bi bi-save me-1"></i>保存Cookie
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -425,35 +447,6 @@
                     </button>
                     <button type="button" class="btn btn-primary" onclick="saveWechatConfig()">
                         <i class="bi bi-save me-1"></i>保存
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 115目录选择模态框 -->
-    <div class="modal fade" id="dirSelectorModal" tabindex="-1">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title"><i class="bi bi-folder2-open me-2"></i>选择转存目录</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body">
-                    <div class="mb-3">
-                        <label class="form-label">当前目录: <span id="currentDirPath" class="fw-bold">根目录</span></label>
-                        <input type="hidden" id="currentDirId" value="0">
-                    </div>
-                    <div id="dirList" style="max-height: 400px; overflow-y: auto;">
-                        <p class="text-muted text-center">加载中...</p>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-outline-secondary" onclick="navigateToParent()">
-                        <i class="bi bi-arrow-left me-1"></i>返回上级
-                    </button>
-                    <button type="button" class="btn btn-primary" onclick="setAsDefaultDir()">
-                        <i class="bi bi-check-lg me-1"></i>设为默认目录
                     </button>
                 </div>
             </div>
@@ -614,6 +607,11 @@
                     document.getElementById('cookie115Status').innerHTML = '<span class="text-warning"><i class="bi bi-exclamation-circle me-1"></i>未配置Cookie</span>';
                 }
             } catch (e) {}
+            currentDirId = '0';
+            dirPathStack = [{id: '0', name: '根目录'}];
+            document.getElementById('currentDirId').value = '0';
+            document.getElementById('currentDirPath').textContent = '根目录';
+            await loadDirs('0');
             new bootstrap.Modal(document.getElementById('settings115Modal')).show();
         }
 
@@ -760,13 +758,8 @@
         let currentDirId = '0';
         let dirPathStack = [{id: '0', name: '根目录'}];
 
-        async function openDirSelector() {
-            currentDirId = '0';
-            dirPathStack = [{id: '0', name: '根目录'}];
-            document.getElementById('currentDirId').value = '0';
-            document.getElementById('currentDirPath').textContent = '根目录';
-            await loadDirs('0');
-            new bootstrap.Modal(document.getElementById('dirSelectorModal')).show();
+        function openDirSelector() {
+            open115Settings();
         }
 
         async function loadDirs(cid) {
@@ -823,9 +816,6 @@
                 });
                 const result = await resp.json();
                 showToast(result.message, result.success ? 'success' : 'danger');
-                if (result.success) {
-                    bootstrap.Modal.getInstance(document.getElementById('dirSelectorModal')).hide();
-                }
             } catch (e) {
                 showToast('设置失败', 'danger');
             }

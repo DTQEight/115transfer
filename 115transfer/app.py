@@ -520,6 +520,9 @@ def wechat_callback():
                     cloud115.set_default_save_path(state['cid'])
                     reply = f'已设置转存目录: {state["path"]}'
                     del user_states[from_user]
+                elif content == '新建':
+                    state['action'] = 'create_dir_name'
+                    reply = f'在 {state["path"]} 下创建目录\n请输入新目录名:'
                 elif content.isdigit():
                     idx = int(content) - 1
                     success, msg_text, dirs = cloud115.get_dir_list(state['cid'])
@@ -532,36 +535,13 @@ def wechat_callback():
                             reply = f'目录: {state["path"]}\n\n'
                             for i, sd in enumerate(subdirs, 1):
                                 reply += f'{i}. {sd["name"]}\n'
-                            reply += f'\n回复序号进入子目录\n回复"确认"设置为转存目录'
+                            reply += f'\n回复序号进入子目录\n回复"确认"设置为转存目录\n回复"新建"创建新目录'
                         else:
-                            reply = f'目录: {state["path"]}\n\n此目录为空\n回复"确认"设置为转存目录'
+                            reply = f'目录: {state["path"]}\n\n此目录为空\n回复"确认"设置为转存目录\n回复"新建"创建新目录'
                     else:
                         reply = '序号无效，请重新输入'
                 else:
-                    reply = '请输入序号或"确认"'
-            elif state and state['action'] == 'create_dir':
-                if content == '0':
-                    state['action'] = 'create_dir_name'
-                    reply = f'在 {state["path"]} 下创建目录\n请输入新目录名:'
-                elif content.isdigit():
-                    idx = int(content) - 1
-                    success, msg_text, dirs = cloud115.get_dir_list(state['cid'])
-                    if success and 0 <= idx < len(dirs):
-                        d = dirs[idx]
-                        state['cid'] = d['cid']
-                        state['path'] = state['path'] + ' / ' + d['name']
-                        success2, msg2, subdirs = cloud115.get_dir_list(d['cid'])
-                        if success2 and subdirs:
-                            reply = f'选择创建目录的位置:\n目录: {state["path"]}\n\n'
-                            for i, sd in enumerate(subdirs, 1):
-                                reply += f'{i}. {sd["name"]}\n'
-                            reply += f'\n回复序号进入子目录\n回复"0"在此目录创建'
-                        else:
-                            reply = f'目录: {state["path"]}\n\n此目录为空\n回复"0"在此目录创建'
-                    else:
-                        reply = '序号无效，请重新输入'
-                else:
-                    reply = '请输入序号或"0"在此目录创建'
+                    reply = '请输入序号、"确认"或"新建"'
             elif state and state['action'] == 'create_dir_name':
                 dir_name = content
                 success, msg_text = cloud115.create_dir(state['cid'], dir_name)
@@ -640,17 +620,7 @@ def wechat_callback():
                         reply = '115网盘目录:\n\n'
                         for i, d in enumerate(dirs, 1):
                             reply += f'{i}. {d["name"]}\n'
-                        reply += f'\n回复序号进入子目录\n回复"确认"设置为转存目录'
-                    else:
-                        reply = f'获取目录失败: {msg_text}'
-                elif event_key == '115_create':
-                    user_states[from_user] = {'action': 'create_dir', 'cid': '0', 'path': '根目录'}
-                    success, msg_text, dirs = cloud115.get_dir_list('0')
-                    if success and dirs:
-                        reply = '选择创建目录的位置:\n\n'
-                        for i, d in enumerate(dirs, 1):
-                            reply += f'{i}. {d["name"]}\n'
-                        reply += f'\n回复序号进入子目录\n回复"0"在根目录创建'
+                        reply += f'\n回复序号进入子目录\n回复"确认"设置为转存目录\n回复"新建"创建新目录'
                     else:
                         reply = f'获取目录失败: {msg_text}'
                 else:

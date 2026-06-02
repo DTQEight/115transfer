@@ -153,11 +153,6 @@ def create_menu(agentid):
                 "type": "click",
                 "name": "目录",
                 "key": "115_dir"
-            },
-            {
-                "type": "click",
-                "name": "创建",
-                "key": "115_create"
             }
         ]
     }

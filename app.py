@@ -411,6 +411,8 @@ def wechat_get_config():
         'agentid': config.get('agentid', ''),
         'token': config.get('token', ''),
         'encoding_aes_key': config.get('encoding_aes_key', ''),
+        'callback_url': config.get('callback_url', ''),
+        'proxy_url': config.get('proxy_url', ''),
         'configured': bool(config.get('corpid') and config.get('corpsecret'))
     })
 
@@ -422,6 +424,8 @@ def wechat_set_config():
     agentid = request.form.get('agentid', '').strip()
     token = request.form.get('token', '').strip()
     encoding_aes_key = request.form.get('encoding_aes_key', '').strip()
+    callback_url = request.form.get('callback_url', '').strip()
+    proxy_url = request.form.get('proxy_url', '').strip()
     if not corpid or not corpsecret:
         return jsonify({'success': False, 'message': '企业ID和应用Secret不能为空'})
     config = wechat_work.load_config()
@@ -433,6 +437,10 @@ def wechat_set_config():
         config['token'] = token
     if encoding_aes_key:
         config['encoding_aes_key'] = encoding_aes_key
+    if callback_url:
+        config['callback_url'] = callback_url
+    if proxy_url:
+        config['proxy_url'] = proxy_url
     config.pop('access_token', None)
     wechat_work.save_config(config)
     return jsonify({'success': True, 'message': '企业微信配置保存成功'})

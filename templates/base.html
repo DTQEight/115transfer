@@ -445,9 +445,9 @@
                 if (result.agentid) document.getElementById('wechatAgentid').value = result.agentid;
                 if (result.token) document.getElementById('wechatToken').value = result.token;
                 if (result.encoding_aes_key) document.getElementById('wechatEncodingAesKey').value = result.encoding_aes_key;
-                const callbackUrl = window.location.origin + '/wechat/callback';
+                const callbackUrl = result.callback_url || (window.location.origin + '/wechat/callback');
                 document.getElementById('wechatCallbackUrl').value = callbackUrl;
-                const proxyUrl = window.location.origin + '/wechat/proxy';
+                const proxyUrl = result.proxy_url || (window.location.origin + '/wechat/proxy');
                 document.getElementById('wechatProxyUrl').value = proxyUrl;
                 document.getElementById('wechatStatus').innerHTML = result.configured ?
                     '<span class="text-success">已配置</span>' : '<span class="text-warning">未配置</span>';
@@ -461,6 +461,8 @@
             const agentid = document.getElementById('wechatAgentid').value.trim();
             const token = document.getElementById('wechatToken').value.trim();
             const encoding_aes_key = document.getElementById('wechatEncodingAesKey').value.trim();
+            const callback_url = document.getElementById('wechatCallbackUrl').value.trim();
+            const proxy_url = document.getElementById('wechatProxyUrl').value.trim();
             if (!corpid || !corpsecret) {
                 showToast('企业ID和应用Secret不能为空', 'danger');
                 return;
@@ -470,7 +472,7 @@
                 const resp = await fetch('/wechat/config', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: `corpid=${encodeURIComponent(corpid)}&corpsecret=${encodeURIComponent(corpsecret)}&agentid=${encodeURIComponent(agentid)}&token=${encodeURIComponent(token)}&encoding_aes_key=${encodeURIComponent(encoding_aes_key)}`
+                    body: `corpid=${encodeURIComponent(corpid)}&corpsecret=${encodeURIComponent(corpsecret)}&agentid=${encodeURIComponent(agentid)}&token=${encodeURIComponent(token)}&encoding_aes_key=${encodeURIComponent(encoding_aes_key)}&callback_url=${encodeURIComponent(callback_url)}&proxy_url=${encodeURIComponent(proxy_url)}`
                 });
                 const result = await resp.json();
                 showToast(result.message, result.success ? 'success' : 'danger');

@@ -82,9 +82,10 @@ class WeChatCrypto:
         return encrypted
 
     def verify_signature(self, signature, timestamp, nonce, echostr=None):
-        params = sorted([self.token, timestamp, nonce])
+        params = [self.token, timestamp, nonce]
         if echostr:
             params.append(echostr)
+        params.sort()
         hash_str = hashlib.sha1(''.join(params).encode('utf-8')).hexdigest()
         return hash_str == signature
 

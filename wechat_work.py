@@ -137,6 +137,37 @@ def build_reply_xml(to_user, from_user, content, crypto=None):
         return reply_msg
 
 
+def create_menu(agentid):
+    token, err = get_access_token()
+    if not token:
+        return False, err
+
+    menu = {
+        "button": [
+            {
+                "type": "click",
+                "name": "查看电影",
+                "key": "view_movies"
+            },
+            {
+                "type": "click",
+                "name": "转存到115网盘",
+                "key": "transfer_115"
+            }
+        ]
+    }
+
+    try:
+        url = f'https://qyapi.weixin.qq.com/cgi-bin/menu/create?access_token={token}&agentid={agentid}'
+        resp = requests.post(url, json=menu, timeout=10)
+        data = resp.json()
+        if data.get('errcode') == 0:
+            return True, '菜单创建成功'
+        return False, data.get('errmsg', '创建菜单失败')
+    except Exception as e:
+        return False, str(e)
+
+
 def handle_text_message(content):
     content = content.strip()
     lines = content.split('\n')

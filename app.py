@@ -542,14 +542,31 @@ def wechat_callback():
 
         elif msg_type == 'event':
             event = msg.get('Event', '')
-            if event == 'subscribe':
-                reply = '欢迎使用115Transfer！\n发送"帮助"查看使用方法'
-                if crypto:
-                    reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply, crypto)
-                    return reply_xml, 200, {'Content-Type': 'application/xml'}
+            event_key = msg.get('EventKey', '')
+            print(f'[WeChat Event] Type: {event}, Key: {event_key}', flush=True)
+
+            if event == 'click':
+                if event_key == 'view_movies':
+                    with data_lock:
+                        df = load_movies()
+                    total = len(df)
+                    pages = df['页码'].nunique() if not df.empty else 0
+                    reply = f'当前共有 {total} 部电影，分布在 {pages} 页\n\n访问电影列表: {request.host_url}'
+                elif event_key == 'transfer_115':
+                    reply = '请按以下格式发送磁力链接:\n页码\n电影名\n磁力链接\n\n发送"帮助"查看详细说明'
                 else:
-                    reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply)
-                    return reply_xml, 200, {'Content-Type': 'application/xml'}
+                    reply = '未知操作'
+            elif event == 'subscribe':
+                reply = '欢迎使用115Transfer！\n发送"帮助"查看使用方法'
+            else:
+                return 'success'
+
+            if crypto:
+                reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply, crypto)
+                return reply_xml, 200, {'Content-Type': 'application/xml'}
+            else:
+                reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply)
+                return reply_xml, 200, {'Content-Type': 'application/xml'}
 
         return 'success'
     except Exception as e:
@@ -633,6 +650,16 @@ def wechat_test():
             return jsonify({'success': False, 'message': f'添加失败: {str(e)}'})
     else:
         return jsonify({'success': True, 'message': result})
+
+
+@app.route('/wechat/menu', methods=['POST'])
+def wechat_menu():
+    config = wechat_work.load_config()
+    agentid = config.get('agentid', '')
+    if not agentid:
+        return jsonify({'success': False, 'message': '未配置AgentId'})
+    success, msg = wechat_work.create_menu(agentid)
+    return jsonify({'success': success, 'message': msg})
 
 
 if __name__ == '__main__':

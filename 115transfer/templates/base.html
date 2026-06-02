@@ -204,6 +204,15 @@
                     <div id="wechatStatus" class="mb-3"></div>
                     <hr>
                     <div class="mb-3">
+                        <label class="form-label">自定义菜单</label>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-outline-primary btn-sm" onclick="createWechatMenu()">创建菜单</button>
+                            <span id="wechatMenuStatus" class="text-muted small align-self-center"></span>
+                        </div>
+                        <div class="form-text">菜单包含：查看电影、转存到115网盘</div>
+                    </div>
+                    <hr>
+                    <div class="mb-3">
                         <label class="form-label">测试消息</label>
                         <textarea id="wechatTestMsg" class="form-control" rows="3" placeholder="输入测试消息，格式：页码\n电影名\n磁力链接"></textarea>
                     </div>
@@ -524,6 +533,22 @@
                 }
             } catch (e) {
                 resultEl.innerHTML = '<span class="text-danger">测试请求失败</span>';
+            }
+        }
+
+        async function createWechatMenu() {
+            const statusEl = document.getElementById('wechatMenuStatus');
+            statusEl.innerHTML = '<span class="text-info">创建中...</span>';
+            try {
+                const resp = await fetch('/wechat/menu', { method: 'POST' });
+                const result = await resp.json();
+                if (result.success) {
+                    statusEl.innerHTML = '<span class="text-success">创建成功</span>';
+                } else {
+                    statusEl.innerHTML = `<span class="text-danger">失败: ${result.message}</span>`;
+                }
+            } catch (e) {
+                statusEl.innerHTML = '<span class="text-danger">请求失败</span>';
             }
         }
 

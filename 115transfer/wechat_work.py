@@ -151,6 +151,11 @@ def create_menu(agentid):
             },
             {
                 "type": "click",
+                "name": "批量转存",
+                "key": "batch_transfer"
+            },
+            {
+                "type": "click",
                 "name": "目录",
                 "key": "115_dir"
             }

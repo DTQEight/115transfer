@@ -515,6 +515,30 @@ def wechat_callback():
             if content.lower().startswith('magnet:'):
                 success, msg_text = cloud115.add_offline_task(content)
                 reply = f'转存结果: {msg_text}'
+            elif state and state['action'] == 'batch_transfer':
+                if content.isdigit():
+                    page_num = int(content)
+                    with data_lock:
+                        df = load_movies()
+                    page_df = df[df['页码'] == page_num]
+                    if page_df.empty:
+                        reply = f'第 {page_num} 页没有电影'
+                    else:
+                        magnets = []
+                        for _, row in page_df.iterrows():
+                            magnet = row.get('磁力链接', '')
+                            if not pd.isna(magnet) and str(magnet).strip():
+                                magnets.append(str(magnet))
+                        if not magnets:
+                            reply = f'第 {page_num} 页没有有效的磁力链接'
+                        else:
+                            results = cloud115.batch_add_offline_tasks(magnets)
+                            success_count = sum(1 for r in results if r['success'])
+                            fail_count = len(results) - success_count
+                            reply = f'批量转存完成\n页码: {page_num}\n成功: {success_count}\n失败: {fail_count}'
+                    del user_states[from_user]
+                else:
+                    reply = '请输入页码数字'
             elif state and state['action'] == 'browse_dir':
                 if content == '确认':
                     cloud115.set_default_save_path(state['cid'])
@@ -613,6 +637,17 @@ def wechat_callback():
                         reply = f'共 {total} 部电影，请回复页码查看:\n\n'
                         reply += ' | '.join([str(p) for p in page_list])
                         reply += '\n\n直接回复页码即可查看该页所有电影'
+                elif event_key == 'batch_transfer':
+                    with data_lock:
+                        df = load_movies()
+                    if df.empty:
+                        reply = '暂无电影数据'
+                    else:
+                        page_list = sorted(df['页码'].unique().tolist())
+                        reply = '批量转存 - 请选择页码:\n\n'
+                        reply += ' | '.join([str(p) for p in page_list])
+                        reply += '\n\n回复页码，该页所有磁力链接将转存到115网盘'
+                    user_states[from_user] = {'action': 'batch_transfer'}
                 elif event_key == '115_dir':
                     user_states[from_user] = {'action': 'browse_dir', 'cid': '0', 'path': '根目录'}
                     success, msg_text, dirs = cloud115.get_dir_list('0')

@@ -547,6 +547,22 @@ def wechat_callback():
                 elif content == '新建':
                     state['action'] = 'create_dir_name'
                     reply = f'在 {state["path"]} 下创建目录\n请输入新目录名:'
+                elif content == '返回':
+                    if len(state.get('stack', [])) > 1:
+                        state['stack'].pop()
+                        parent = state['stack'][-1]
+                        state['cid'] = parent['cid']
+                        state['path'] = parent['path']
+                        success, msg_text, dirs = cloud115.get_dir_list(state['cid'])
+                        if success and dirs:
+                            reply = f'目录: {state["path"]}\n\n'
+                            for i, d in enumerate(dirs, 1):
+                                reply += f'{i}. {d["name"]}\n'
+                            reply += f'\n回复序号进入子目录\n回复"确认"设置为转存目录\n回复"新建"创建新目录\n回复"返回"回到上级目录'
+                        else:
+                            reply = f'目录: {state["path"]}\n\n此目录为空\n回复"确认"设置为转存目录\n回复"新建"创建新目录'
+                    else:
+                        reply = '已经在根目录，无法返回'
                 elif content.isdigit():
                     idx = int(content) - 1
                     success, msg_text, dirs = cloud115.get_dir_list(state['cid'])
@@ -554,18 +570,19 @@ def wechat_callback():
                         d = dirs[idx]
                         state['cid'] = d['cid']
                         state['path'] = state['path'] + ' / ' + d['name']
+                        state['stack'].append({'cid': d['cid'], 'path': state['path']})
                         success2, msg2, subdirs = cloud115.get_dir_list(d['cid'])
                         if success2 and subdirs:
                             reply = f'目录: {state["path"]}\n\n'
                             for i, sd in enumerate(subdirs, 1):
                                 reply += f'{i}. {sd["name"]}\n'
-                            reply += f'\n回复序号进入子目录\n回复"确认"设置为转存目录\n回复"新建"创建新目录'
+                            reply += f'\n回复序号进入子目录\n回复"确认"设置为转存目录\n回复"新建"创建新目录\n回复"返回"回到上级目录'
                         else:
-                            reply = f'目录: {state["path"]}\n\n此目录为空\n回复"确认"设置为转存目录\n回复"新建"创建新目录'
+                            reply = f'目录: {state["path"]}\n\n此目录为空\n回复"确认"设置为转存目录\n回复"新建"创建新目录\n回复"返回"回到上级目录'
                     else:
                         reply = '序号无效，请重新输入'
                 else:
-                    reply = '请输入序号、"确认"或"新建"'
+                    reply = '请输入序号、"确认"、"新建"或"返回"'
             elif state and state['action'] == 'create_dir_name':
                 dir_name = content
                 success, msg_text = cloud115.create_dir(state['cid'], dir_name)
@@ -574,6 +591,26 @@ def wechat_callback():
                 else:
                     reply = f'创建失败: {msg_text}'
                 del user_states[from_user]
+            elif content.startswith('搜索') or content.startswith('search'):
+                keyword = content[2:].strip() if content.startswith('搜索') else content[6:].strip()
+                if not keyword:
+                    reply = '请输入搜索关键词\n格式: 搜索 电影名'
+                else:
+                    with data_lock:
+                        df = load_movies()
+                    mask = df['电影名'].str.contains(keyword, case=False, na=False)
+                    results = df[mask]
+                    if results.empty:
+                        reply = f'未找到包含"{keyword}"的电影'
+                    else:
+                        reply = f'搜索"{keyword}"找到 {len(results)} 部电影:\n\n'
+                        for _, row in results.head(20).iterrows():
+                            page = row.get('页码', '?')
+                            name = row.get('电影名', '未知')
+                            magnet = row.get('磁力链接', '无')
+                            reply += f'[{page}页] {name}\n{magnet}\n\n'
+                        if len(results) > 20:
+                            reply += f'... 还有 {len(results) - 20} 部电影，请访问网页查看'
             elif content.isdigit():
                 page_num = int(content)
                 with data_lock:
@@ -650,7 +687,7 @@ def wechat_callback():
                         reply += '\n\n回复页码，该页所有磁力链接将转存到115网盘'
                         user_states[from_user] = {'action': 'batch_transfer'}
                 elif event_key == '115_dir':
-                    user_states[from_user] = {'action': 'browse_dir', 'cid': '0', 'path': '根目录'}
+                    user_states[from_user] = {'action': 'browse_dir', 'cid': '0', 'path': '根目录', 'stack': [{'cid': '0', 'path': '根目录'}]}
                     success, msg_text, dirs = cloud115.get_dir_list('0')
                     if success and dirs:
                         reply = '115网盘目录:\n\n'

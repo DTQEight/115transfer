@@ -327,12 +327,16 @@
                     <div class="mb-3">
                         <label class="form-label"><i class="bi bi-folder2 me-1"></i>转存目录</label>
                         <div class="mb-2">
-                            <span class="text-muted small">当前目录: </span>
+                            <span class="text-muted small">已设置: </span>
+                            <span id="savedDirPath" class="text-primary fw-bold">-</span>
+                        </div>
+                        <div class="mb-2">
+                            <span class="text-muted small">当前浏览: </span>
                             <span id="currentDirPath" class="fw-bold">根目录</span>
                             <input type="hidden" id="currentDirId" value="0">
                         </div>
                         <div id="dirList" style="max-height: 250px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 0.5rem;">
-                            <p class="text-muted text-center mb-0">点击下方按钮加载目录</p>
+                            <p class="text-muted text-center mb-0">加载中...</p>
                         </div>
                     </div>
                 </div>
@@ -601,20 +605,14 @@
             try {
                 const pathResp = await fetch('/cloud115/save_path');
                 const pathResult = await pathResp.json();
-                const savedId = pathResult.path_id || '0';
-                const savedName = pathResult.path_name || '根目录';
-                currentDirId = savedId;
-                dirPathStack = [{id: savedId, name: savedName}];
-                document.getElementById('currentDirId').value = savedId;
-                document.getElementById('currentDirPath').textContent = savedName;
-                await loadDirs(savedId);
+                document.getElementById('savedDirPath').textContent = pathResult.path_name || '根目录';
             } catch (e) {
-                currentDirId = '0';
-                dirPathStack = [{id: '0', name: '根目录'}];
-                document.getElementById('currentDirId').value = '0';
-                document.getElementById('currentDirPath').textContent = '根目录';
-                await loadDirs('0');
+                document.getElementById('savedDirPath').textContent = '根目录';
             }
+            currentDirId = '0';
+            dirPathStack = [{id: '0', name: '根目录'}];
+            document.getElementById('currentDirId').value = '0';
+            await loadDirs('0');
             new bootstrap.Modal(document.getElementById('settings115Modal')).show();
         }
 
@@ -795,6 +793,9 @@
                 });
                 const result = await resp.json();
                 showToast(result.message, result.success ? 'success' : 'danger');
+                if (result.success) {
+                    document.getElementById('savedDirPath').textContent = pathName;
+                }
             } catch (e) {
                 showToast('设置失败', 'danger');
             }

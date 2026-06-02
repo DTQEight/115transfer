@@ -5,19 +5,128 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}电影磁力链接管理{% endblock %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
-        .empty-magnet { color: #dc3545; }
-        .movie-row:hover { background-color: #f8f9fa; }
-        .dark .movie-row:hover { background-color: #374151; }
-        .copy-btn { cursor: pointer; }
-        .copy-btn:hover { color: #0d6efd; }
-        .dark .copy-btn:hover { color: #60a5fa; }
-        
+        :root {
+            --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --success-gradient: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            --card-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            --card-hover-shadow: 0 8px 25px rgba(0,0,0,0.15);
+        }
+        [data-bs-theme="dark"] {
+            --card-shadow: 0 2px 12px rgba(0,0,0,0.3);
+            --card-hover-shadow: 0 8px 25px rgba(0,0,0,0.4);
+        }
+        body {
+            background: #f0f2f5;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        }
+        [data-bs-theme="dark"] body {
+            background: #1a1a2e;
+        }
+        .navbar-custom {
+            background: var(--primary-gradient);
+            box-shadow: 0 2px 20px rgba(102, 126, 234, 0.4);
+        }
+        .card {
+            border: none;
+            border-radius: 12px;
+            box-shadow: var(--card-shadow);
+            transition: box-shadow 0.3s ease;
+        }
+        .card:hover {
+            box-shadow: var(--card-hover-shadow);
+        }
+        .card-header {
+            background: transparent;
+            border-bottom: 1px solid rgba(0,0,0,0.06);
+            font-weight: 600;
+            padding: 1rem 1.25rem;
+        }
+        [data-bs-theme="dark"] .card-header {
+            border-bottom-color: rgba(255,255,255,0.06);
+        }
+        .btn {
+            border-radius: 8px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        .btn:hover {
+            transform: translateY(-1px);
+        }
+        .btn-primary {
+            background: var(--primary-gradient);
+            border: none;
+        }
+        .btn-primary:hover {
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+        .btn-success {
+            background: var(--success-gradient);
+            border: none;
+        }
+        .btn-success:hover {
+            box-shadow: 0 4px 15px rgba(17, 153, 142, 0.4);
+        }
+        .form-control, .form-select {
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+            transition: all 0.2s ease;
+        }
+        .form-control:focus, .form-select:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+        }
+        .table {
+            margin-bottom: 0;
+        }
+        .table thead th {
+            background: linear-gradient(135deg, #2d3748 0%, #4a5568 100%);
+            color: white;
+            border: none;
+            padding: 0.875rem 1rem;
+            font-weight: 600;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .table tbody td {
+            padding: 0.75rem 1rem;
+            vertical-align: middle;
+            border-color: rgba(0,0,0,0.04);
+        }
+        [data-bs-theme="dark"] .table tbody td {
+            border-color: rgba(255,255,255,0.04);
+        }
+        .movie-row {
+            transition: all 0.2s ease;
+        }
+        .movie-row:hover {
+            background-color: rgba(102, 126, 234, 0.04) !important;
+        }
+        .copy-btn {
+            cursor: pointer;
+            transition: color 0.2s ease;
+        }
+        .copy-btn:hover {
+            color: #667eea !important;
+        }
+        .empty-magnet {
+            color: #e53e3e;
+            font-style: italic;
+        }
+        .badge-page {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 0.35em 0.65em;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.8rem;
+        }
         .loading-overlay {
             display: none;
             position: fixed;
-            top: 0;
-            left: 0;
+            top: 0, left: 0;
             width: 100%;
             height: 100%;
             background: rgba(0, 0, 0, 0.5);
@@ -28,31 +137,107 @@
         .loading-spinner {
             width: 50px;
             height: 50px;
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #0d6efd;
+            border: 4px solid rgba(255,255,255,0.3);
+            border-top: 4px solid white;
             border-radius: 50%;
-            animation: spin 1s linear infinite;
+            animation: spin 0.8s linear infinite;
         }
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
-        
         .theme-toggle {
             cursor: pointer;
-            font-size: 1.2rem;
-            padding: 0.25rem 0.5rem;
+            width: 36px;
+            height: 36px;
             border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             transition: all 0.3s ease;
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
         }
         .theme-toggle:hover {
-            background-color: rgba(0, 0, 0, 0.1);
+            background: rgba(255,255,255,0.3);
+            transform: rotate(15deg);
         }
-        .drag-handle { user-select: none; }
-        .drag-handle:hover { color: #0d6efd; }
+        .pagination .page-link {
+            border-radius: 8px;
+            margin: 0 2px;
+            border: none;
+            color: #667eea;
+            font-weight: 500;
+        }
+        .pagination .page-item.active .page-link {
+            background: var(--primary-gradient);
+            color: white;
+        }
+        .pagination .page-link:hover {
+            background: rgba(102, 126, 234, 0.1);
+            color: #667eea;
+        }
+        .modal-content {
+            border: none;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+        }
+        .modal-header {
+            border-bottom: 1px solid rgba(0,0,0,0.06);
+            padding: 1.25rem 1.5rem;
+        }
+        .modal-body {
+            padding: 1.5rem;
+        }
+        .modal-footer {
+            border-top: 1px solid rgba(0,0,0,0.06);
+            padding: 1rem 1.5rem;
+        }
+        .toast {
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+        }
+        footer {
+            color: #a0aec0;
+            font-size: 0.85rem;
+        }
+        .search-box .form-control {
+            border-radius: 20px 0 0 20px;
+            padding-left: 1rem;
+        }
+        .search-box .btn {
+            border-radius: 0 20px 20px 0;
+        }
+        .action-btn {
+            padding: 0.25rem 0.5rem;
+            font-size: 0.8rem;
+            border-radius: 6px;
+        }
+        .btn-settings {
+            background: rgba(255,255,255,0.2);
+            border: 1px solid rgba(255,255,255,0.3);
+            color: white;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            transition: all 0.2s ease;
+        }
+        .btn-settings:hover {
+            background: rgba(255,255,255,0.3);
+            color: white;
+            transform: translateY(-1px);
+        }
+        .drag-handle {
+            user-select: none;
+            color: #a0aec0;
+            transition: color 0.2s;
+        }
+        .drag-handle:hover {
+            color: #667eea;
+        }
         .sortable-drag { opacity: 0; }
-        .sortable-fallback { opacity: 0.9; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
-        .sortable-chosen { background-color: #e9ecef !important; }
+        .sortable-fallback { opacity: 0.9; box-shadow: var(--card-hover-shadow); }
+        .sortable-chosen { background-color: rgba(102, 126, 234, 0.05) !important; }
         {% block extra_style %}{% endblock %}
     </style>
 </head>
@@ -61,26 +246,30 @@
         <div class="loading-spinner"></div>
     </div>
     
-    <div class="container mt-5">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h1 class="text-center flex-grow-1">🎬 电影磁力链接管理</h1>
+    <nav class="navbar navbar-custom mb-4">
+        <div class="container">
+            <span class="navbar-brand text-white fw-bold mb-0">
+                <i class="bi bi-film me-2"></i>115Transfer
+            </span>
             <div class="d-flex gap-2">
-                <button onclick="open115Settings()" class="btn btn-outline-info btn-sm" title="115网盘设置">
-                    ⚙️ 115设置
+                <button onclick="open115Settings()" class="btn btn-settings" title="115网盘设置">
+                    <i class="bi bi-cloud me-1"></i>115设置
                 </button>
-                <button onclick="openWechatSettings()" class="btn btn-outline-success btn-sm" title="企业微信设置">
-                    💬 企业微信
+                <button onclick="openWechatSettings()" class="btn btn-settings" title="企业微信设置">
+                    <i class="bi bi-chat-dots me-1"></i>企业微信
                 </button>
-                <button id="themeToggle" class="theme-toggle btn btn-outline-secondary" title="切换主题">
-                    🌙
+                <button id="themeToggle" class="theme-toggle" title="切换主题">
+                    <i class="bi bi-moon"></i>
                 </button>
             </div>
         </div>
+    </nav>
 
+    <div class="container pb-5">
         {% block content %}{% endblock %}
         
-        <footer class="mt-5 text-center text-muted">
-            <p>版本号: {{ version }}</p>
+        <footer class="mt-5 text-center">
+            <p><i class="bi bi-tag me-1"></i>版本: {{ version }}</p>
         </footer>
     </div>
 
@@ -89,7 +278,7 @@
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">编辑电影</h5>
+                    <h5 class="modal-title"><i class="bi bi-pencil-square me-2"></i>编辑电影</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
@@ -110,8 +299,10 @@
                     </form>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                    <button type="button" class="btn btn-primary" onclick="updateMovie()">保存</button>
+                    <button type="button" class="btn btn-light" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="updateMovie()">
+                        <i class="bi bi-check-lg me-1"></i>保存
+                    </button>
                 </div>
             </div>
         </div>
@@ -122,7 +313,7 @@
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">115网盘设置</h5>
+                    <h5 class="modal-title"><i class="bi bi-cloud me-2"></i>115网盘设置</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
@@ -134,8 +325,12 @@
                     <div id="cookie115Status" class="mb-3"></div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" onclick="verify115Cookie()">验证Cookie</button>
-                    <button type="button" class="btn btn-primary" onclick="save115Cookie()">保存</button>
+                    <button type="button" class="btn btn-outline-secondary" onclick="verify115Cookie()">
+                        <i class="bi bi-check-circle me-1"></i>验证Cookie
+                    </button>
+                    <button type="button" class="btn btn-primary" onclick="save115Cookie()">
+                        <i class="bi bi-save me-1"></i>保存
+                    </button>
                 </div>
             </div>
         </div>
@@ -146,7 +341,7 @@
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">115离线任务列表</h5>
+                    <h5 class="modal-title"><i class="bi bi-list-task me-2"></i>115离线任务列表</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body" id="tasks115Body">
@@ -161,7 +356,7 @@
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">企业微信设置</h5>
+                    <h5 class="modal-title"><i class="bi bi-chat-dots me-2"></i>企业微信设置</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
@@ -189,7 +384,9 @@
                         <label class="form-label">回调URL（直接对接）</label>
                         <div class="input-group">
                             <input type="text" id="wechatCallbackUrl" class="form-control">
-                            <button class="btn btn-outline-secondary" onclick="copyWechatCallbackUrl()">复制</button>
+                            <button class="btn btn-outline-secondary" onclick="copyWechatCallbackUrl()">
+                                <i class="bi bi-clipboard"></i>
+                            </button>
                         </div>
                         <div class="form-text">如果不用代理，将此URL填写到企业微信应用的"接收消息"设置中</div>
                     </div>
@@ -197,7 +394,9 @@
                         <label class="form-label">代理转发URL（wxchat代理）</label>
                         <div class="input-group">
                             <input type="text" id="wechatProxyUrl" class="form-control">
-                            <button class="btn btn-outline-secondary" onclick="copyWechatProxyUrl()">复制</button>
+                            <button class="btn btn-outline-secondary" onclick="copyWechatProxyUrl()">
+                                <i class="bi bi-clipboard"></i>
+                            </button>
                         </div>
                         <div class="form-text">如果使用wxchat代理，将此URL配置到代理服务器的转发目标</div>
                     </div>
@@ -206,7 +405,9 @@
                     <div class="mb-3">
                         <label class="form-label">自定义菜单</label>
                         <div class="d-flex gap-2">
-                            <button type="button" class="btn btn-outline-primary btn-sm" onclick="createWechatMenu()">创建菜单</button>
+                            <button type="button" class="btn btn-outline-primary btn-sm" onclick="createWechatMenu()">
+                                <i class="bi bi-menu-button-wide me-1"></i>创建菜单
+                            </button>
                             <span id="wechatMenuStatus" class="text-muted small align-self-center"></span>
                         </div>
                         <div class="form-text">菜单包含：查看电影、批量转存、目录</div>
@@ -219,8 +420,12 @@
                     <div id="wechatTestResult" class="mb-3"></div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-success" onclick="testWechat()">测试</button>
-                    <button type="button" class="btn btn-primary" onclick="saveWechatConfig()">保存</button>
+                    <button type="button" class="btn btn-outline-success" onclick="testWechat()">
+                        <i class="bi bi-send me-1"></i>测试
+                    </button>
+                    <button type="button" class="btn btn-primary" onclick="saveWechatConfig()">
+                        <i class="bi bi-save me-1"></i>保存
+                    </button>
                 </div>
             </div>
         </div>
@@ -231,12 +436,12 @@
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">选择转存目录</h5>
+                    <h5 class="modal-title"><i class="bi bi-folder2-open me-2"></i>选择转存目录</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
                     <div class="mb-3">
-                        <label class="form-label">当前目录: <span id="currentDirPath">根目录</span></label>
+                        <label class="form-label">当前目录: <span id="currentDirPath" class="fw-bold">根目录</span></label>
                         <input type="hidden" id="currentDirId" value="0">
                     </div>
                     <div id="dirList" style="max-height: 400px; overflow-y: auto;">
@@ -244,8 +449,12 @@
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" onclick="navigateToParent()">返回上级</button>
-                    <button type="button" class="btn btn-primary" onclick="setAsDefaultDir()">设为默认目录</button>
+                    <button type="button" class="btn btn-outline-secondary" onclick="navigateToParent()">
+                        <i class="bi bi-arrow-left me-1"></i>返回上级
+                    </button>
+                    <button type="button" class="btn btn-primary" onclick="setAsDefaultDir()">
+                        <i class="bi bi-check-lg me-1"></i>设为默认目录
+                    </button>
                 </div>
             </div>
         </div>
@@ -256,13 +465,14 @@
     <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toastContainer"></div>
     <script>
         function showToast(message, type = 'success') {
-            const bgClass = type === 'success' ? 'bg-success' : type === 'danger' ? 'bg-danger' : 'bg-info';
+            const icons = { success: 'check-circle-fill', danger: 'exclamation-triangle-fill', info: 'info-circle-fill' };
+            const bgClass = { success: 'bg-success', danger: 'bg-danger', info: 'bg-info' };
             const toastEl = document.createElement('div');
-            toastEl.className = `toast align-items-center text-white ${bgClass} border-0`;
+            toastEl.className = `toast align-items-center text-white ${bgClass[type] || 'bg-info'} border-0`;
             toastEl.setAttribute('role', 'alert');
             toastEl.innerHTML = `
                 <div class="d-flex">
-                    <div class="toast-body">${message}</div>
+                    <div class="toast-body"><i class="bi bi-${icons[type] || 'info-circle-fill'} me-2"></i>${message}</div>
                     <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
                 </div>
             `;
@@ -293,16 +503,10 @@
             html.setAttribute('data-bs-theme', newTheme);
             localStorage.setItem('theme', newTheme);
             updateThemeIcon(newTheme);
-            
-            if (newTheme === 'dark') {
-                document.body.classList.add('dark');
-            } else {
-                document.body.classList.remove('dark');
-            }
         });
         
         function updateThemeIcon(theme) {
-            themeToggle.innerHTML = theme === 'light' ? '🌙' : '☀️';
+            themeToggle.innerHTML = theme === 'light' ? '<i class="bi bi-moon"></i>' : '<i class="bi bi-sun"></i>';
         }
 
         async function deleteMovie(id) {
@@ -372,7 +576,7 @@
         function copyToClipboard(text) {
             if (navigator.clipboard && window.isSecureContext) {
                 navigator.clipboard.writeText(text).then(() => {
-                    showToast('磁力链接已复制到剪贴板！');
+                    showToast('已复制到剪贴板');
                 }).catch(() => {
                     fallbackCopy(text);
                 });
@@ -391,9 +595,9 @@
             
             try {
                 document.execCommand('copy');
-                showToast('磁力链接已复制到剪贴板！');
+                showToast('已复制到剪贴板');
             } catch (err) {
-                showToast('复制失败，请手动复制: ' + text, 'danger');
+                showToast('复制失败，请手动复制', 'danger');
             }
             
             document.body.removeChild(textarea);
@@ -405,9 +609,9 @@
                 const resp = await fetch('/cloud115/config');
                 const result = await resp.json();
                 if (result.has_cookie) {
-                    document.getElementById('cookie115Status').innerHTML = `<span class="text-info">当前Cookie: ${result.cookie_masked}</span>`;
+                    document.getElementById('cookie115Status').innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>当前Cookie: ${result.cookie_masked}</span>`;
                 } else {
-                    document.getElementById('cookie115Status').innerHTML = '<span class="text-warning">未配置Cookie</span>';
+                    document.getElementById('cookie115Status').innerHTML = '<span class="text-warning"><i class="bi bi-exclamation-circle me-1"></i>未配置Cookie</span>';
                 }
             } catch (e) {}
             new bootstrap.Modal(document.getElementById('settings115Modal')).show();
@@ -439,17 +643,17 @@
 
         async function verify115Cookie() {
             const statusEl = document.getElementById('cookie115Status');
-            statusEl.innerHTML = '<span class="text-info">验证中...</span>';
+            statusEl.innerHTML = '<span class="text-info"><i class="bi bi-arrow-repeat me-1"></i>验证中...</span>';
             try {
                 const resp = await fetch('/cloud115/verify', { method: 'POST' });
                 const result = await resp.json();
                 if (result.success) {
-                    statusEl.innerHTML = `<span class="text-success">✓ ${result.message}</span>`;
+                    statusEl.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>${result.message}</span>`;
                 } else {
-                    statusEl.innerHTML = `<span class="text-danger">✗ ${result.message}</span>`;
+                    statusEl.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${result.message}</span>`;
                 }
             } catch (e) {
-                statusEl.innerHTML = '<span class="text-danger">验证请求失败</span>';
+                statusEl.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>验证请求失败</span>';
             }
         }
 
@@ -466,7 +670,8 @@
                 const proxyUrl = result.proxy_url || (window.location.origin + '/wechat/proxy');
                 document.getElementById('wechatProxyUrl').value = proxyUrl;
                 document.getElementById('wechatStatus').innerHTML = result.configured ?
-                    '<span class="text-success">已配置</span>' : '<span class="text-warning">未配置</span>';
+                    '<span class="text-success"><i class="bi bi-check-circle me-1"></i>已配置</span>' : 
+                    '<span class="text-warning"><i class="bi bi-exclamation-circle me-1"></i>未配置</span>';
             } catch (e) {}
             new bootstrap.Modal(document.getElementById('wechatSettingsModal')).show();
         }
@@ -518,7 +723,7 @@
                 return;
             }
             const resultEl = document.getElementById('wechatTestResult');
-            resultEl.innerHTML = '<span class="text-info">测试中...</span>';
+            resultEl.innerHTML = '<span class="text-info"><i class="bi bi-arrow-repeat me-1"></i>测试中...</span>';
             try {
                 const resp = await fetch('/wechat/test', {
                     method: 'POST',
@@ -527,28 +732,28 @@
                 });
                 const result = await resp.json();
                 if (result.success) {
-                    resultEl.innerHTML = `<span class="text-success">✓ ${result.message}</span>`;
+                    resultEl.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>${result.message}</span>`;
                 } else {
-                    resultEl.innerHTML = `<span class="text-danger">✗ ${result.message}</span>`;
+                    resultEl.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${result.message}</span>`;
                 }
             } catch (e) {
-                resultEl.innerHTML = '<span class="text-danger">测试请求失败</span>';
+                resultEl.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>测试请求失败</span>';
             }
         }
 
         async function createWechatMenu() {
             const statusEl = document.getElementById('wechatMenuStatus');
-            statusEl.innerHTML = '<span class="text-info">创建中...</span>';
+            statusEl.innerHTML = '<span class="text-info"><i class="bi bi-arrow-repeat me-1"></i>创建中...</span>';
             try {
                 const resp = await fetch('/wechat/menu', { method: 'POST' });
                 const result = await resp.json();
                 if (result.success) {
-                    statusEl.innerHTML = '<span class="text-success">创建成功</span>';
+                    statusEl.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>创建成功</span>';
                 } else {
-                    statusEl.innerHTML = `<span class="text-danger">失败: ${result.message}</span>`;
+                    statusEl.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${result.message}</span>`;
                 }
             } catch (e) {
-                statusEl.innerHTML = '<span class="text-danger">请求失败</span>';
+                statusEl.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>请求失败</span>';
             }
         }
 
@@ -566,7 +771,7 @@
 
         async function loadDirs(cid) {
             const dirListEl = document.getElementById('dirList');
-            dirListEl.innerHTML = '<p class="text-muted text-center">加载中...</p>';
+            dirListEl.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>加载中...</p>';
             
             try {
                 const resp = await fetch(`/cloud115/dirs?cid=${cid}`);
@@ -575,17 +780,17 @@
                 if (result.success && result.dirs.length > 0) {
                     let html = '<div class="list-group">';
                     result.dirs.forEach(dir => {
-                        html += `<button type="button" class="list-group-item list-group-item-action" onclick="navigateToDir('${dir.cid}', '${dir.name}')">
-                            📁 ${dir.name}
+                        html += `<button type="button" class="list-group-item list-group-item-action rounded-2 mb-1" onclick="navigateToDir('${dir.cid}', '${dir.name}')">
+                            <i class="bi bi-folder2 me-2 text-warning"></i>${dir.name}
                         </button>`;
                     });
                     html += '</div>';
                     dirListEl.innerHTML = html;
                 } else {
-                    dirListEl.innerHTML = '<p class="text-muted text-center">此目录为空</p>';
+                    dirListEl.innerHTML = '<p class="text-muted text-center"><i class="bi bi-folder2-open me-1"></i>此目录为空</p>';
                 }
             } catch (e) {
-                dirListEl.innerHTML = '<p class="text-danger text-center">加载失败</p>';
+                dirListEl.innerHTML = '<p class="text-danger text-center"><i class="bi bi-x-circle me-1"></i>加载失败</p>';
             }
         }
 

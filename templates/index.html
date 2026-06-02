@@ -1,24 +1,29 @@
 {% extends "base.html" %}
 
-{% block title %}电影磁力链接管理{% endblock %}
+{% block title %}115Transfer - 电影管理{% endblock %}
 
 {% block content %}
         {% if error %}
         <div class="alert alert-danger alert-dismissible fade show" role="alert">
-            {{ error }}
+            <i class="bi bi-exclamation-triangle me-2"></i>{{ error }}
             <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
         </div>
         {% endif %}
 
         <form action="/search" method="get" class="mb-4">
-            <div class="input-group">
+            <div class="input-group search-box">
                 <input type="text" name="keyword" id="searchInput" class="form-control" placeholder="搜索电影名... (Ctrl+Shift+F)" value="">
-                <button type="submit" class="btn btn-primary">搜索</button>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-search me-1"></i>搜索
+                </button>
             </div>
         </form>
 
         <div class="card mb-4">
-            <div class="card-header">添加新电影 <span class="text-muted small">(Enter 快速添加)</span></div>
+            <div class="card-header">
+                <i class="bi bi-plus-circle me-2"></i>添加新电影
+                <span class="text-muted small ms-2">(Enter 快速添加)</span>
+            </div>
             <div class="card-body">
                 <form id="addForm">
                     <div class="row g-3">
@@ -36,101 +41,143 @@
                         </div>
                         <div class="col-md-1">
                             <label class="form-label">&nbsp;</label>
-                            <button type="submit" class="btn btn-success form-control">添加</button>
+                            <button type="submit" class="btn btn-success form-control">
+                                <i class="bi bi-plus-lg"></i>
+                            </button>
                         </div>
                     </div>
                 </form>
             </div>
         </div>
 
-        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-            <div class="d-flex align-items-center gap-2">
-                <span class="text-muted">页码选择:</span>
-                <select id="pageSelect" class="form-select form-select-sm" style="width: auto;" onchange="selectPage(this.value)">
-                    {% for p in all_page_nums %}
-                    <option value="{{ p }}" {{ 'selected' if p == current_page else '' }}>{{ p }}</option>
-                    {% endfor %}
-                </select>
-                <span class="text-muted">跳转到:</span>
-                <input type="number" id="goPage" class="form-control form-control-sm d-inline" style="width: 80px;" placeholder="页码">
-                <button onclick="goToPage()" class="btn btn-sm btn-secondary">跳转</button>
-                <button onclick="batchTransfer115()" class="btn btn-sm btn-info" title="批量转存当前页所有磁力链接到115网盘">批量转存115</button>
-                <button onclick="open115Tasks()" class="btn btn-sm btn-outline-info" title="查看115离线任务列表">115任务</button>
-                <button onclick="openDirSelector()" class="btn btn-sm btn-outline-info" title="选择115转存目录">转存目录</button>
+        <div class="card mb-4">
+            <div class="card-body py-3">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <span class="text-muted small">页码:</span>
+                        <select id="pageSelect" class="form-select form-select-sm" style="width: auto;" onchange="selectPage(this.value)">
+                            {% for p in all_page_nums %}
+                            <option value="{{ p }}" {{ 'selected' if p == current_page else '' }}>{{ p }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="input-group input-group-sm" style="width: 150px;">
+                            <input type="number" id="goPage" class="form-control" placeholder="跳转页码">
+                            <button onclick="goToPage()" class="btn btn-outline-secondary">
+                                <i class="bi bi-arrow-right"></i>
+                            </button>
+                        </div>
+                        <div class="vr d-none d-md-block"></div>
+                        <button onclick="batchTransfer115()" class="btn btn-sm btn-primary" title="批量转存当前页所有磁力链接到115网盘">
+                            <i class="bi bi-cloud-upload me-1"></i>批量转存
+                        </button>
+                        <button onclick="open115Tasks()" class="btn btn-sm btn-outline-secondary" title="查看115离线任务列表">
+                            <i class="bi bi-list-task me-1"></i>任务
+                        </button>
+                        <button onclick="openDirSelector()" class="btn btn-sm btn-outline-secondary" title="选择115转存目录">
+                            <i class="bi bi-folder me-1"></i>目录
+                        </button>
+                    </div>
+                    <div class="d-flex align-items-center gap-3">
+                        <span class="text-muted small">
+                            <i class="bi bi-file-earmark me-1"></i>页码 <strong>{{ current_page }}</strong> / {{ all_page_nums|length }}
+                        </span>
+                        <nav>
+                            <ul class="pagination pagination-sm justify-content-end mb-0">
+                                <li class="page-item {{ 'disabled' if current_page == 0 or (all_page_nums and current_page == all_page_nums[0]) else '' }}">
+                                    <a class="page-link" href="{{ url_for('index', page=all_page_nums[0] if all_page_nums else 1) }}">
+                                        <i class="bi bi-chevron-double-left"></i>
+                                    </a>
+                                </li>
+                                <li class="page-item {{ 'disabled' if current_page == 0 or not all_page_nums or current_page == all_page_nums[0] else '' }}">
+                                    <a class="page-link" href="{{ url_for('index', page=all_page_nums[all_page_nums.index(current_page)-1] if all_page_nums and current_page != all_page_nums[0] else current_page) }}">
+                                        <i class="bi bi-chevron-left"></i>
+                                    </a>
+                                </li>
+                                <li class="page-item {{ 'disabled' if current_page == 0 or not all_page_nums or current_page == all_page_nums[-1] else '' }}">
+                                    <a class="page-link" href="{{ url_for('index', page=all_page_nums[all_page_nums.index(current_page)+1] if all_page_nums and current_page != all_page_nums[-1] else current_page) }}">
+                                        <i class="bi bi-chevron-right"></i>
+                                    </a>
+                                </li>
+                                <li class="page-item {{ 'disabled' if current_page == 0 or (all_page_nums and current_page == all_page_nums[-1]) else '' }}">
+                                    <a class="page-link" href="{{ url_for('index', page=all_page_nums[-1] if all_page_nums else 1) }}">
+                                        <i class="bi bi-chevron-double-right"></i>
+                                    </a>
+                                </li>
+                            </ul>
+                        </nav>
+                    </div>
+                </div>
             </div>
-            <div class="text-center">
-                <span class="text-muted">当前页码:</span>
-                <span class="fw-bold mx-2">{{ current_page }}</span>
-                <span class="text-muted">共 {{ all_page_nums|length }} 个页码</span>
-            </div>
-            <nav>
-                <ul class="pagination justify-content-end mb-0">
-                    <li class="page-item {{ 'disabled' if current_page == 0 or (all_page_nums and current_page == all_page_nums[0]) else '' }}">
-                        <a class="page-link" href="{{ url_for('index', page=all_page_nums[0] if all_page_nums else 1) }}">首页</a>
-                    </li>
-                    <li class="page-item {{ 'disabled' if current_page == 0 or not all_page_nums or current_page == all_page_nums[0] else '' }}">
-                        <a class="page-link" href="{{ url_for('index', page=all_page_nums[all_page_nums.index(current_page)-1] if all_page_nums and current_page != all_page_nums[0] else current_page) }}">上一页</a>
-                    </li>
-                    <li class="page-item {{ 'disabled' if current_page == 0 or not all_page_nums or current_page == all_page_nums[-1] else '' }}">
-                        <a class="page-link" href="{{ url_for('index', page=all_page_nums[all_page_nums.index(current_page)+1] if all_page_nums and current_page != all_page_nums[-1] else current_page) }}">下一页</a>
-                    </li>
-                    <li class="page-item {{ 'disabled' if current_page == 0 or (all_page_nums and current_page == all_page_nums[-1]) else '' }}">
-                        <a class="page-link" href="{{ url_for('index', page=all_page_nums[-1] if all_page_nums else 1) }}">末页</a>
-                    </li>
-                </ul>
-            </nav>
         </div>
 
         <div class="card">
-            <div class="card-header">电影列表 (点击磁力链接复制)</div>
+            <div class="card-header">
+                <i class="bi bi-collection-play me-2"></i>电影列表
+                <span class="text-muted small ms-2">(点击磁力链接复制)</span>
+            </div>
             <div class="card-body p-0">
-                <table class="table table-hover mb-0">
-                    <thead class="table-dark">
-                        <tr>
-                            <th style="width:40px"></th>
-                            <th>序号</th>
-                            <th>页码</th>
-                            <th>电影名</th>
-                            <th>磁力链接</th>
-                            <th>保存时间</th>
-                            <th>操作</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for movie in movies %}
-                        <tr class="movie-row" data-id="{{ movie.id }}">
-                            <td class="drag-handle text-center" style="cursor:grab;">☰</td>
-                            <td>{{ movie.id }}</td>
-                            <td>{{ movie.page }}</td>
-                            <td>{{ movie.name }}</td>
-                            <td>
-                                <span onclick="copyMagnet({{ movie.id }}, {{ movie.page }})" 
-                                      class="copy-btn {% if movie.is_empty %}text-danger{% endif %}">
-                                    {{ movie.magnet_display }}
-                                </span>
-                            </td>
-                            <td>{{ movie.save_time }}</td>
-                            <td>
-                                <button class="btn btn-sm btn-warning edit-btn"
-                                        data-id="{{ movie.id }}"
-                                        data-page="{{ movie.page }}"
-                                        data-name="{{ movie.name }}"
-                                        data-magnet="{{ movie.magnet }}">编辑</button>
-                                <button onclick="deleteMovie({{ movie.id }})" 
-                                        class="btn btn-sm btn-danger">删除</button>
-                                {% if not movie.is_empty %}
-                                <button onclick="transferTo115({{ movie.id }}, {{ movie.page }})" 
-                                        class="btn btn-sm btn-info">转存115</button>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% else %}
-                        <tr>
-                            <td colspan="7" class="text-center text-muted">暂无电影数据</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th style="width:40px"></th>
+                                <th style="width:60px">#</th>
+                                <th style="width:70px">页码</th>
+                                <th>电影名</th>
+                                <th>磁力链接</th>
+                                <th style="width:100px">保存时间</th>
+                                <th style="width:160px">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for movie in movies %}
+                            <tr class="movie-row" data-id="{{ movie.id }}">
+                                <td class="drag-handle text-center" style="cursor:grab;">
+                                    <i class="bi bi-grip-vertical"></i>
+                                </td>
+                                <td class="text-muted">{{ movie.id }}</td>
+                                <td><span class="badge-page">{{ movie.page }}</span></td>
+                                <td class="fw-medium">{{ movie.name }}</td>
+                                <td>
+                                    <span onclick="copyMagnet({{ movie.id }}, {{ movie.page }})" 
+                                          class="copy-btn {% if movie.is_empty %}empty-magnet{% endif %}">
+                                        {{ movie.magnet_display }}
+                                    </span>
+                                </td>
+                                <td class="text-muted small">{{ movie.save_time }}</td>
+                                <td>
+                                    <div class="btn-group btn-group-sm">
+                                        <button class="btn btn-outline-primary action-btn edit-btn"
+                                                data-id="{{ movie.id }}"
+                                                data-page="{{ movie.page }}"
+                                                data-name="{{ movie.name }}"
+                                                data-magnet="{{ movie.magnet }}">
+                                            <i class="bi bi-pencil"></i>
+                                        </button>
+                                        <button onclick="deleteMovie({{ movie.id }})" 
+                                                class="btn btn-outline-danger action-btn">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                        {% if not movie.is_empty %}
+                                        <button onclick="transferTo115({{ movie.id }}, {{ movie.page }})" 
+                                                class="btn btn-outline-success action-btn" title="转存到115网盘">
+                                            <i class="bi bi-cloud-upload"></i>
+                                        </button>
+                                        {% endif %}
+                                    </div>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="7" class="text-center text-muted py-5">
+                                    <i class="bi bi-inbox" style="font-size: 2rem; display: block; margin-bottom: 0.5rem;"></i>
+                                    暂无电影数据
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
 {% endblock %}
@@ -284,7 +331,7 @@
                         });
                         html += '</tbody></table>';
                     } else {
-                        html += '<p class="text-muted text-center">暂无离线任务</p>';
+                        html += '<p class="text-muted text-center"><i class="bi bi-inbox me-1"></i>暂无离线任务</p>';
                     }
                     html += '</div>';
                     document.getElementById('tasks115Body').innerHTML = html;

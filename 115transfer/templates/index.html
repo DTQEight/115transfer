@@ -114,8 +114,8 @@
                                 <button class="btn btn-sm btn-warning edit-btn"
                                         data-id="{{ movie.id }}"
                                         data-page="{{ movie.page }}"
-                                        data-name={{ movie.name|tojson }}
-                                        data-magnet={{ movie.magnet|tojson }}>编辑</button>
+                                        data-name="{{ movie.name }}"
+                                        data-magnet="{{ movie.magnet }}">编辑</button>
                                 <button onclick="deleteMovie({{ movie.id }})" 
                                         class="btn btn-sm btn-danger">删除</button>
                                 {% if not movie.is_empty %}

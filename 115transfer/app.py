@@ -483,11 +483,14 @@ def wechat_callback():
 
     try:
         if crypto:
-            if not crypto.verify_signature(msg_signature, timestamp, nonce):
-                return '签名验证失败', 403
             import xml.etree.ElementTree as ET
             root = ET.fromstring(request.data)
             encrypt_elem = root.find('Encrypt')
+            encrypt_content = encrypt_elem.text if encrypt_elem is not None else ''
+            print(f'[WeChat Callback] Encrypt content: {encrypt_content[:30]}...', flush=True)
+            if not crypto.verify_signature(msg_signature, timestamp, nonce, encrypt_content):
+                print(f'[WeChat Callback] POST signature verification failed', flush=True)
+                return '签名验证失败', 403
             if encrypt_elem is not None:
                 decrypted, from_user = crypto.decrypt_message(encrypt_elem.text)
                 msg = wechat_work.parse_message(decrypted)

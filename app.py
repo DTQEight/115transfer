@@ -509,7 +509,10 @@ def wechat_callback():
         if msg_type == 'text':
             content = msg.get('Content', '').strip()
 
-            if content.isdigit():
+            if content.lower().startswith('magnet:'):
+                success, msg_text = cloud115.add_offline_task(content)
+                reply = f'转存结果: {msg_text}'
+            elif content.isdigit():
                 page_num = int(content)
                 with data_lock:
                     df = load_movies()

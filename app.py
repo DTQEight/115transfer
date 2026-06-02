@@ -206,28 +206,28 @@ def delete_movie(movie_id):
 @app.route('/update/<int:movie_id>', methods=['POST'])
 def update_movie(movie_id):
     page = request.form.get('page', '').strip()
-    name = request.form.get('name', '').strip()
-    magnet = request.form.get('magnet', '').strip()
+    name = request.form.get('name')
+    magnet = request.form.get('magnet')
     
     try:
         with data_lock:
             df = load_movies()
             
-            if page:
-                try:
-                    page_int = int(page)
-                except (ValueError, TypeError):
-                    return jsonify({'success': False, 'message': '页码必须是数字'})
-                mask = (df['序号'] == movie_id) & (df['页码'] == page_int)
-            else:
-                mask = (df['序号'] == movie_id)
+            if not page:
+                return jsonify({'success': False, 'message': '页码不能为空'})
             
+            try:
+                page_int = int(page)
+            except (ValueError, TypeError):
+                return jsonify({'success': False, 'message': '页码必须是数字'})
+            
+            mask = (df['序号'] == movie_id) & (df['页码'] == page_int)
             if not mask.any():
                 return jsonify({'success': False, 'message': '电影记录不存在'})
             
-            if name:
+            if name is not None:
                 df.loc[mask, '电影名'] = name
-            if magnet:
+            if magnet is not None:
                 df.loc[mask, '磁力链接'] = magnet
             df.loc[mask, '保存时间'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
             

@@ -472,7 +472,13 @@ def wechat_callback():
             is_valid = crypto.verify_signature(msg_signature, timestamp, nonce, echostr)
             print(f'[WeChat Callback] Signature valid: {is_valid}')
             if is_valid:
-                return echostr
+                try:
+                    decrypted, _ = crypto.decrypt_message(echostr)
+                    print(f'[WeChat Callback] Decrypted echostr: {decrypted}')
+                    return decrypted
+                except Exception as e:
+                    print(f'[WeChat Callback] Decrypt error: {e}')
+                    return echostr
         return '签名验证失败', 403
 
     try:

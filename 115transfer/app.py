@@ -599,6 +599,37 @@ def wechat_proxy():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/wechat/test', methods=['POST'])
+def wechat_test():
+    content = request.form.get('content', '').strip()
+    if not content:
+        return jsonify({'success': False, 'message': '请输入测试消息'})
+    
+    print(f'[WeChat Test] Received: {content}', flush=True)
+    result = wechat_work.handle_text_message(content)
+    
+    if isinstance(result, dict):
+        try:
+            with data_lock:
+                df = load_movies()
+                page_df = df[df['页码'] == result['page']]
+                new_id = int(page_df['序号'].max()) + 1 if not page_df.empty else 1
+                new_movie = {
+                    '序号': new_id,
+                    '页码': result['page'],
+                    '电影名': result['name'],
+                    '磁力链接': result['magnet'],
+                    '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+                }
+                df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
+                save_movies(df)
+            return jsonify({'success': True, 'message': f'添加成功\n页码: {result["page"]}\n电影名: {result["name"]}'})
+        except Exception as e:
+            return jsonify({'success': False, 'message': f'添加失败: {str(e)}'})
+    else:
+        return jsonify({'success': True, 'message': result})
+
+
 if __name__ == '__main__':
     debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
     app.run(host='0.0.0.0', port=3698, debug=debug)

@@ -202,8 +202,15 @@
                         <div class="form-text">如果使用wxchat代理，将此URL配置到代理服务器的转发目标</div>
                     </div>
                     <div id="wechatStatus" class="mb-3"></div>
+                    <hr>
+                    <div class="mb-3">
+                        <label class="form-label">测试消息</label>
+                        <textarea id="wechatTestMsg" class="form-control" rows="3" placeholder="输入测试消息，格式：页码\n电影名\n磁力链接"></textarea>
+                    </div>
+                    <div id="wechatTestResult" class="mb-3"></div>
                 </div>
                 <div class="modal-footer">
+                    <button type="button" class="btn btn-success" onclick="testWechat()">测试</button>
                     <button type="button" class="btn btn-primary" onclick="saveWechatConfig()">保存</button>
                 </div>
             </div>
@@ -493,6 +500,31 @@
         function copyWechatProxyUrl() {
             const url = document.getElementById('wechatProxyUrl').value;
             copyToClipboard(url);
+        }
+
+        async function testWechat() {
+            const msg = document.getElementById('wechatTestMsg').value.trim();
+            if (!msg) {
+                showToast('请输入测试消息', 'danger');
+                return;
+            }
+            const resultEl = document.getElementById('wechatTestResult');
+            resultEl.innerHTML = '<span class="text-info">测试中...</span>';
+            try {
+                const resp = await fetch('/wechat/test', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `content=${encodeURIComponent(msg)}`
+                });
+                const result = await resp.json();
+                if (result.success) {
+                    resultEl.innerHTML = `<span class="text-success">✓ ${result.message}</span>`;
+                } else {
+                    resultEl.innerHTML = `<span class="text-danger">✗ ${result.message}</span>`;
+                }
+            } catch (e) {
+                resultEl.innerHTML = '<span class="text-danger">测试请求失败</span>';
+            }
         }
 
         let currentDirId = '0';

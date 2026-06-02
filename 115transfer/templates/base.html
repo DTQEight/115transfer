@@ -497,10 +497,11 @@
             themeToggle.innerHTML = theme === 'light' ? '<i class="bi bi-moon"></i>' : '<i class="bi bi-sun"></i>';
         }
 
-        async function deleteMovie(id) {
+        async function deleteMovie(id, page) {
             if (confirm('确定要删除这部电影吗？')) {
                 showLoading();
-                const response = await fetch(`/delete/${id}`, { method: 'POST' });
+                const url = page ? `/delete/${id}?page=${page}` : `/delete/${id}`;
+                const response = await fetch(url, { method: 'POST' });
                 hideLoading();
                 const result = await response.json();
                 showToast(result.message, result.success ? 'success' : 'danger');

@@ -180,17 +180,23 @@ def add_movie():
 
 @app.route('/delete/<int:movie_id>', methods=['POST'])
 def delete_movie(movie_id):
+    page = request.args.get('page', type=int)
     try:
         with data_lock:
             df = load_movies()
             
-            if movie_id not in df['序号'].values:
+            if page is not None:
+                mask = (df['序号'] == movie_id) & (df['页码'] == page)
+            else:
+                mask = df['序号'] == movie_id
+            
+            if not mask.any():
                 return jsonify({'success': False, 'message': '电影记录不存在'})
             
-            df = df[df['序号'] != movie_id]
+            df = df[~mask]
             for pg in df['页码'].unique():
-                mask = df['页码'] == pg
-                df.loc[mask, '序号'] = range(1, mask.sum() + 1)
+                m = df['页码'] == pg
+                df.loc[m, '序号'] = range(1, m.sum() + 1)
             save_movies(df)
         
         return jsonify({'success': True, 'message': '删除成功'})
@@ -207,19 +213,23 @@ def update_movie(movie_id):
         with data_lock:
             df = load_movies()
             
-            if movie_id not in df['序号'].values:
-                return jsonify({'success': False, 'message': '电影记录不存在'})
-            
             if page:
                 try:
-                    df.loc[df['序号'] == movie_id, '页码'] = int(page)
+                    page_int = int(page)
                 except (ValueError, TypeError):
                     return jsonify({'success': False, 'message': '页码必须是数字'})
+                mask = (df['序号'] == movie_id) & (df['页码'] == page_int)
+            else:
+                mask = (df['序号'] == movie_id)
+            
+            if not mask.any():
+                return jsonify({'success': False, 'message': '电影记录不存在'})
+            
             if name:
-                df.loc[df['序号'] == movie_id, '电影名'] = name
+                df.loc[mask, '电影名'] = name
             if magnet:
-                df.loc[df['序号'] == movie_id, '磁力链接'] = magnet
-            df.loc[df['序号'] == movie_id, '保存时间'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+                df.loc[mask, '磁力链接'] = magnet
+            df.loc[mask, '保存时间'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
             
             save_movies(df)
         

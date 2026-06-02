@@ -458,14 +458,19 @@ def wechat_callback():
     nonce = request.args.get('nonce', '')
     echostr = request.args.get('echostr', '')
 
+    print(f'[WeChat Callback] Token: {token[:10]}..., Signature: {msg_signature}, Timestamp: {timestamp}, Nonce: {nonce}, Echostr: {echostr[:20] if echostr else "None"}')
+
     if not token:
         return '未配置企业微信', 500
 
     crypto = wechat_work.WeChatCrypto(token, encoding_aes_key, corpid) if encoding_aes_key else None
 
     if request.method == 'GET':
-        if crypto and crypto.verify_signature(msg_signature, timestamp, nonce, echostr):
-            return echostr
+        if crypto:
+            is_valid = crypto.verify_signature(msg_signature, timestamp, nonce, echostr)
+            print(f'[WeChat Callback] Signature valid: {is_valid}')
+            if is_valid:
+                return echostr
         return '签名验证失败', 403
 
     try:

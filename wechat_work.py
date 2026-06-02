@@ -151,7 +151,7 @@ def create_menu(agentid):
             },
             {
                 "type": "click",
-                "name": "转存到115网盘",
+                "name": "转存115",
                 "key": "transfer_115"
             }
         ]

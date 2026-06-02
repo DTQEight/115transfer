@@ -575,8 +575,6 @@ def wechat_callback():
                         reply = f'共 {total} 部电影，请回复页码查看:\n\n'
                         reply += ' | '.join([str(p) for p in page_list])
                         reply += '\n\n直接回复页码即可查看该页所有电影'
-                elif event_key == 'transfer_115':
-                    reply = '请按以下格式发送磁力链接:\n页码\n电影名\n磁力链接\n\n发送"帮助"查看详细说明'
                 else:
                     reply = '未知操作'
             elif event == 'subscribe':

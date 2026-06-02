@@ -148,11 +148,6 @@ def create_menu(agentid):
                 "type": "click",
                 "name": "查看电影",
                 "key": "view_movies"
-            },
-            {
-                "type": "click",
-                "name": "转存115",
-                "key": "transfer_115"
             }
         ]
     }

@@ -626,6 +626,7 @@ def wechat_callback():
             print(f'[WeChat Event] Type: {event}, Key: {event_key}', flush=True)
 
             if event == 'click':
+                user_states.pop(from_user, None)
                 if event_key == 'view_movies':
                     with data_lock:
                         df = load_movies()
@@ -647,7 +648,7 @@ def wechat_callback():
                         reply = '批量转存 - 请选择页码:\n\n'
                         reply += ' | '.join([str(p) for p in page_list])
                         reply += '\n\n回复页码，该页所有磁力链接将转存到115网盘'
-                    user_states[from_user] = {'action': 'batch_transfer'}
+                        user_states[from_user] = {'action': 'batch_transfer'}
                 elif event_key == '115_dir':
                     user_states[from_user] = {'action': 'browse_dir', 'cid': '0', 'path': '根目录'}
                     success, msg_text, dirs = cloud115.get_dir_list('0')

@@ -74,7 +74,8 @@ class WeChatCrypto:
         random_str = ''.join(random.choices(string.ascii_letters + string.digits, k=16)).encode('utf-8')
         msg_len = struct.pack('>I', len(msg))
         text = random_str + msg_len + msg + from_user
-        pad_len = 32 - (len(text) % 32)
+        block_size = 16
+        pad_len = block_size - (len(text) % block_size)
         text += bytes([pad_len] * pad_len)
         iv = self.key[:16]
         cipher = AES.new(self.key, AES.MODE_CBC, iv)

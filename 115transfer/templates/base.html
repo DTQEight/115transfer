@@ -256,7 +256,9 @@
         document.querySelector('tbody').addEventListener('click', (e) => {
             const btn = e.target.closest('.edit-btn');
             if (btn) {
-                const { id, page, name, magnet } = btn.dataset;
+                const { id, page } = btn.dataset;
+                const name = JSON.parse(btn.dataset.name);
+                const magnet = JSON.parse(btn.dataset.magnet);
                 showEditModal(id, page, name, magnet);
             }
         });

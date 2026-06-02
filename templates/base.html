@@ -68,6 +68,9 @@
                 <button onclick="open115Settings()" class="btn btn-outline-info btn-sm" title="115网盘设置">
                     ⚙️ 115设置
                 </button>
+                <button onclick="openWechatSettings()" class="btn btn-outline-success btn-sm" title="企业微信设置">
+                    💬 企业微信
+                </button>
                 <button id="themeToggle" class="theme-toggle btn btn-outline-secondary" title="切换主题">
                     🌙
                 </button>
@@ -148,6 +151,52 @@
                 </div>
                 <div class="modal-body" id="tasks115Body">
                     <p class="text-muted text-center">加载中...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 企业微信设置模态框 -->
+    <div class="modal fade" id="wechatSettingsModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">企业微信设置</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">企业ID (corpid)</label>
+                        <input type="text" id="wechatCorpid" class="form-control" placeholder="在企业微信管理后台查看">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">应用Secret (corpsecret)</label>
+                        <input type="password" id="wechatCorpsecret" class="form-control" placeholder="在应用管理页面查看">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">应用AgentId</label>
+                        <input type="text" id="wechatAgentid" class="form-control" placeholder="在应用管理页面查看">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Token</label>
+                        <input type="text" id="wechatToken" class="form-control" placeholder="在应用接收消息设置中获取">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">EncodingAESKey</label>
+                        <input type="text" id="wechatEncodingAesKey" class="form-control" placeholder="在应用接收消息设置中获取">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">回调URL</label>
+                        <div class="input-group">
+                            <input type="text" id="wechatCallbackUrl" class="form-control" readonly>
+                            <button class="btn btn-outline-secondary" onclick="copyWechatCallbackUrl()">复制</button>
+                        </div>
+                        <div class="form-text">将此URL填写到企业微信应用的"接收消息"设置中</div>
+                    </div>
+                    <div id="wechatStatus" class="mb-3"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary" onclick="saveWechatConfig()">保存</button>
                 </div>
             </div>
         </div>
@@ -378,6 +427,55 @@
             } catch (e) {
                 statusEl.innerHTML = '<span class="text-danger">验证请求失败</span>';
             }
+        }
+
+        async function openWechatSettings() {
+            try {
+                const resp = await fetch('/wechat/config');
+                const result = await resp.json();
+                if (result.corpid) document.getElementById('wechatCorpid').value = result.corpid;
+                if (result.agentid) document.getElementById('wechatAgentid').value = result.agentid;
+                if (result.token) document.getElementById('wechatToken').value = result.token;
+                if (result.encoding_aes_key) document.getElementById('wechatEncodingAesKey').value = result.encoding_aes_key;
+                const callbackUrl = window.location.origin + '/wechat/callback';
+                document.getElementById('wechatCallbackUrl').value = callbackUrl;
+                document.getElementById('wechatStatus').innerHTML = result.configured ?
+                    '<span class="text-success">已配置</span>' : '<span class="text-warning">未配置</span>';
+            } catch (e) {}
+            new bootstrap.Modal(document.getElementById('wechatSettingsModal')).show();
+        }
+
+        async function saveWechatConfig() {
+            const corpid = document.getElementById('wechatCorpid').value.trim();
+            const corpsecret = document.getElementById('wechatCorpsecret').value.trim();
+            const agentid = document.getElementById('wechatAgentid').value.trim();
+            const token = document.getElementById('wechatToken').value.trim();
+            const encoding_aes_key = document.getElementById('wechatEncodingAesKey').value.trim();
+            if (!corpid || !corpsecret) {
+                showToast('企业ID和应用Secret不能为空', 'danger');
+                return;
+            }
+            showLoading();
+            try {
+                const resp = await fetch('/wechat/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `corpid=${encodeURIComponent(corpid)}&corpsecret=${encodeURIComponent(corpsecret)}&agentid=${encodeURIComponent(agentid)}&token=${encodeURIComponent(token)}&encoding_aes_key=${encodeURIComponent(encoding_aes_key)}`
+                });
+                const result = await resp.json();
+                showToast(result.message, result.success ? 'success' : 'danger');
+                if (result.success) {
+                    bootstrap.Modal.getInstance(document.getElementById('wechatSettingsModal')).hide();
+                }
+            } catch (e) {
+                showToast('保存失败', 'danger');
+            }
+            hideLoading();
+        }
+
+        function copyWechatCallbackUrl() {
+            const url = document.getElementById('wechatCallbackUrl').value;
+            copyToClipboard(url);
         }
 
         let currentDirId = '0';

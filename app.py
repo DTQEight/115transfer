@@ -8,6 +8,7 @@ import zoneinfo
 import threading
 import hashlib
 import cloud115
+import wechat_work
 
 def get_beijing_time():
     """获取北京时间"""
@@ -399,6 +400,134 @@ def cloud115_set_save_path():
     path_id = request.form.get('path_id', '0')
     cloud115.set_default_save_path(path_id)
     return jsonify({'success': True, 'message': '默认保存目录已更新'})
+
+
+@app.route('/wechat/config', methods=['GET'])
+def wechat_get_config():
+    config = wechat_work.load_config()
+    return jsonify({
+        'success': True,
+        'corpid': config.get('corpid', ''),
+        'agentid': config.get('agentid', ''),
+        'token': config.get('token', ''),
+        'encoding_aes_key': config.get('encoding_aes_key', ''),
+        'configured': bool(config.get('corpid') and config.get('corpsecret'))
+    })
+
+
+@app.route('/wechat/config', methods=['POST'])
+def wechat_set_config():
+    corpid = request.form.get('corpid', '').strip()
+    corpsecret = request.form.get('corpsecret', '').strip()
+    agentid = request.form.get('agentid', '').strip()
+    token = request.form.get('token', '').strip()
+    encoding_aes_key = request.form.get('encoding_aes_key', '').strip()
+    if not corpid or not corpsecret:
+        return jsonify({'success': False, 'message': '企业ID和应用Secret不能为空'})
+    config = wechat_work.load_config()
+    config['corpid'] = corpid
+    config['corpsecret'] = corpsecret
+    if agentid:
+        config['agentid'] = agentid
+    if token:
+        config['token'] = token
+    if encoding_aes_key:
+        config['encoding_aes_key'] = encoding_aes_key
+    config.pop('access_token', None)
+    wechat_work.save_config(config)
+    return jsonify({'success': True, 'message': '企业微信配置保存成功'})
+
+
+@app.route('/wechat/callback', methods=['GET', 'POST'])
+def wechat_callback():
+    config = wechat_work.load_config()
+    token = config.get('token', '')
+    encoding_aes_key = config.get('encoding_aes_key', '')
+    corpid = config.get('corpid', '')
+
+    msg_signature = request.args.get('msg_signature', request.args.get('signature', ''))
+    timestamp = request.args.get('timestamp', '')
+    nonce = request.args.get('nonce', '')
+    echostr = request.args.get('echostr', '')
+
+    if not token:
+        return '未配置企业微信', 500
+
+    crypto = wechat_work.WeChatCrypto(token, encoding_aes_key, corpid) if encoding_aes_key else None
+
+    if request.method == 'GET':
+        if crypto and crypto.verify_signature(msg_signature, timestamp, nonce, echostr):
+            return echostr
+        return '签名验证失败', 403
+
+    try:
+        if crypto:
+            if not crypto.verify_signature(msg_signature, timestamp, nonce):
+                return '签名验证失败', 403
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(request.data)
+            encrypt_elem = root.find('Encrypt')
+            if encrypt_elem is not None:
+                decrypted, from_user = crypto.decrypt_message(encrypt_elem.text)
+                msg = wechat_work.parse_message(decrypted)
+            else:
+                msg = wechat_work.parse_message(request.data)
+        else:
+            msg = wechat_work.parse_message(request.data)
+
+        if not msg:
+            return 'success'
+
+        msg_type = msg.get('MsgType', '')
+        from_user = msg.get('FromUserName', '')
+        to_user = msg.get('ToUserName', '')
+
+        if msg_type == 'text':
+            content = msg.get('Content', '')
+            result = wechat_work.handle_text_message(content)
+
+            if isinstance(result, dict):
+                try:
+                    with data_lock:
+                        df = load_movies()
+                        page_df = df[df['页码'] == result['page']]
+                        new_id = int(page_df['序号'].max()) + 1 if not page_df.empty else 1
+                        new_movie = {
+                            '序号': new_id,
+                            '页码': result['page'],
+                            '电影名': result['name'],
+                            '磁力链接': result['magnet'],
+                            '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
+                        save_movies(df)
+                    reply = f'添加成功\n页码: {result["page"]}\n电影名: {result["name"]}'
+                except Exception as e:
+                    reply = f'添加失败: {str(e)}'
+            else:
+                reply = result
+
+            if crypto:
+                reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply, crypto)
+                return reply_xml, 200, {'Content-Type': 'application/xml'}
+            else:
+                reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply)
+                return reply_xml, 200, {'Content-Type': 'application/xml'}
+
+        elif msg_type == 'event':
+            event = msg.get('Event', '')
+            if event == 'subscribe':
+                reply = '欢迎使用115Transfer！\n发送"帮助"查看使用方法'
+                if crypto:
+                    reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply, crypto)
+                    return reply_xml, 200, {'Content-Type': 'application/xml'}
+                else:
+                    reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply)
+                    return reply_xml, 200, {'Content-Type': 'application/xml'}
+
+        return 'success'
+    except Exception as e:
+        return 'success'
 
 
 if __name__ == '__main__':

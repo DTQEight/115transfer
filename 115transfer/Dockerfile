@@ -7,11 +7,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
 COPY cloud115.py .
+COPY wechat_work.py .
 COPY templates/ templates/
 COPY VERSION .
 
 VOLUME /app/data
 
-EXPOSE 5000
+EXPOSE 3698
 
 CMD ["python", "app.py"]

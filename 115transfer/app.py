@@ -513,8 +513,41 @@ def wechat_callback():
             state = user_states.get(from_user)
 
             if content.lower().startswith('magnet:'):
-                success, msg_text = cloud115.add_offline_task(content)
-                reply = f'转存结果: {msg_text}'
+                cookie = cloud115.get_cookie_string()
+                if not cookie:
+                    reply = '未配置115 Cookie，请先在网页端配置'
+                    wechat_work.send_wechat_message('[115Transfer] 转存失败: 未配置115 Cookie，请及时处理')
+                else:
+                    success, msg_text = cloud115.add_offline_task(content)
+                    reply = f'转存结果: {msg_text}'
+                    if not success:
+                        wechat_work.send_wechat_message(f'[115Transfer] 转存失败: {msg_text}\n磁力链接: {content[:50]}...')
+            elif content.lower() in ['帮助', 'help', '?']:
+                if state:
+                    if state['action'] == 'batch_transfer':
+                        reply = '当前状态: 批量转存\n\n回复页码 - 将该页所有磁力链接转存到115\n回复"取消" - 退出批量转存'
+                    elif state['action'] == 'browse_dir':
+                        reply = '当前状态: 目录浏览\n\n回复序号 - 进入子目录\n回复"确认" - 设置为转存目录\n回复"新建" - 创建新目录\n回复"返回" - 回到上级目录\n回复"取消" - 退出目录浏览'
+                    elif state['action'] == 'create_dir_name':
+                        reply = '当前状态: 创建目录\n\n输入新目录名 - 创建目录\n回复"取消" - 取消创建'
+                    else:
+                        reply = '回复"帮助"查看使用说明'
+                else:
+                    reply = ('使用方法:\n'
+                             '页码 电影名 磁力链接 - 添加电影\n'
+                             '页码 - 查看该页电影\n'
+                             '搜索 电影名 - 搜索电影\n'
+                             '磁力链接 - 转存到115网盘\n\n'
+                             '菜单功能:\n'
+                             '查看电影 - 浏览电影列表\n'
+                             '批量转存 - 批量转存到115\n'
+                             '目录 - 管理115网盘目录')
+            elif content == '取消':
+                if state:
+                    del user_states[from_user]
+                    reply = '已取消操作'
+                else:
+                    reply = '没有正在进行的操作'
             elif state and state['action'] == 'batch_transfer':
                 if content.isdigit():
                     page_num = int(content)
@@ -536,6 +569,8 @@ def wechat_callback():
                             success_count = sum(1 for r in results if r['success'])
                             fail_count = len(results) - success_count
                             reply = f'批量转存完成\n页码: {page_num}\n成功: {success_count}\n失败: {fail_count}'
+                            if fail_count > 0:
+                                wechat_work.send_wechat_message(f'[115Transfer] 批量转存部分失败\n页码: {page_num}\n成功: {success_count}\n失败: {fail_count}')
                     del user_states[from_user]
                 else:
                     reply = '请输入页码数字'
@@ -648,6 +683,7 @@ def wechat_callback():
                 else:
                     reply = result
 
+            reply = wechat_work.truncate_reply(reply)
             print(f'[WeChat Reply] To: {from_user}, From: {to_user}, Content: {reply[:50]}', flush=True)
             if crypto:
                 reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply, crypto)

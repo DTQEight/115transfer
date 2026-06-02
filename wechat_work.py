@@ -52,6 +52,33 @@ def get_access_token():
         return None, str(e)
 
 
+def send_wechat_message(content, to_user='@all'):
+    token, err = get_access_token()
+    if not token:
+        return False, err
+
+    config = load_config()
+    agentid = config.get('agentid', '')
+    if not agentid:
+        return False, '未配置AgentId'
+
+    try:
+        url = f'https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}'
+        data = {
+            'touser': to_user,
+            'msgtype': 'text',
+            'agentid': int(agentid),
+            'text': {'content': content}
+        }
+        resp = requests.post(url, json=data, timeout=10)
+        result = resp.json()
+        if result.get('errcode') == 0:
+            return True, '发送成功'
+        return False, result.get('errmsg', '发送失败')
+    except Exception as e:
+        return False, str(e)
+
+
 class WeChatCrypto:
     def __init__(self, token, encoding_aes_key, corp_id):
         self.token = token
@@ -135,6 +162,16 @@ def build_reply_xml(to_user, from_user, content, crypto=None):
 </xml>"""
     else:
         return reply_msg
+
+
+def truncate_reply(text, max_bytes=2000):
+    encoded = text.encode('utf-8')
+    if len(encoded) <= max_bytes:
+        return text
+    truncated = encoded[:max_bytes - 3]
+    while truncated and (truncated[-1] & 0xC0) == 0x80:
+        truncated = truncated[:-1]
+    return truncated.decode('utf-8', errors='ignore') + '...'
 
 
 def create_menu(agentid):

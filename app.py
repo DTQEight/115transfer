@@ -531,11 +531,13 @@ def wechat_callback():
             else:
                 reply = result
 
+            print(f'[WeChat Reply] To: {to_user}, From: {from_user}, Content: {reply[:50]}', flush=True)
             if crypto:
-                reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply, crypto)
+                reply_xml = wechat_work.build_reply_xml(to_user, from_user, reply, crypto)
+                print(f'[WeChat Reply] XML: {reply_xml[:200]}', flush=True)
                 return reply_xml, 200, {'Content-Type': 'application/xml'}
             else:
-                reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply)
+                reply_xml = wechat_work.build_reply_xml(to_user, from_user, reply)
                 return reply_xml, 200, {'Content-Type': 'application/xml'}
 
         elif msg_type == 'event':
@@ -543,10 +545,10 @@ def wechat_callback():
             if event == 'subscribe':
                 reply = '欢迎使用115Transfer！\n发送"帮助"查看使用方法'
                 if crypto:
-                    reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply, crypto)
+                    reply_xml = wechat_work.build_reply_xml(to_user, from_user, reply, crypto)
                     return reply_xml, 200, {'Content-Type': 'application/xml'}
                 else:
-                    reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply)
+                    reply_xml = wechat_work.build_reply_xml(to_user, from_user, reply)
                     return reply_xml, 200, {'Content-Type': 'application/xml'}
 
         return 'success'

@@ -1,9 +1,9 @@
 services:
-  movie-manager:
-    image: ghcr.io/dtqeight/movie-manager:latest
-    container_name: movie-manager
+  115transfer:
+    image: ghcr.io/dtqeight/115transfer:master
+    container_name: 115transfer
     ports:
-      - "5000:5000"
+      - "3698:3698"
     volumes:
       - ./data:/app/data
     restart: unless-stopped
@@ -11,3 +11,4 @@ services:
       - FLASK_DEBUG=false
       - TZ=Asia/Shanghai
       - DATA_DIR=/app/data
+      - PYTHONUNBUFFERED=1

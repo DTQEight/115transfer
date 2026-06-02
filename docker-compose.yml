@@ -11,3 +11,4 @@ services:
       - FLASK_DEBUG=false
       - TZ=Asia/Shanghai
       - DATA_DIR=/app/data
+      - PYTHONUNBUFFERED=1

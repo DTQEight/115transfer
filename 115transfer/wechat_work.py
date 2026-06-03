@@ -225,10 +225,10 @@ def handle_text_message(content):
             return {'page': page, 'name': name, 'magnet': magnet}
 
     lines = content.split('\n')
-    if len(lines) >= 3:
+    if len(lines) >= 2:
         page = lines[0].strip()
         name = lines[1].strip()
-        magnet = lines[2].strip()
+        magnet = lines[2].strip() if len(lines) >= 3 else ''
         try:
             page = int(page)
         except (ValueError, TypeError):
@@ -239,9 +239,10 @@ def handle_text_message(content):
     elif content.lower() in ['帮助', 'help', '?']:
         return ('使用方法:\n'
                 '格式1: 页码 电影名 磁力链接\n'
-                '格式2: 页码\\n电影名\\n磁力链接\n'
+                '格式2: 页码\\n电影名\\n磁力链接(可留空)\n'
                 '搜索: 搜索 电影名\n'
                 '示例:\n'
-                '1 电影名 magnet:?xt=...')
+                '1 电影名 magnet:?xt=...\n'
+                '1\\n电影名')
     else:
         return '格式错误，请按以下格式发送:\n页码 电影名 磁力链接\n搜索: 搜索 电影名\n\n发送"帮助"查看详细说明'

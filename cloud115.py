@@ -197,3 +197,97 @@ def create_dir(parent_cid, dir_name):
         return False, f'创建失败: {result.get("error", "未知错误")}'
     except Exception as e:
         return False, f'创建失败: {str(e)}'
+
+
+VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.ts', '.m2ts', '.mpg', '.mpeg', '.webm', '.m4v', '.rmvb', '.iso'}
+
+
+def is_video_file(filename):
+    """判断是否为视频文件"""
+    name = filename.lower()
+    return any(name.endswith(ext) for ext in VIDEO_EXTENSIONS)
+
+
+def list_files(cid='0', offset=0, limit=100, show_dir=1):
+    """列出目录下的文件和子目录"""
+    cookie = get_cookie_string()
+    if not cookie:
+        return False, '未配置115 Cookie', []
+
+    try:
+        url = f'https://webapi.115.com/files?aid=1&cid={cid}&o=user_utime&asc=0&offset={offset}&show_dir={show_dir}&snap=0&natsort=1&format=json&limit={limit}'
+        resp = requests.get(url, headers=_get_headers(), timeout=15)
+
+        if resp.status_code != 200:
+            return False, f'请求失败，状态码: {resp.status_code}', []
+
+        data = resp.json()
+        if data.get('errno') == 0 or data.get('state') is True:
+            items = []
+            raw = data.get('data', [])
+            if isinstance(raw, list):
+                for item in raw:
+                    if not isinstance(item, dict):
+                        continue
+                    is_dir = item.get('cid') and not item.get('fid')
+                    if is_dir:
+                        items.append({
+                            'type': 'dir',
+                            'cid': str(item['cid']),
+                            'name': item.get('n', ''),
+                            'parent_id': str(item.get('pid', cid)),
+                        })
+                    elif item.get('fid'):
+                        items.append({
+                            'type': 'file',
+                            'fid': str(item['fid']),
+                            'name': item.get('n', ''),
+                            'size': int(item.get('s', 0)),
+                            'pickcode': item.get('pc', ''),
+                            'parent_id': str(item.get('pid', cid)),
+                        })
+            return True, '获取成功', items
+        return False, f'获取列表失败: {data.get("error", "未知错误")}', []
+    except Exception as e:
+        return False, f'获取失败: {str(e)}', []
+
+
+def move_files(file_ids, target_cid):
+    """批量移动文件到目标目录"""
+    cookie = get_cookie_string()
+    if not cookie:
+        return False, '未配置115 Cookie'
+
+    try:
+        url = 'https://webapi.115.com/files/move'
+        data = {'pid': target_cid}
+        for i, fid in enumerate(file_ids):
+            data[f'fid[{i}]'] = fid
+        resp = requests.post(url, headers=_get_headers(), data=data, timeout=30)
+        if not resp:
+            return False, '请求失败'
+        result = resp.json()
+        if result.get('errno') == 0 or result.get('state') is True:
+            return True, '移动成功'
+        return False, f'移动失败: {result.get("error", "未知错误")}'
+    except Exception as e:
+        return False, f'移动失败: {str(e)}'
+
+
+def get_video_files_recursive(cid, max_depth=5, current_depth=0):
+    """递归获取目录下所有视频文件"""
+    if current_depth >= max_depth:
+        return []
+
+    video_files = []
+    success, msg, items = list_files(cid, show_dir=1)
+    if not success:
+        return video_files
+
+    for item in items:
+        if item['type'] == 'dir':
+            video_files.extend(get_video_files_recursive(item['cid'], max_depth, current_depth + 1))
+        elif item['type'] == 'file' and is_video_file(item['name']):
+            video_files.append(item)
+
+    return video_files

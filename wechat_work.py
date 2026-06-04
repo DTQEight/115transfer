@@ -224,6 +224,14 @@ def handle_text_message(content):
             name = page_match.group(2).strip()
             return {'page': page, 'name': name, 'magnet': magnet}
 
+    # 单行格式：页码 电影名（无磁力链接）
+    single_match = re.match(r'^(\d+)\s+(.+)$', content)
+    if single_match:
+        page = int(single_match.group(1))
+        name = single_match.group(2).strip()
+        if name:
+            return {'page': page, 'name': name, 'magnet': ''}
+
     lines = content.split('\n')
     if len(lines) >= 2:
         page = lines[0].strip()

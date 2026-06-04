@@ -274,7 +274,7 @@ def move_files(file_ids, target_cid):
         return False, f'移动失败: {str(e)}'
 
 
-def get_video_files_recursive(cid, max_depth=5, current_depth=0):
+def get_video_files_recursive(cid, max_depth=5, current_depth=0, folder_name=''):
     """递归获取目录下所有视频文件"""
     if current_depth >= max_depth:
         return []
@@ -286,8 +286,9 @@ def get_video_files_recursive(cid, max_depth=5, current_depth=0):
 
     for item in items:
         if item['type'] == 'dir':
-            video_files.extend(get_video_files_recursive(item['cid'], max_depth, current_depth + 1))
+            video_files.extend(get_video_files_recursive(item['cid'], max_depth, current_depth + 1, folder_name=item['name']))
         elif item['type'] == 'file' and is_video_file(item['name']):
+            item['folder_name'] = folder_name
             video_files.append(item)
 
     return video_files

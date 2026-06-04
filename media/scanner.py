@@ -88,14 +88,24 @@ def scan_115_directory(cid, recursive=True):
     result = []
     for f in video_files:
         parsed = parse_media_name(f['name'])
+        folder = f.get('folder_name', '')
+        # 如果有文件夹名，也解析一下
+        folder_parsed = parse_media_name(folder) if folder else None
+        # 优先用文件夹名的中文作为搜索名（文件夹名通常是电影中文名）
+        search_name = parsed['cleaned_name']
+        if folder_parsed and folder_parsed['cleaned_name']:
+            # 如果文件夹名包含中文，优先用文件夹名
+            if re.search(r'[\u4e00-\u9fff]', folder_parsed['cleaned_name']):
+                search_name = folder_parsed['cleaned_name']
         result.append({
             'fid': f['fid'],
             'name': f['name'],
             'size': f.get('size', 0),
             'pickcode': f.get('pickcode', ''),
             'parent_id': f.get('parent_id', cid),
-            'cleaned_name': parsed['cleaned_name'],
-            'year': parsed['year'],
+            'folder_name': folder,
+            'cleaned_name': search_name,
+            'year': parsed['year'] or (folder_parsed['year'] if folder_parsed else None),
         })
 
     return result

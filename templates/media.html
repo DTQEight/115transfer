@@ -174,6 +174,29 @@
         </div>
     </div>
 </div>
+
+<!-- 手动识别模态框 -->
+<div class="modal fade" id="manualSearchModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-search me-2"></i>手动识别</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="input-group mb-3">
+                    <input type="text" id="manualSearchQuery" class="form-control" placeholder="输入电影/电视剧名称搜索" onkeydown="if(event.key==='Enter')manualSearch()">
+                    <button class="btn btn-primary" onclick="manualSearch()">
+                        <i class="bi bi-search me-1"></i>搜索
+                    </button>
+                </div>
+                <div id="manualSearchResults" style="max-height: 400px; overflow-y: auto;">
+                    <p class="text-muted text-center">输入名称后点击搜索</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_script %}
@@ -181,6 +204,7 @@ var mediaDirStack = [{id: '0', name: '根目录'}];
 var organizeModalDirStack = [{id: '0', name: '根目录'}];
 var scannedFiles = [];
 var identifiedResults = [];
+var manualSearchIndex = -1;
 
 async function loadTmdbKey() {
     try {
@@ -397,7 +421,8 @@ function renderIdentifiedResults() {
                 <td title="${item.name}">${item.name.length > 40 ? item.name.substring(0, 40) + '...' : item.name}</td>
                 <td class="text-muted">未识别</td>
                 <td class="text-muted">-</td>
-                <td><button class="btn btn-outline-primary btn-sm" onclick="identifySingle(${i})"><i class="bi bi-magic"></i></button></td>
+                <td><button class="btn btn-outline-primary btn-sm" onclick="identifySingle(${i})"><i class="bi bi-magic"></i></button>
+                    <button class="btn btn-outline-warning btn-sm ms-1" onclick="openManualSearch(${i})" title="手动识别"><i class="bi bi-pencil-square"></i></button></td>
             </tr>`;
         } else {
             const tmdb = item.tmdb;
@@ -421,6 +446,7 @@ function renderIdentifiedResults() {
                 </td>
                 <td>
                     <button class="btn btn-outline-primary btn-sm" onclick="identifySingle(${i})" title="重新识别"><i class="bi bi-arrow-repeat"></i></button>
+                    <button class="btn btn-outline-warning btn-sm ms-1" onclick="openManualSearch(${i})" title="手动识别"><i class="bi bi-pencil-square"></i></button>
                 </td>
             </tr>`;
         }
@@ -450,6 +476,7 @@ async function organizeAll() {
                 name: item.name,
                 primary: item.primary,
                 secondary: item.secondary,
+                parent_id: item.parent_id || '',
             });
         }
     });
@@ -460,12 +487,13 @@ async function organizeAll() {
     }
 
     const rootCid = document.getElementById('organizeRootCid').value || '0';
+    const sourceCid = mediaDirStack[mediaDirStack.length - 1].id;
     showLoading();
     try {
         const resp = await fetch('/media/organize', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({files: fileList, root_cid: rootCid})
+            body: JSON.stringify({files: fileList, root_cid: rootCid, source_cid: sourceCid})
         });
         const result = await resp.json();
         showToast(result.message, result.success ? 'success' : 'danger');
@@ -479,6 +507,76 @@ async function organizeAll() {
         showToast('整理失败', 'danger');
     }
     hideLoading();
+}
+
+// 手动识别
+function openManualSearch(index) {
+    manualSearchIndex = index;
+    const file = scannedFiles[index];
+    document.getElementById('manualSearchQuery').value = file.cleaned_name;
+    document.getElementById('manualSearchResults').innerHTML = '<p class="text-muted text-center">输入名称后点击搜索</p>';
+    new bootstrap.Modal(document.getElementById('manualSearchModal')).show();
+}
+
+async function manualSearch() {
+    const query = document.getElementById('manualSearchQuery').value.trim();
+    if (!query) {
+        showToast('请输入搜索名称', 'danger');
+        return;
+    }
+    const listEl = document.getElementById('manualSearchResults');
+    listEl.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>搜索中...</p>';
+    try {
+        const resp = await fetch('/media/search', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: `query=${encodeURIComponent(query)}`
+        });
+        const result = await resp.json();
+        if (!result.success || !result.results || result.results.length === 0) {
+            listEl.innerHTML = '<p class="text-muted text-center">未找到结果</p>';
+            return;
+        }
+        let html = '<div class="list-group">';
+        result.results.forEach((r, i) => {
+            const posterUrl = r.poster_path ? `https://image.tmdb.org/t/p/w92${r.poster_path}` : '';
+            const typeLabel = r.media_type === 'tv' ? '电视剧' : '电影';
+            html += `<button type="button" class="list-group-item list-group-item-action" onclick="selectManualResult(${i})">
+                <div class="d-flex align-items-center">
+                    ${posterUrl ? `<img src="${posterUrl}" class="rounded me-3" style="height: 60px;">` : ''}
+                    <div>
+                        <span class="fw-bold">${r.title}</span>
+                        <span class="text-muted ms-1">(${r.year || '?'})</span>
+                        <span class="badge bg-secondary ms-2">${typeLabel}</span>
+                        <br><span class="text-muted small">${r.genres ? r.genres.join(' / ') : ''}</span>
+                        ${r.original_title !== r.title ? `<br><span class="text-muted small">${r.original_title}</span>` : ''}
+                    </div>
+                </div>
+            </button>`;
+        });
+        html += '</div>';
+        listEl.innerHTML = html;
+        // 存储搜索结果供选择
+        window._manualSearchResults = result.results;
+    } catch (e) {
+        listEl.innerHTML = '<p class="text-danger text-center">搜索失败</p>';
+    }
+}
+
+function selectManualResult(resultIndex) {
+    const results = window._manualSearchResults;
+    if (!results || !results[resultIndex]) return;
+    const r = results[resultIndex];
+    identifiedResults[manualSearchIndex] = {
+        ...scannedFiles[manualSearchIndex],
+        tmdb: r,
+        primary: r.primary || '',
+        secondary: r.secondary || '',
+        identified: true,
+    };
+    renderIdentifiedResults();
+    bootstrap.Modal.getInstance(document.getElementById('manualSearchModal')).hide();
+    showToast(`已手动识别: ${r.title}`, 'success');
 }
 
 // 目录选择（分类根目录）

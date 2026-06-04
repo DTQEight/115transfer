@@ -900,14 +900,51 @@ def media_identify():
     })
 
 
+@app.route('/media/search', methods=['POST'])
+def media_search():
+    """手动搜索TMDB，返回多个结果供选择"""
+    query = request.form.get('query', '').strip()
+    year = request.form.get('year', '').strip()
+    if not query:
+        return jsonify({'success': False, 'message': '请输入搜索名称'})
+    year_int = int(year) if year.isdigit() else None
+    from media.tmdb import search_multi
+    results, err = search_multi(query, year=year_int)
+    if err:
+        return jsonify({'success': False, 'message': err})
+    # 取前10个结果，补充详情
+    output = []
+    for r in results[:10]:
+        media_type = r.get('media_type', 'movie')
+        item = {
+            'tmdb_id': r.get('id'),
+            'media_type': media_type,
+            'title': r.get('title') or r.get('name', ''),
+            'original_title': r.get('original_title') or r.get('original_name', ''),
+            'year': (r.get('release_date') or r.get('first_air_date') or '')[:4],
+            'genres': [],
+            'genre_ids': r.get('genre_ids', []),
+            'original_language': r.get('original_language', ''),
+            'production_countries': [],
+            'poster_path': r.get('poster_path', ''),
+            'vote_average': r.get('vote_average', 0),
+        }
+        primary, secondary = classify(item)
+        item['primary'] = primary
+        item['secondary'] = secondary
+        output.append(item)
+    return jsonify({'success': True, 'results': output, 'count': len(output)})
+
+
 @app.route('/media/organize', methods=['POST'])
 def media_organize():
     data = request.get_json(force=True, silent=True) or {}
     file_list = data.get('files', [])
     root_cid = data.get('root_cid', '0')
+    source_cid = data.get('source_cid', '0')
     if not file_list:
         return jsonify({'success': False, 'message': '没有要整理的文件'})
-    results = organize_files(file_list, root_cid)
+    results = organize_files(file_list, root_cid, source_cid)
     return jsonify({
         'success': True,
         'message': f'整理完成: 成功 {len(results["success"])} 个, 失败 {len(results["failed"])} 个',

@@ -2,6 +2,7 @@
 import requests
 import os
 import json
+import re
 
 TMDB_BASE_URL = 'https://api.themoviedb.org/3'
 
@@ -27,13 +28,15 @@ def set_tmdb_api_key(api_key):
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 
-def search_multi(query, language='zh-CN'):
-    """搜索电影/电视剧（多类型搜索）"""
+def search_multi(query, year=None, language='zh-CN'):
+    """搜索电影/电视剧（多类型搜索），可选年份筛选"""
     api_key = get_tmdb_api_key()
     if not api_key:
         return None, '未配置TMDB API Key'
 
     try:
+        all_results = []
+        # 通用搜索
         url = f'{TMDB_BASE_URL}/search/multi'
         params = {
             'api_key': api_key,
@@ -43,13 +46,40 @@ def search_multi(query, language='zh-CN'):
         }
         resp = requests.get(url, params=params, timeout=15)
         data = resp.json()
+        if resp.status_code == 200:
+            for r in data.get('results', []):
+                if r.get('media_type') in ('movie', 'tv'):
+                    all_results.append(r)
 
-        if resp.status_code != 200:
-            return None, data.get('status_message', '搜索失败')
+        # 如果有年份，额外用年份精确搜索
+        if year and str(year).isdigit():
+            for endpoint, year_key in [('movie', 'primary_release_year'), ('tv', 'first_air_date_year')]:
+                try:
+                    url = f'{TMDB_BASE_URL}/search/{endpoint}'
+                    params = {
+                        'api_key': api_key,
+                        'query': query,
+                        'language': language,
+                        year_key: int(year),
+                        'page': 1,
+                    }
+                    resp = requests.get(url, params=params, timeout=15)
+                    if resp.status_code == 200:
+                        for r in resp.json().get('results', []):
+                            r['media_type'] = endpoint
+                            if r.get('id') not in [x.get('id') for x in all_results]:
+                                all_results.append(r)
+                except Exception:
+                    pass
 
-        results = data.get('results', [])
-        filtered = [r for r in results if r.get('media_type') in ('movie', 'tv')]
-        return filtered, None
+        # 去重并按年份排序（有年份的优先匹配）
+        if year and str(year).isdigit():
+            def year_score(r):
+                r_year = (r.get('release_date') or r.get('first_air_date') or '')[:4]
+                return 0 if r_year == str(year) else 1
+            all_results.sort(key=year_score)
+
+        return all_results, None
     except Exception as e:
         return None, f'搜索失败: {str(e)}'
 
@@ -89,16 +119,39 @@ def get_tv_detail(tv_id, language='zh-CN'):
 
 
 def identify_media(name, year=None):
-    """自动识别媒体"""
-    results, err = search_multi(name)
+    """自动识别媒体，多策略搜索"""
+    # 策略1: 原始名称搜索（带年份）
+    results, err = search_multi(name, year=year)
     if err:
         return None, err
+
+    # 策略2: 去掉括号内容
     if not results:
         cleaned = name.split('（')[0].split('(')[0].strip()
-        if cleaned != name:
-            results, err = search_multi(cleaned)
+        if cleaned != name and cleaned:
+            results, err = search_multi(cleaned, year=year)
             if err:
                 return None, err
+
+    # 策略3: 取中文部分（如果有中英混合）
+    if not results:
+        cn_match = re.search(r'([\u4e00-\u9fff]+)', name)
+        if cn_match:
+            cn_name = cn_match.group(1)
+            if cn_name != name and len(cn_name) >= 2:
+                results, err = search_multi(cn_name, year=year)
+                if err:
+                    return None, err
+
+    # 策略4: 取英文部分（如果有中英混合）
+    if not results:
+        en_match = re.search(r'([A-Za-z][A-Za-z\s\.]+)', name)
+        if en_match:
+            en_name = en_match.group(1).strip().replace('.', ' ')
+            if en_name and len(en_name) >= 3 and en_name != name:
+                results, err = search_multi(en_name, year=year)
+                if err:
+                    return None, err
 
     if not results:
         return None, '未找到匹配结果'

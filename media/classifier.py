@@ -12,7 +12,7 @@ CATEGORY_CONFIG = {
                 'condition': lambda m: 99 in (m.get('genre_ids') or []),
             },
             {
-                'name': '国语电影',
+                'name': '华语电影',
                 'condition': lambda m: (m.get('original_language') or '') in ('zh', 'cn', 'bo', 'za')
                     or any(c in ('CN', 'HK', 'TW') for c in (m.get('production_countries') or [])),
             },
@@ -22,24 +22,41 @@ CATEGORY_CONFIG = {
     'tv': {
         'rules': [
             {
-                'name': '动漫',
-                'condition': lambda m: 16 in (m.get('genre_ids') or []),
-            },
-            {
                 'name': '纪录片',
                 'condition': lambda m: 99 in (m.get('genre_ids') or []),
             },
             {
-                'name': '综艺',
-                'condition': lambda m: any(gid in (10764, 10767) for gid in (m.get('genre_ids') or [])),
+                'name': '儿童',
+                'condition': lambda m: 10762 in (m.get('genre_ids') or []),
+            },
+            {
+                'name': '日番',
+                'condition': lambda m: 16 in (m.get('genre_ids') or [])
+                    and ((m.get('original_language') or '') == 'ja'
+                         or any(c == 'JP' for c in (m.get('production_countries') or []))),
+            },
+            {
+                'name': '国漫',
+                'condition': lambda m: 16 in (m.get('genre_ids') or [])
+                    and ((m.get('original_language') or '') in ('zh', 'cn')
+                         or any(c in ('CN', 'HK', 'TW') for c in (m.get('production_countries') or []))),
             },
             {
                 'name': '国产剧',
-                'condition': lambda m: any(c in ('CN', 'HK', 'TW') for c in (m.get('production_countries') or []))
-                    or (m.get('original_language') or '') in ('zh', 'cn'),
+                'condition': lambda m: (m.get('original_language') or '') in ('zh', 'cn')
+                    or any(c in ('CN', 'HK', 'TW') for c in (m.get('production_countries') or [])),
+            },
+            {
+                'name': '日韩剧',
+                'condition': lambda m: (m.get('original_language') or '') in ('ja', 'ko')
+                    or any(c in ('JP', 'KR') for c in (m.get('production_countries') or [])),
+            },
+            {
+                'name': '欧美剧',
+                'condition': lambda m: any(c in ('US', 'GB', 'FR', 'DE', 'CA', 'AU', 'IT', 'ES') for c in (m.get('production_countries') or [])),
             },
         ],
-        'default': '外语剧',
+        'default': '欧美剧',
     },
 }
 
@@ -67,6 +84,6 @@ def classify(media_info):
 def get_all_categories():
     """获取所有分类配置"""
     return {
-        '电影': ['国语电影', '外语电影', '动画电影', '纪录片'],
-        '电视剧': ['国产剧', '外语剧', '动漫', '综艺', '纪录片'],
+        '电影': ['华语电影', '外语电影', '动画电影', '纪录片'],
+        '电视剧': ['日番', '国漫', '国产剧', '日韩剧', '欧美剧', '儿童', '纪录片'],
     }

@@ -34,6 +34,7 @@ def parse_media_name(filename):
     # 清理常见标签
     clean_patterns = [
         r'\[.*?\]',
+        r'\(.*?\)',
         r'S\d{1,2}E\d{1,3}',
         r'S\d{1,2}\b',
         r'EP?\d{1,4}\b',
@@ -41,15 +42,20 @@ def parse_media_name(filename):
         r'BluRay|WEB-DL|WEBRip|HDRip|DVDRip|BDRip|REMUX',
         r'x264|x265|H\.?264|H\.?265|HEVC|AVC|10bit|8bit',
         r'AAC|DTS[-\s]?(?:HD|X)?|FLAC|AC3|Atmos|TrueHD|DD[P+]?\s*\d\.\d',
+        r'\d+[Aa]udio',
         r'AMZN|NF|Netflix|iQIYI|Bilibili',
-        r'国粤|国语|中字|中英|简繁|双语',
+        r'国粤|国语|中字|中英|简繁|双语|多音轨|多国语|特效字幕',
         r'未删减|加长版|导演剪辑|剧场版',
         r'\bCC\b|\bSUBBED\b|\bEXTENDED\b|\bREPACK\b',
+        r'\bIMAX\b|\bIMDb\b',
     ]
 
     cleaned = name
     for pattern in clean_patterns:
         cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+
+    # 去掉末尾发行组名（最后一个 - 后面的纯字母大写串）
+    cleaned = re.sub(r'[-\.][A-Z]{2,}$', '', cleaned)
 
     # 清理多余符号和年份
     cleaned = re.sub(r'[._\-]+', ' ', cleaned).strip()

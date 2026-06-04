@@ -1,0 +1,544 @@
+{% extends "base.html" %}
+{% block title %}115网盘整理 - 115Transfer{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+    <!-- TMDB设置 -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-key me-2"></i>TMDB设置
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label">TMDB API Key</label>
+                    <div class="input-group">
+                        <input type="password" id="tmdbKey" class="form-control" placeholder="输入TMDB API Key">
+                        <button class="btn btn-outline-secondary" onclick="toggleTmdbKeyVisibility()">
+                            <i class="bi bi-eye" id="tmdbKeyIcon"></i>
+                        </button>
+                    </div>
+                    <div class="form-text">在 <a href="https://www.themoviedb.org/settings/api" target="_blank">TMDB</a> 申请API Key</div>
+                </div>
+                <button class="btn btn-primary btn-sm" onclick="saveTmdbKey()">
+                    <i class="bi bi-save me-1"></i>保存
+                </button>
+                <span id="tmdbKeyStatus" class="ms-2 small"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 分类结构 -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-diagram-3 me-2"></i>分类结构
+            </div>
+            <div class="card-body">
+                <div id="categoryTree">
+                    <div class="row">
+                        <div class="col-6">
+                            <div class="fw-bold text-primary mb-2"><i class="bi bi-film me-1"></i>电影</div>
+                            <ul class="list-unstyled ms-3 small">
+                                <li><i class="bi bi-folder2 text-warning me-1"></i>国语电影</li>
+                                <li><i class="bi bi-folder2 text-warning me-1"></i>外语电影</li>
+                                <li><i class="bi bi-folder2 text-warning me-1"></i>动画电影</li>
+                                <li><i class="bi bi-folder2 text-warning me-1"></i>纪录片</li>
+                            </ul>
+                        </div>
+                        <div class="col-6">
+                            <div class="fw-bold text-success mb-2"><i class="bi bi-tv me-1"></i>电视剧</div>
+                            <ul class="list-unstyled ms-3 small">
+                                <li><i class="bi bi-folder2 text-warning me-1"></i>国产剧</li>
+                                <li><i class="bi bi-folder2 text-warning me-1"></i>外语剧</li>
+                                <li><i class="bi bi-folder2 text-warning me-1"></i>动漫</li>
+                                <li><i class="bi bi-folder2 text-warning me-1"></i>综艺</li>
+                                <li><i class="bi bi-folder2 text-warning me-1"></i>纪录片</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 扫描目录 -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-search me-2"></i>扫描115目录</span>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-outline-secondary btn-sm" onclick="mediaNavigateToParent()">
+                        <i class="bi bi-arrow-left me-1"></i>返回上级
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="mediaBreadcrumb" class="mb-2 text-muted small">根目录</div>
+                <div class="row">
+                    <div class="col-md-4">
+                        <div id="mediaDirList" style="max-height: 400px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 0.5rem;">
+                            <p class="text-muted text-center">加载中...</p>
+                        </div>
+                    </div>
+                    <div class="col-md-8">
+                        <div class="d-flex justify-content-between mb-2">
+                            <span id="mediaFileCount" class="text-muted small">扫描当前目录的视频文件</span>
+                            <div class="d-flex gap-2">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="recursiveSwitch" checked>
+                                    <label class="form-check-label small" for="recursiveSwitch">递归子目录</label>
+                                </div>
+                                <button class="btn btn-success btn-sm" onclick="scanCurrentDir()">
+                                    <i class="bi bi-search me-1"></i>扫描
+                                </button>
+                            </div>
+                        </div>
+                        <div id="mediaFileList" style="max-height: 400px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 0.5rem;">
+                            <p class="text-muted text-center">选择目录后点击"扫描"</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 识别结果 -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-collection-play me-2"></i>识别结果</span>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-primary btn-sm" onclick="identifyAll()">
+                        <i class="bi bi-magic me-1"></i>批量识别
+                    </button>
+                    <button class="btn btn-success btn-sm" onclick="organizeAll()">
+                        <i class="bi bi-folder-symlink me-1"></i>批量整理
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label small">分类根目录 (115 CID)</label>
+                    <div class="input-group">
+                        <input type="text" id="organizeRootCid" class="form-control form-control-sm" value="0" placeholder="0 = 根目录">
+                        <button class="btn btn-outline-primary btn-sm" onclick="openOrganizeDirBrowser()">
+                            <i class="bi bi-folder2-open"></i> 选择
+                        </button>
+                        <span id="organizeRootName" class="input-group-text small">根目录</span>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th style="width: 30px"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
+                                <th>文件名</th>
+                                <th>识别结果</th>
+                                <th>分类</th>
+                                <th style="width: 60px">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="identifyResults">
+                            <tr><td colspan="5" class="text-muted text-center">扫描文件后进行识别</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 目录选择模态框 -->
+<div class="modal fade" id="organizeDirModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-folder2 me-2"></i>选择分类根目录</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="organizeModalBreadcrumb" class="mb-2 text-muted small">根目录</div>
+                <div id="organizeModalDirList" style="max-height: 300px; overflow-y: auto;">
+                    <p class="text-muted text-center">加载中...</p>
+                </div>
+            </div>
+            <div class="modal-footer justify-content-between">
+                <button class="btn btn-outline-secondary btn-sm" onclick="organizeModalNavigateToParent()">
+                    <i class="bi bi-arrow-left me-1"></i>返回上级
+                </button>
+                <button class="btn btn-primary" onclick="confirmOrganizeDir()">
+                    <i class="bi bi-check-lg me-1"></i>选择此目录
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_script %}
+var mediaDirStack = [{id: '0', name: '根目录'}];
+var organizeModalDirStack = [{id: '0', name: '根目录'}];
+var scannedFiles = [];
+var identifiedResults = [];
+
+async function loadTmdbKey() {
+    try {
+        const resp = await fetch('/media/tmdb_key');
+        const result = await resp.json();
+        if (result.key) {
+            document.getElementById('tmdbKey').value = result.key;
+            document.getElementById('tmdbKeyStatus').innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> 已配置</span>';
+        }
+    } catch (e) {}
+}
+
+async function saveTmdbKey() {
+    const key = document.getElementById('tmdbKey').value.trim();
+    showLoading();
+    try {
+        const resp = await fetch('/media/tmdb_key', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: `key=${encodeURIComponent(key)}`
+        });
+        const result = await resp.json();
+        showToast(result.message, result.success ? 'success' : 'danger');
+        if (result.success) {
+            document.getElementById('tmdbKeyStatus').innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> 已保存</span>';
+        }
+    } catch (e) {
+        showToast('保存失败', 'danger');
+    }
+    hideLoading();
+}
+
+function toggleTmdbKeyVisibility() {
+    const input = document.getElementById('tmdbKey');
+    const icon = document.getElementById('tmdbKeyIcon');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.className = 'bi bi-eye-slash';
+    } else {
+        input.type = 'password';
+        icon.className = 'bi bi-eye';
+    }
+}
+
+async function loadMediaDirs(cid) {
+    const listEl = document.getElementById('mediaDirList');
+    listEl.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>加载中...</p>';
+    try {
+        const resp = await fetch(`/media/browse?cid=${cid}`);
+        const result = await resp.json();
+        if (result.success) {
+            const dirs = result.items.filter(i => i.type === 'dir');
+            if (dirs.length > 0) {
+                let html = '<div class="list-group">';
+                dirs.forEach(dir => {
+                    html += `<button type="button" class="list-group-item list-group-item-action rounded-2 mb-1" onclick="mediaNavigateToDir('${dir.cid}', '${dir.name.replace(/'/g, "\\'")}')">
+                        <i class="bi bi-folder2 me-2 text-warning"></i>${dir.name}
+                    </button>`;
+                });
+                html += '</div>';
+                listEl.innerHTML = html;
+            } else {
+                listEl.innerHTML = '<p class="text-muted text-center"><i class="bi bi-folder2-open me-1"></i>空目录</p>';
+            }
+        }
+    } catch (e) {
+        listEl.innerHTML = '<p class="text-danger text-center">加载失败</p>';
+    }
+}
+
+function mediaNavigateToDir(cid, name) {
+    mediaDirStack.push({id: cid, name: name});
+    document.getElementById('mediaBreadcrumb').textContent = mediaDirStack.map(d => d.name).join(' / ');
+    loadMediaDirs(cid);
+}
+
+function mediaNavigateToParent() {
+    if (mediaDirStack.length > 1) {
+        mediaDirStack.pop();
+        const parent = mediaDirStack[mediaDirStack.length - 1];
+        document.getElementById('mediaBreadcrumb').textContent = mediaDirStack.map(d => d.name).join(' / ');
+        loadMediaDirs(parent.id);
+    }
+}
+
+async function scanCurrentDir() {
+    const cid = mediaDirStack[mediaDirStack.length - 1].id;
+    const recursive = document.getElementById('recursiveSwitch').checked;
+    showLoading();
+    try {
+        const resp = await fetch('/media/scan', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: `cid=${cid}&recursive=${recursive}`
+        });
+        const result = await resp.json();
+        if (result.success) {
+            scannedFiles = result.files;
+            document.getElementById('mediaFileCount').textContent = `找到 ${result.count} 个视频文件`;
+            renderScannedFiles();
+        } else {
+            showToast(result.message || '扫描失败', 'danger');
+        }
+    } catch (e) {
+        showToast('扫描失败', 'danger');
+    }
+    hideLoading();
+}
+
+function renderScannedFiles() {
+    const listEl = document.getElementById('mediaFileList');
+    if (scannedFiles.length === 0) {
+        listEl.innerHTML = '<p class="text-muted text-center">未找到视频文件</p>';
+        return;
+    }
+    let html = '<div class="list-group">';
+    scannedFiles.forEach((f, i) => {
+        html += `<div class="list-group-item py-2">
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="small" title="${f.name}">${f.name.length > 50 ? f.name.substring(0, 50) + '...' : f.name}</span>
+                <span class="badge bg-secondary">${f.year || '-'}</span>
+            </div>
+        </div>`;
+    });
+    html += '</div>';
+    listEl.innerHTML = html;
+
+    // 初始化识别结果数组
+    identifiedResults = scannedFiles.map(f => ({
+        ...f,
+        tmdb: null,
+        primary: '',
+        secondary: '',
+        identified: false,
+    }));
+    renderIdentifiedResults();
+}
+
+async function identifySingle(index) {
+    const file = scannedFiles[index];
+    showLoading();
+    try {
+        const resp = await fetch('/media/identify', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: `name=${encodeURIComponent(file.cleaned_name)}&year=${file.year || ''}`
+        });
+        const result = await resp.json();
+        if (result.success) {
+            identifiedResults[index] = {
+                ...file,
+                tmdb: result.tmdb,
+                primary: result.primary,
+                secondary: result.secondary,
+                identified: true,
+            };
+            renderIdentifiedResults();
+            showToast(`识别成功: ${result.tmdb.title}`, 'success');
+        } else {
+            showToast(result.message, 'danger');
+        }
+    } catch (e) {
+        showToast('识别失败', 'danger');
+    }
+    hideLoading();
+}
+
+async function identifyAll() {
+    if (scannedFiles.length === 0) {
+        showToast('请先扫描文件', 'danger');
+        return;
+    }
+    showLoading();
+    let successCount = 0;
+    for (let i = 0; i < scannedFiles.length; i++) {
+        if (identifiedResults[i] && identifiedResults[i].identified) continue;
+        const file = scannedFiles[i];
+        try {
+            const resp = await fetch('/media/identify', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: `name=${encodeURIComponent(file.cleaned_name)}&year=${file.year || ''}`
+            });
+            const result = await resp.json();
+            if (result.success) {
+                identifiedResults[i] = {
+                    ...file,
+                    tmdb: result.tmdb,
+                    primary: result.primary,
+                    secondary: result.secondary,
+                    identified: true,
+                };
+                successCount++;
+            }
+        } catch (e) {}
+        await new Promise(r => setTimeout(r, 300));
+    }
+    renderIdentifiedResults();
+    hideLoading();
+    showToast(`批量识别完成: ${successCount}/${scannedFiles.length} 成功`, 'success');
+}
+
+function renderIdentifiedResults() {
+    const tbody = document.getElementById('identifyResults');
+    if (!identifiedResults || identifiedResults.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-muted text-center">扫描文件后进行识别</td></tr>';
+        return;
+    }
+    let html = '';
+    identifiedResults.forEach((item, i) => {
+        if (!item.identified) {
+            html += `<tr>
+                <td><input type="checkbox" class="file-checkbox" data-index="${i}"></td>
+                <td title="${item.name}">${item.name.length > 40 ? item.name.substring(0, 40) + '...' : item.name}</td>
+                <td class="text-muted">未识别</td>
+                <td class="text-muted">-</td>
+                <td><button class="btn btn-outline-primary btn-sm" onclick="identifySingle(${i})"><i class="bi bi-magic"></i></button></td>
+            </tr>`;
+        } else {
+            const tmdb = item.tmdb;
+            const posterUrl = tmdb.poster_path ? `https://image.tmdb.org/t/p/w92${tmdb.poster_path}` : '';
+            html += `<tr>
+                <td><input type="checkbox" class="file-checkbox" data-index="${i}" checked></td>
+                <td title="${item.name}">${item.name.length > 40 ? item.name.substring(0, 40) + '...' : item.name}</td>
+                <td>
+                    <div class="d-flex align-items-center">
+                        ${posterUrl ? `<img src="${posterUrl}" class="rounded me-2" style="height: 40px;">` : ''}
+                        <div>
+                            <span class="fw-bold">${tmdb.title}</span>
+                            <span class="text-muted small ms-1">(${tmdb.year || '?'})</span>
+                            <br><span class="text-muted small">${tmdb.genres ? tmdb.genres.join(' / ') : ''}</span>
+                        </div>
+                    </div>
+                </td>
+                <td>
+                    <span class="badge bg-primary">${item.primary}</span>
+                    <span class="badge bg-info ms-1">${item.secondary}</span>
+                </td>
+                <td>
+                    <button class="btn btn-outline-primary btn-sm" onclick="identifySingle(${i})" title="重新识别"><i class="bi bi-arrow-repeat"></i></button>
+                </td>
+            </tr>`;
+        }
+    });
+    tbody.innerHTML = html || '<tr><td colspan="5" class="text-muted text-center">无数据</td></tr>';
+}
+
+function toggleSelectAll() {
+    const checked = document.getElementById('selectAll').checked;
+    document.querySelectorAll('.file-checkbox').forEach(cb => cb.checked = checked);
+}
+
+async function organizeAll() {
+    const checked = document.querySelectorAll('.file-checkbox:checked');
+    if (checked.length === 0) {
+        showToast('请选择要整理的文件', 'danger');
+        return;
+    }
+
+    const fileList = [];
+    checked.forEach(cb => {
+        const index = parseInt(cb.dataset.index);
+        const item = identifiedResults[index];
+        if (item && item.identified) {
+            fileList.push({
+                fid: item.fid,
+                name: item.name,
+                primary: item.primary,
+                secondary: item.secondary,
+            });
+        }
+    });
+
+    if (fileList.length === 0) {
+        showToast('没有已识别的文件', 'danger');
+        return;
+    }
+
+    const rootCid = document.getElementById('organizeRootCid').value || '0';
+    showLoading();
+    try {
+        const resp = await fetch('/media/organize', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({files: fileList, root_cid: rootCid})
+        });
+        const result = await resp.json();
+        showToast(result.message, result.success ? 'success' : 'danger');
+        if (result.success && result.results) {
+            if (result.results.failed.length > 0) {
+                const failMsg = result.results.failed.map(f => `${f.name}: ${f.reason}`).join('\n');
+                showToast(`失败: ${failMsg}`, 'danger');
+            }
+        }
+    } catch (e) {
+        showToast('整理失败', 'danger');
+    }
+    hideLoading();
+}
+
+// 目录选择（分类根目录）
+async function loadOrganizeDirs(cid) {
+    const listEl = document.getElementById('organizeModalDirList');
+    listEl.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>加载中...</p>';
+    try {
+        const resp = await fetch(`/media/browse?cid=${cid}`);
+        const result = await resp.json();
+        if (result.success) {
+            const dirs = result.items.filter(i => i.type === 'dir');
+            if (dirs.length > 0) {
+                let html = '<div class="list-group">';
+                dirs.forEach(dir => {
+                    html += `<button type="button" class="list-group-item list-group-item-action rounded-2 mb-1" onclick="organizeModalNavigateToDir('${dir.cid}', '${dir.name.replace(/'/g, "\\'")}')">
+                        <i class="bi bi-folder2 me-2 text-warning"></i>${dir.name}
+                    </button>`;
+                });
+                html += '</div>';
+                listEl.innerHTML = html;
+            } else {
+                listEl.innerHTML = '<p class="text-muted text-center">空目录</p>';
+            }
+        }
+    } catch (e) {
+        listEl.innerHTML = '<p class="text-danger text-center">加载失败</p>';
+    }
+}
+
+function organizeModalNavigateToDir(cid, name) {
+    organizeModalDirStack.push({id: cid, name: name});
+    document.getElementById('organizeModalBreadcrumb').textContent = organizeModalDirStack.map(d => d.name).join(' / ');
+    loadOrganizeDirs(cid);
+}
+
+function organizeModalNavigateToParent() {
+    if (organizeModalDirStack.length > 1) {
+        organizeModalDirStack.pop();
+        document.getElementById('organizeModalBreadcrumb').textContent = organizeModalDirStack.map(d => d.name).join(' / ');
+        const parent = organizeModalDirStack[organizeModalDirStack.length - 1];
+        loadOrganizeDirs(parent.id);
+    }
+}
+
+function openOrganizeDirBrowser() {
+    organizeModalDirStack = [{id: '0', name: '根目录'}];
+    document.getElementById('organizeModalBreadcrumb').textContent = '根目录';
+    loadOrganizeDirs('0');
+    new bootstrap.Modal(document.getElementById('organizeDirModal')).show();
+}
+
+function confirmOrganizeDir() {
+    const current = organizeModalDirStack[organizeModalDirStack.length - 1];
+    document.getElementById('organizeRootCid').value = current.id;
+    document.getElementById('organizeRootName').textContent = organizeModalDirStack.map(d => d.name).join(' / ');
+    bootstrap.Modal.getInstance(document.getElementById('organizeDirModal')).hide();
+    showToast(`分类根目录已设为: ${organizeModalDirStack.map(d => d.name).join(' / ')}`, 'info');
+}
+
+// 初始化
+loadTmdbKey();
+loadMediaDirs('0');
+{% endblock %}

@@ -851,6 +851,96 @@ def wechat_menu():
     return jsonify({'success': success, 'message': msg})
 
 
+# ==================== 115网盘整理路由 ====================
+
+from media.scanner import scan_115_directory, get_directory_tree
+from media.tmdb import identify_media, get_tmdb_api_key, set_tmdb_api_key
+from media.classifier import classify, get_all_categories
+from media.organizer import organize_files
+
+
+@app.route('/media')
+def media_page():
+    return render_template('media.html', version=VERSION)
+
+
+@app.route('/media/browse', methods=['GET'])
+def media_browse():
+    cid = request.args.get('cid', '0')
+    success, msg, items = cloud115.list_files(cid, show_dir=1)
+    if success:
+        return jsonify({'success': True, 'items': items})
+    return jsonify({'success': False, 'message': msg})
+
+
+@app.route('/media/scan', methods=['POST'])
+def media_scan():
+    cid = request.form.get('cid', '0').strip()
+    recursive = request.form.get('recursive', 'true').lower() == 'true'
+    files = scan_115_directory(cid, recursive)
+    return jsonify({'success': True, 'files': files, 'count': len(files)})
+
+
+@app.route('/media/identify', methods=['POST'])
+def media_identify():
+    name = request.form.get('name', '').strip()
+    year = request.form.get('year', '').strip()
+    if not name:
+        return jsonify({'success': False, 'message': '请输入名称'})
+    year_int = int(year) if year.isdigit() else None
+    result, err = identify_media(name, year_int)
+    if err:
+        return jsonify({'success': False, 'message': err})
+    primary, secondary = classify(result)
+    return jsonify({
+        'success': True,
+        'tmdb': result,
+        'primary': primary,
+        'secondary': secondary,
+    })
+
+
+@app.route('/media/organize', methods=['POST'])
+def media_organize():
+    data = request.get_json(force=True, silent=True) or {}
+    file_list = data.get('files', [])
+    root_cid = data.get('root_cid', '0')
+    if not file_list:
+        return jsonify({'success': False, 'message': '没有要整理的文件'})
+    results = organize_files(file_list, root_cid)
+    return jsonify({
+        'success': True,
+        'message': f'整理完成: 成功 {len(results["success"])} 个, 失败 {len(results["failed"])} 个',
+        'results': results,
+    })
+
+
+@app.route('/media/tmdb_key', methods=['GET'])
+def media_get_tmdb_key():
+    return jsonify({'success': True, 'key': get_tmdb_api_key()})
+
+
+@app.route('/media/tmdb_key', methods=['POST'])
+def media_set_tmdb_key():
+    key = request.form.get('key', '').strip()
+    set_tmdb_api_key(key)
+    return jsonify({'success': True, 'message': 'TMDB API Key 已保存'})
+
+
+@app.route('/media/categories', methods=['GET'])
+def media_categories():
+    categories = get_all_categories()
+    return jsonify({'success': True, 'categories': categories})
+
+
+@app.route('/media/tree', methods=['GET'])
+def media_tree():
+    cid = request.args.get('cid', '0')
+    depth = int(request.args.get('depth', '3'))
+    tree = get_directory_tree(cid, depth)
+    return jsonify({'success': True, 'tree': tree})
+
+
 if __name__ == '__main__':
     debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
     app.run(host='0.0.0.0', port=3698, debug=debug)

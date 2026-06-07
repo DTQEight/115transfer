@@ -44,6 +44,13 @@ def load_movies():
         return _movie_cache['data'].copy()
 
     df = pd.read_excel(EXCEL_FILE)
+    # 过滤掉重复的表头行（序号列为非数字的行）
+    if not df.empty:
+        try:
+            pd.to_numeric(df['序号'], errors='raise')
+        except (ValueError, TypeError):
+            # 序号列有非数字行，过滤掉
+            df = df[pd.to_numeric(df['序号'], errors='coerce').notna()].reset_index(drop=True)
     _movie_cache['hash'] = current_hash
     _movie_cache['data'] = df
     return df.copy()

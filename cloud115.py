@@ -8,6 +8,27 @@ CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.ab
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 
+def _request_with_retry(method, url, max_retries=3, **kwargs):
+    """带重试的请求，遇到405/429/5xx自动重试"""
+    for attempt in range(max_retries):
+        try:
+            if method == 'GET':
+                resp = requests.get(url, **kwargs)
+            else:
+                resp = requests.post(url, **kwargs)
+            if resp.status_code in (405, 429, 500, 502, 503):
+                if attempt < max_retries - 1:
+                    time.sleep(1 * (attempt + 1))
+                    continue
+            return resp
+        except requests.Timeout:
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            raise
+    return resp
+
+
 def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -142,8 +163,14 @@ def get_dir_list(cid='0'):
         return False, '未配置115 Cookie', []
 
     try:
+        # 主接口
         url = f'https://webapi.115.com/files?aid=1&cid={cid}&o=user_utime&asc=0&offset=0&show_dir=1&snap=0&natsort=1&format=json'
-        resp = requests.get(url, headers=_get_headers(), timeout=15)
+        resp = _request_with_retry('GET', url, headers=_get_headers(), timeout=15)
+        
+        # 如果主接口失败，尝试备用接口
+        if resp.status_code != 200:
+            url2 = f'https://webapi.115.com/files?aid=1&cid={cid}&o=user_ptime&asc=0&offset=0&show_dir=1&snap=0&natsort=1&format=json&cur=1'
+            resp = _request_with_retry('GET', url2, headers=_get_headers(), timeout=15)
         
         if resp.status_code != 200:
             return False, f'请求失败，状态码: {resp.status_code}', []
@@ -215,8 +242,14 @@ def list_files(cid='0', offset=0, limit=100, show_dir=1):
         return False, '未配置115 Cookie', []
 
     try:
+        # 主接口
         url = f'https://webapi.115.com/files?aid=1&cid={cid}&o=user_utime&asc=0&offset={offset}&show_dir={show_dir}&snap=0&natsort=1&format=json&limit={limit}'
-        resp = requests.get(url, headers=_get_headers(), timeout=15)
+        resp = _request_with_retry('GET', url, headers=_get_headers(), timeout=15)
+
+        # 如果主接口失败，尝试备用接口
+        if resp.status_code != 200:
+            url2 = f'https://webapi.115.com/files?aid=1&cid={cid}&o=user_ptime&asc=0&offset={offset}&show_dir={show_dir}&snap=0&natsort=1&format=json&limit={limit}&cur=1'
+            resp = _request_with_retry('GET', url2, headers=_get_headers(), timeout=15)
 
         if resp.status_code != 200:
             return False, f'请求失败，状态码: {resp.status_code}', []

@@ -9,6 +9,7 @@ import threading
 import hashlib
 import cloud115
 import wechat_work
+import douban
 
 user_states = {}
 
@@ -983,6 +984,150 @@ def media_tree():
     depth = int(request.args.get('depth', '3'))
     tree = get_directory_tree(cid, depth)
     return jsonify({'success': True, 'tree': tree})
+
+
+# ===== 豆瓣同步 =====
+
+@app.route('/douban')
+def douban_page():
+    return render_template('douban.html', version=VERSION)
+
+
+@app.route('/douban/config', methods=['GET', 'POST'])
+def douban_config():
+    if request.method == 'GET':
+        config = douban.load_config()
+        return jsonify({'success': True, 'config': config})
+    cookie = request.form.get('cookie', '').strip()
+    user_id = request.form.get('user_id', '').strip()
+    config = douban.load_config()
+    if cookie:
+        config['cookie'] = cookie
+    if user_id:
+        config['user_id'] = user_id
+    douban.save_config(config)
+    return jsonify({'success': True, 'message': '配置已保存'})
+
+
+@app.route('/douban/check', methods=['POST'])
+def douban_check():
+    user_id = request.form.get('user_id', '').strip()
+    if not user_id:
+        config = douban.load_config()
+        user_id = config.get('user_id', '')
+    if not user_id:
+        return jsonify({'success': False, 'message': '请输入豆瓣用户ID'})
+    ok, msg = douban.check_cookie(user_id)
+    return jsonify({'success': ok, 'message': msg})
+
+
+@app.route('/douban/fetch', methods=['POST'])
+def douban_fetch():
+    """获取豆瓣看过的电影列表"""
+    user_id = request.form.get('user_id', '').strip()
+    if not user_id:
+        config = douban.load_config()
+        user_id = config.get('user_id', '')
+    if not user_id:
+        return jsonify({'success': False, 'message': '请输入豆瓣用户ID'})
+
+    movies, err = douban.fetch_all_watched_movies(user_id)
+    if err:
+        return jsonify({'success': False, 'message': err})
+
+    # 获取已有电影名（用于对比）
+    try:
+        with data_lock:
+            df = load_movies()
+        existing_names = set()
+        if not df.empty:
+            for name in df['电影名'].dropna():
+                existing_names.add(str(name).strip())
+    except:
+        existing_names = set()
+
+    # 标记哪些是新的
+    for m in movies:
+        m['exists'] = m['title'] in existing_names
+
+    return jsonify({
+        'success': True,
+        'movies': movies,
+        'total': len(movies),
+        'new_count': sum(1 for m in movies if not m['exists']),
+    })
+
+
+@app.route('/douban/sync', methods=['POST'])
+def douban_sync():
+    """同步选中的电影到数据库"""
+    data = request.get_json()
+    if not data or 'movies' not in data:
+        return jsonify({'success': False, 'message': '没有要同步的电影'})
+
+    movies = data['movies']
+    if not movies:
+        return jsonify({'success': False, 'message': '没有要同步的电影'})
+
+    try:
+        with data_lock:
+            df = load_movies()
+
+            # 找到最大的页码
+            if df.empty:
+                max_page = 68
+            else:
+                max_page = int(df['页码'].max())
+                if max_page < 69:
+                    max_page = 68
+
+            # 每页15部电影
+            page = max_page + 1
+            count = 0
+            added = 0
+            skipped = 0
+
+            for m in movies:
+                name = m.get('title', '').strip()
+                if not name:
+                    continue
+
+                # 检查是否已存在
+                if not df.empty and name in df['电影名'].values:
+                    skipped += 1
+                    continue
+
+                if count >= 15:
+                    page += 1
+                    count = 0
+
+                new_id = 1
+                if not df.empty:
+                    page_df = df[df['页码'] == page]
+                    if not page_df.empty:
+                        new_id = int(page_df['序号'].max()) + 1
+
+                new_movie = {
+                    '序号': new_id,
+                    '页码': page,
+                    '电影名': name,
+                    '磁力链接': '',
+                    '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S'),
+                }
+                df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
+                count += 1
+                added += 1
+
+            save_movies(df)
+
+        return jsonify({
+            'success': True,
+            'message': f'同步完成: 新增{added}部，跳过{skipped}部（已存在）',
+            'added': added,
+            'skipped': skipped,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'同步失败: {str(e)}'})
 
 
 if __name__ == '__main__':

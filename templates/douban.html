@@ -1,0 +1,237 @@
+{% extends "base.html" %}
+
+{% block title %}115Transfer - 豆瓣同步{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-gear me-2"></i>豆瓣配置
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label">豆瓣用户ID</label>
+                    <div class="input-group">
+                        <input type="text" id="userId" class="form-control" placeholder="如: 205120931">
+                        <button onclick="saveConfig()" class="btn btn-primary">保存</button>
+                    </div>
+                    <div class="form-text">你的豆瓣个人主页URL中的数字部分，如 https://www.douban.com/people/205120931/</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">豆瓣Cookie</label>
+                    <textarea id="doubanCookie" class="form-control" rows="3" placeholder="从浏览器F12开发者工具中复制Cookie值"></textarea>
+                    <div class="form-text">浏览器打开豆瓣 → F12 → Network → 任意请求 → Headers → Cookie</div>
+                </div>
+                <div class="d-flex gap-2">
+                    <button onclick="saveConfig()" class="btn btn-primary">
+                        <i class="bi bi-save me-1"></i>保存配置
+                    </button>
+                    <button onclick="checkCookie()" class="btn btn-outline-success">
+                        <i class="bi bi-check-circle me-1"></i>测试连接
+                    </button>
+                </div>
+                <div id="configResult" class="mt-3"></div>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-cloud-download me-2"></i>同步电影
+            </div>
+            <div class="card-body">
+                <p class="text-muted">获取你豆瓣"看过的电影"列表，与现有数据对比后同步到系统中。</p>
+                <div class="d-flex gap-2 mb-3">
+                    <button onclick="fetchMovies()" id="fetchBtn" class="btn btn-primary">
+                        <i class="bi bi-download me-1"></i>获取豆瓣电影
+                    </button>
+                    <button onclick="syncSelected()" id="syncBtn" class="btn btn-success" disabled>
+                        <i class="bi bi-arrow-repeat me-1"></i>同步选中电影
+                    </button>
+                    <button onclick="selectAll()" class="btn btn-outline-secondary">
+                        <i class="bi bi-check-all me-1"></i>全选/取消
+                    </button>
+                </div>
+                <div id="fetchResult" class="mb-3"></div>
+                <div id="movieList"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_script %}
+let doubanMovies = [];
+
+async function saveConfig() {
+    const userId = document.getElementById('userId').value.trim();
+    const cookie = document.getElementById('doubanCookie').value.trim();
+    
+    if (!userId && !cookie) {
+        showToast('请输入用户ID或Cookie', 'warning');
+        return;
+    }
+    
+    const formData = new FormData();
+    if (userId) formData.append('user_id', userId);
+    if (cookie) formData.append('cookie', cookie);
+    
+    try {
+        const resp = await fetch('/douban/config', { method: 'POST', body: formData });
+        const result = await resp.json();
+        showToast(result.message, result.success ? 'success' : 'danger');
+    } catch (e) {
+        showToast('保存失败: ' + e.message, 'danger');
+    }
+}
+
+async function checkCookie() {
+    const userId = document.getElementById('userId').value.trim();
+    const formData = new FormData();
+    if (userId) formData.append('user_id', userId);
+    
+    const resultDiv = document.getElementById('configResult');
+    resultDiv.innerHTML = '<div class="spinner-border spinner-border-sm me-2"></div>测试中...';
+    
+    try {
+        const resp = await fetch('/douban/check', { method: 'POST', body: formData });
+        const result = await resp.json();
+        resultDiv.innerHTML = `<div class="alert alert-${result.success ? 'success' : 'danger'} py-2 mb-0">${result.message}</div>`;
+    } catch (e) {
+        resultDiv.innerHTML = `<div class="alert alert-danger py-2 mb-0">测试失败: ${e.message}</div>`;
+    }
+}
+
+async function fetchMovies() {
+    const btn = document.getElementById('fetchBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>获取中...';
+    
+    const resultDiv = document.getElementById('fetchResult');
+    resultDiv.innerHTML = '';
+    
+    try {
+        const resp = await fetch('/douban/fetch', { method: 'POST' });
+        const result = await resp.json();
+        
+        if (!result.success) {
+            resultDiv.innerHTML = `<div class="alert alert-danger">${result.message}</div>`;
+            return;
+        }
+        
+        doubanMovies = result.movies;
+        
+        resultDiv.innerHTML = `
+            <div class="alert alert-info py-2">
+                共 <strong>${result.total}</strong> 部电影，其中 <strong>${result.new_count}</strong> 部是新增的（${result.total - result.new_count} 部已存在）
+            </div>
+        `;
+        
+        renderMovieList();
+        document.getElementById('syncBtn').disabled = false;
+        
+    } catch (e) {
+        resultDiv.innerHTML = `<div class="alert alert-danger">获取失败: ${e.message}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-download me-1"></i>获取豆瓣电影';
+    }
+}
+
+function renderMovieList() {
+    const container = document.getElementById('movieList');
+    if (!doubanMovies.length) {
+        container.innerHTML = '<p class="text-muted">暂无数据</p>';
+        return;
+    }
+    
+    let html = '<div class="table-responsive"><table class="table table-sm table-hover">';
+    html += '<thead><tr><th style="width:40px"><input type="checkbox" id="checkAll" onchange="toggleAll(this)" checked></th><th>#</th><th>电影名</th><th>年份</th><th>状态</th></tr></thead><tbody>';
+    
+    doubanMovies.forEach((m, i) => {
+        const status = m.exists 
+            ? '<span class="badge bg-secondary">已存在</span>' 
+            : '<span class="badge bg-success">新增</span>';
+        html += `<tr>
+            <td><input type="checkbox" class="movie-check" data-idx="${i}" ${m.exists ? '' : 'checked'}></td>
+            <td class="text-muted">${i + 1}</td>
+            <td>${m.title}</td>
+            <td class="text-muted">${m.year || '-'}</td>
+            <td>${status}</td>
+        </tr>`;
+    });
+    
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+}
+
+function toggleAll(checkbox) {
+    document.querySelectorAll('.movie-check').forEach(cb => {
+        cb.checked = checkbox.checked;
+    });
+}
+
+function selectAll() {
+    const checkboxes = document.querySelectorAll('.movie-check');
+    const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+    checkboxes.forEach(cb => cb.checked = !allChecked);
+}
+
+async function syncSelected() {
+    const selected = [];
+    document.querySelectorAll('.movie-check:checked').forEach(cb => {
+        const idx = parseInt(cb.dataset.idx);
+        if (doubanMovies[idx]) {
+            selected.push(doubanMovies[idx]);
+        }
+    });
+    
+    if (!selected.length) {
+        showToast('请选择要同步的电影', 'warning');
+        return;
+    }
+    
+    const btn = document.getElementById('syncBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>同步中...';
+    
+    try {
+        const resp = await fetch('/douban/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ movies: selected }),
+        });
+        const result = await resp.json();
+        
+        const resultDiv = document.getElementById('fetchResult');
+        if (result.success) {
+            resultDiv.innerHTML = `<div class="alert alert-success py-2">${result.message}</div>`;
+            // 更新状态
+            selected.forEach(m => {
+                const idx = doubanMovies.findIndex(dm => dm.title === m.title);
+                if (idx >= 0) doubanMovies[idx].exists = true;
+            });
+            renderMovieList();
+        } else {
+            resultDiv.innerHTML = `<div class="alert alert-danger py-2">${result.message}</div>`;
+        }
+    } catch (e) {
+        showToast('同步失败: ' + e.message, 'danger');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>同步选中电影';
+    }
+}
+
+// 页面加载时读取配置
+(async function() {
+    try {
+        const resp = await fetch('/douban/config');
+        const result = await resp.json();
+        if (result.success && result.config) {
+            if (result.config.user_id) document.getElementById('userId').value = result.config.user_id;
+            if (result.config.cookie) document.getElementById('doubanCookie').value = result.config.cookie;
+        }
+    } catch (e) {}
+})();
+{% endblock %}

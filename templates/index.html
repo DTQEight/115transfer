@@ -110,7 +110,7 @@
         <div class="card">
             <div class="card-header">
                 <i class="bi bi-collection-play me-2"></i>电影列表
-                <span class="text-muted small ms-2">(点击磁力链接复制)</span>
+                <span class="text-muted small ms-2">(双击磁力链接复制)</span>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
@@ -136,18 +136,14 @@
                                 <td><span class="badge-page">{{ movie.page }}</span></td>
                                 <td class="fw-medium">{{ movie.name }}</td>
                                 <td>
-                                    <div class="input-group input-group-sm">
-                                        <input type="text" class="form-control form-control-sm magnet-input {% if movie.is_empty %}border-warning{% endif %}"
-                                               value="{{ movie.magnet }}"
-                                               data-id="{{ movie.id }}"
-                                               data-page="{{ movie.page }}"
-                                               placeholder="输入磁力链接"
-                                               onblur="saveMagnetInline(this)"
-                                               onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
-                                        <button class="btn btn-outline-secondary btn-sm" onclick="copyMagnet({{ movie.id }}, {{ movie.page }})" title="复制">
-                                            <i class="bi bi-clipboard"></i>
-                                        </button>
-                                    </div>
+                                    <input type="text" class="form-control form-control-sm magnet-input {% if movie.is_empty %}border-warning{% endif %}"
+                                           value="{{ movie.magnet }}"
+                                           data-id="{{ movie.id }}"
+                                           data-page="{{ movie.page }}"
+                                           placeholder="输入磁力链接"
+                                           onblur="saveMagnetInline(this)"
+                                           ondblclick="copyMagnet({{ movie.id }}, {{ movie.page }})"
+                                           onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
                                 </td>
                                 <td class="text-muted small">{{ movie.save_time }}</td>
                                 <td>

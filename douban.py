@@ -76,17 +76,34 @@ def fetch_watched_movies(user_id, start=0, count=15):
         movies = []
         seen = set()
 
-        # 默认 grid 模式: <a title="电影名" href="https://movie.douban.com/subject/xxx/" class="nbg">
-        for m in re.finditer(
-            r'<a\s+title="([^"]+)"\s+href="(https://movie\.douban\.com/subject/\d+/)"\s+class="nbg"',
-            html
-        ):
-            title = html_module.unescape(m.group(1).strip())
-            movie_url = m.group(2).strip()
-            if title in seen:
+        # 从每个 item 中提取: URL从 nbg 标签，简体名从 <em> 标签
+        # <em>简体名 / 繁体名 / 英文名</em> 取第一个 / 前的部分
+        items = re.findall(
+            r'<a\s+title="[^"]*"\s+href="(https://movie\.douban\.com/subject/\d+/)"\s+class="nbg">.*?<em>([^<]+)</em>',
+            html, re.DOTALL
+        )
+        for movie_url, em_text in items:
+            movie_url = movie_url.strip()
+            # <em> 内容格式: "简体名 / 繁体名 / 英文名" 或 "简体名"
+            # 取第一个 / 前的部分作为简体中文名
+            title = html_module.unescape(em_text.strip().split(' / ')[0].strip())
+            if not title or title in seen:
                 continue
             seen.add(title)
             movies.append({'title': title, 'url': movie_url, 'year': '', 'rating': ''})
+
+        # 备选: 如果 <em> 解析失败，用 <a title="..." class="nbg"> 的 title
+        if not movies:
+            for m in re.finditer(
+                r'<a\s+title="([^"]+)"\s+href="(https://movie\.douban\.com/subject/\d+/)"\s+class="nbg"',
+                html
+            ):
+                title = html_module.unescape(m.group(1).strip())
+                movie_url = m.group(2).strip()
+                if title in seen:
+                    continue
+                seen.add(title)
+                movies.append({'title': title, 'url': movie_url, 'year': '', 'rating': ''})
         # 从 <li class="intro"> 补充年份信息
         # 每个 item 的结构: <div class="item comment-item">...<li class="intro">日期 / 演员 / ...</li>...</div>
         intros = re.findall(r'<li class="intro">([^<]+)</li>', html)
@@ -99,14 +116,6 @@ def fetch_watched_movies(user_id, start=0, count=15):
         # 获取总数: <h1>我看过的影视(1192)</h1>
         total_match = re.search(r'<h1>[^<]*[\(（](\d+)[\)）]</h1>', html)
         total = int(total_match.group(1)) if total_match else len(movies)
-
-        # 自动获取外语电影的中文名（不含中文的电影访问详情页获取中文名）
-        for movie in movies:
-            if movie.get('url') and not _has_chinese(movie['title']):
-                cn_name, cn_err = fetch_movie_chinese_name(movie['url'])
-                if not cn_err and cn_name:
-                    movie['title'] = cn_name
-                time.sleep(0.3)  # 避免请求过快
 
         return movies, total, None
 

@@ -112,7 +112,7 @@ def index():
         if df.empty:
             return render_template('index.html', movies=[], current_page=0, all_page_nums=[], version=VERSION)
         
-        all_page_nums = sorted(df['页码'].unique(), reverse=True)
+        all_page_nums = sorted(df['页码'].unique())
         
         if page_num not in all_page_nums:
             if all_page_nums:

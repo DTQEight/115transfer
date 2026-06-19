@@ -9,7 +9,8 @@ USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 
 def _request_with_retry(method, url, max_retries=3, **kwargs):
-    """带重试的请求，遇到405/429/5xx自动重试"""
+    """带重试的请求，遇到405/429/5xx/连接错误自动重试"""
+    resp = None
     for attempt in range(max_retries):
         try:
             if method == 'GET':
@@ -21,9 +22,9 @@ def _request_with_retry(method, url, max_retries=3, **kwargs):
                     time.sleep(1 * (attempt + 1))
                     continue
             return resp
-        except requests.Timeout:
+        except (requests.Timeout, requests.ConnectionError):
             if attempt < max_retries - 1:
-                time.sleep(1)
+                time.sleep(1 * (attempt + 1))
                 continue
             raise
     return resp
@@ -286,7 +287,7 @@ def list_files(cid='0', offset=0, limit=100, show_dir=1):
 
 
 def move_files(file_ids, target_cid):
-    """批量移动文件到目标目录"""
+    """批量移动文件到目标目录（带HTTP层重试）"""
     cookie = get_cookie_string()
     if not cookie:
         return False, '未配置115 Cookie'
@@ -296,7 +297,7 @@ def move_files(file_ids, target_cid):
         data = {'pid': target_cid}
         for i, fid in enumerate(file_ids):
             data[f'fid[{i}]'] = fid
-        resp = requests.post(url, headers=_get_headers(), data=data, timeout=30)
+        resp = _request_with_retry('POST', url, max_retries=3, headers=_get_headers(), data=data, timeout=30)
         if not resp:
             return False, '请求失败'
         result = resp.json()

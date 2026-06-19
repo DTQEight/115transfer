@@ -1,6 +1,7 @@
 """115文件移动（分类执行）"""
 import sys
 import os
+import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import cloud115
 
@@ -40,7 +41,9 @@ def ensure_category_dirs(root_cid, categories):
 def organize_files(file_list, root_cid='0', source_cid='0'):
     """将文件/文件夹按分类移动到对应目录
 
-    同一父目录下的多个视频文件会作为一个整体（整个文件夹）移动。
+    - 同一文件夹下的文件若属于同一分类，整个文件夹移动
+    - 同一文件夹下的文件若属于不同分类，逐个移动文件（避免整个文件夹只能进一个分类）
+    - 带重试机制，避免单次失败需要多次点击
 
     Args:
         file_list: [{'fid': ..., 'parent_id': ..., 'primary': '电影', 'secondary': '国语电影', 'name': ...}, ...]
@@ -57,68 +60,80 @@ def organize_files(file_list, root_cid='0', source_cid='0'):
 
     results = {'success': [], 'failed': []}
 
-    # 按 parent_id 分组
-    folder_groups = {}  # parent_id -> {category_key, files}
+    # 按 parent_id -> {category_key -> [files]} 分组
+    # 这样可以判断同一文件夹下的文件是否属于同一分类
+    folder_groups = {}
     for file_info in file_list:
         parent_id = str(file_info.get('parent_id', ''))
         category_key = f'{file_info["primary"]}/{file_info["secondary"]}'
         if parent_id not in folder_groups:
-            folder_groups[parent_id] = {'category_key': category_key, 'files': []}
-        folder_groups[parent_id]['files'].append(file_info)
+            folder_groups[parent_id] = {}
+        if category_key not in folder_groups[parent_id]:
+            folder_groups[parent_id][category_key] = []
+        folder_groups[parent_id][category_key].append(file_info)
 
     moved_dirs = set()  # 已移动的目录cid，避免重复
+    moved_files = set()  # 已移动的文件fid，避免重复
 
-    for parent_id, group in folder_groups.items():
-        category_key = group['category_key']
-        files = group['files']
-        target_cid = dir_map.get(category_key)
-
-        if not target_cid:
-            for f in files:
-                results['failed'].append({
-                    'fid': f['fid'],
-                    'name': f.get('name', ''),
-                    'reason': f'分类目录不存在: {category_key}',
-                })
-            continue
-
-        # 如果 parent_id 不是源目录且不为0，说明在子文件夹中，移动整个文件夹
-        if parent_id and parent_id != str(source_cid) and parent_id != '0' and parent_id not in moved_dirs:
-            success, msg = cloud115.move_files([parent_id], target_cid)
+    def move_with_retry(file_ids, target_cid, max_retries=3):
+        """带重试的移动，应对115 API临时失败/限流"""
+        last_msg = ''
+        for attempt in range(max_retries):
+            success, msg = cloud115.move_files(file_ids, target_cid)
             if success:
-                moved_dirs.add(parent_id)
+                return True, msg
+            last_msg = msg
+            if attempt < max_retries - 1:
+                time.sleep(1 * (attempt + 1))
+        return False, last_msg
+
+    for parent_id, categories_in_folder in folder_groups.items():
+        # 只有当目录下所有文件属于同一分类时，才移动整个文件夹
+        # 多分类时必须逐个移动文件，否则整个文件夹只能进一个分类
+        single_category = len(categories_in_folder) == 1
+        can_move_folder = (
+            single_category
+            and parent_id
+            and parent_id != str(source_cid)
+            and parent_id != '0'
+            and parent_id not in moved_dirs
+        )
+
+        for category_key, files in categories_in_folder.items():
+            target_cid = dir_map.get(category_key)
+            if not target_cid:
                 for f in files:
-                    results['success'].append({
+                    results['failed'].append({
                         'fid': f['fid'],
                         'name': f.get('name', ''),
-                        'category': category_key,
-                        'mode': 'folder',
-                        'folder_id': parent_id,
+                        'reason': f'分类目录不存在: {category_key}',
                     })
-            else:
-                # 文件夹移动失败，尝试逐个移动文件
-                for f in files:
-                    success2, msg2 = cloud115.move_files([f['fid']], target_cid)
-                    if success2:
+                continue
+
+            if can_move_folder:
+                # 移动整个文件夹
+                success, msg = move_with_retry([parent_id], target_cid)
+                if success:
+                    moved_dirs.add(parent_id)
+                    for f in files:
+                        moved_files.add(f['fid'])
                         results['success'].append({
                             'fid': f['fid'],
                             'name': f.get('name', ''),
                             'category': category_key,
-                            'mode': 'file',
+                            'mode': 'folder',
+                            'folder_id': parent_id,
                         })
-                    else:
-                        results['failed'].append({
-                            'fid': f['fid'],
-                            'name': f.get('name', ''),
-                            'reason': msg2,
-                        })
-        else:
-            # 直接在源目录下的文件，逐个移动
-            for f in files:
-                if f['fid'] in moved_dirs:
                     continue
-                success, msg = cloud115.move_files([f['fid']], target_cid)
+                # 文件夹移动失败，回退到逐个移动文件
+
+            # 逐个移动文件
+            for f in files:
+                if f['fid'] in moved_files:
+                    continue
+                success, msg = move_with_retry([f['fid']], target_cid)
                 if success:
+                    moved_files.add(f['fid'])
                     results['success'].append({
                         'fid': f['fid'],
                         'name': f.get('name', ''),
@@ -131,5 +146,7 @@ def organize_files(file_list, root_cid='0', source_cid='0'):
                         'name': f.get('name', ''),
                         'reason': msg,
                     })
+                # 小延迟，避免请求过快被115限流
+                time.sleep(0.3)
 
     return results

@@ -4,6 +4,7 @@ import re
 import json
 import os
 import time
+import html as html_module
 
 CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'douban_config.json')
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -46,10 +47,10 @@ def fetch_watched_movies(user_id, start=0, count=15):
         return [], 0, '未配置豆瓣Cookie'
 
     url = f'https://movie.douban.com/people/{user_id}/collect'
+    # 注意：不要使用 mode=list，默认 grid 模式才能拿到电影名
     params = {
         'start': start,
         'sort': 'time',
-        'mode': 'list',
         'tags_sort': 'rec',
     }
 
@@ -70,56 +71,20 @@ def fetch_watched_movies(user_id, start=0, count=15):
         movies = []
         seen = set()
 
-        # 模式1: <a ... class="nbg" ... title="电影名 英文名 (年份)">
+        # 默认 grid 模式: <a title="电影名" href="https://movie.douban.com/subject/xxx/" class="nbg">
         for m in re.finditer(
-            r'class="?nbg"?[^>]*?title="([^"]*)"',
-            html, re.DOTALL
+            r'<a\s+title="([^"]+)"\s+href="(https://movie\.douban\.com/subject/\d+/)"\s+class="nbg"',
+            html
         ):
-            title_str = m.group(1)
-            if title_str in seen:
+            title = html_module.unescape(m.group(1).strip())
+            movie_url = m.group(2).strip()
+            if title in seen:
                 continue
-            seen.add(title_str)
-            year_match = re.search(r'\((\d{4})\)\s*$', title_str)
-            year = year_match.group(1) if year_match else ''
-            title_clean = re.split(r'\s+[A-Za-z]', title_str)[0].strip()
-            if not title_clean:
-                title_clean = title_str.split('(')[0].strip()
-            title_clean = re.sub(r'\s*\(\d{4}\)\s*$', '', title_clean).strip()
-            if title_clean:
-                movies.append({'title': title_clean, 'url': '', 'year': year, 'rating': ''})
+            seen.add(title)
+            movies.append({'title': title, 'url': movie_url, 'year': '', 'rating': ''})
 
-        # 模式2: <li class="title"><a ... >电影名</a></li>
-        if not movies:
-            for m in re.finditer(
-                r'<li class="title">\s*<a[^>]*>([^<]+)</a>',
-                html, re.DOTALL
-            ):
-                title = m.group(1).strip()
-                if title and title not in seen:
-                    seen.add(title)
-                    movies.append({'title': title, 'url': '', 'year': '', 'rating': ''})
-
-        # 模式3: <a ... title="中文名 ..." ... class="nbg">
-        if not movies:
-            for m in re.finditer(
-                r'title="([^"]*)"[^>]*?class="?nbg"?',
-                html, re.DOTALL
-            ):
-                title_str = m.group(1)
-                if title_str in seen:
-                    continue
-                seen.add(title_str)
-                year_match = re.search(r'\((\d{4})\)\s*$', title_str)
-                year = year_match.group(1) if year_match else ''
-                title_clean = re.split(r'\s+[A-Za-z]', title_str)[0].strip()
-                if not title_clean:
-                    title_clean = title_str.split('(')[0].strip()
-                title_clean = re.sub(r'\s*\(\d{4}\)\s*$', '', title_clean).strip()
-                if title_clean:
-                    movies.append({'title': title_clean, 'url': '', 'year': year, 'rating': ''})
-
-        # 获取总数
-        total_match = re.search(r'<span class="count">\s*[\（(](\d+)[\)）]\s*</span>', html)
+        # 获取总数: <h1>我看过的影视(1192)</h1>
+        total_match = re.search(r'<h1>[^<]*[\(（](\d+)[\)）]</h1>', html)
         total = int(total_match.group(1)) if total_match else len(movies)
 
         return movies, total, None

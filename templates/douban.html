@@ -273,7 +273,7 @@ async function syncSelected() {
         const resp = await fetch('/douban/sync', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ movies: selected }),
+            body: JSON.stringify({ movies: selected, page: currentPage }),
         });
         const result = await resp.json();
         

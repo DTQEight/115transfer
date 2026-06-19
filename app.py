@@ -1096,6 +1096,7 @@ def douban_sync():
         return jsonify({'success': False, 'message': '没有要同步的电影'})
 
     movies = data['movies']
+    douban_page = data.get('page', 1)
     if not movies:
         return jsonify({'success': False, 'message': '没有要同步的电影'})
 
@@ -1103,17 +1104,8 @@ def douban_sync():
         with data_lock:
             df = load_movies()
 
-            # 找到最大的页码
-            if df.empty:
-                max_page = 68
-            else:
-                max_page = int(df['页码'].max())
-                if max_page < 69:
-                    max_page = 68
-
-            # 每页15部电影
-            page = max_page + 1
-            count = 0
+            # 豆瓣页码 → 系统页码: 1:1对应
+            page = douban_page
             added = 0
             skipped = 0
 
@@ -1126,10 +1118,6 @@ def douban_sync():
                 if not df.empty and name in df['电影名'].values:
                     skipped += 1
                     continue
-
-                if count >= 15:
-                    page += 1
-                    count = 0
 
                 new_id = 1
                 if not df.empty:
@@ -1145,16 +1133,16 @@ def douban_sync():
                     '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S'),
                 }
                 df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
-                count += 1
                 added += 1
 
             save_movies(df)
 
         return jsonify({
             'success': True,
-            'message': f'同步完成: 新增{added}部，跳过{skipped}部（已存在）',
+            'message': f'同步完成: 新增{added}部，跳过{skipped}部（已存在），页码{page}',
             'added': added,
             'skipped': skipped,
+            'page': page,
         })
     except Exception as e:
         return jsonify({'success': False, 'message': f'同步失败: {str(e)}'})

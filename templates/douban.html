@@ -40,10 +40,10 @@
                 <i class="bi bi-cloud-download me-2"></i>同步电影
             </div>
             <div class="card-body">
-                <p class="text-muted">获取你豆瓣"看过的电影"列表，与现有数据对比后同步到系统中。</p>
-                <div class="d-flex gap-2 mb-3">
-                    <button onclick="fetchMovies()" id="fetchBtn" class="btn btn-primary">
-                        <i class="bi bi-download me-1"></i>获取豆瓣电影
+                <p class="text-muted">获取你豆瓣"看过的电影"列表，外语电影会自动获取中文译名。与现有数据对比后同步到系统中。</p>
+                <div class="d-flex gap-2 mb-3 flex-wrap">
+                    <button onclick="fetchMovies(1)" id="fetchBtn" class="btn btn-primary">
+                        <i class="bi bi-download me-1"></i>获取电影
                     </button>
                     <button onclick="syncSelected()" id="syncBtn" class="btn btn-success" disabled>
                         <i class="bi bi-arrow-repeat me-1"></i>同步选中电影
@@ -53,6 +53,7 @@
                     </button>
                 </div>
                 <div id="fetchResult" class="mb-3"></div>
+                <div id="pagination" class="mb-3"></div>
                 <div id="movieList"></div>
             </div>
         </div>
@@ -62,6 +63,9 @@
 
 {% block extra_script %}
 var doubanMovies = [];
+var currentPage = 1;
+var totalPages = 0;
+var totalMovies = 0;
 
 async function saveConfig() {
     const userId = document.getElementById('userId').value.trim();
@@ -102,16 +106,22 @@ async function checkCookie() {
     }
 }
 
-async function fetchMovies() {
+async function fetchMovies(page) {
+    currentPage = page || 1;
     const btn = document.getElementById('fetchBtn');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>获取中...';
     
     const resultDiv = document.getElementById('fetchResult');
     resultDiv.innerHTML = '';
+    document.getElementById('pagination').innerHTML = '';
+    document.getElementById('movieList').innerHTML = '';
     
     try {
-        const resp = await fetch('/douban/fetch', { method: 'POST' });
+        const formData = new FormData();
+        formData.append('page', currentPage);
+        
+        const resp = await fetch('/douban/fetch', { method: 'POST', body: formData });
         const result = await resp.json();
         
         if (!result.success) {
@@ -120,13 +130,16 @@ async function fetchMovies() {
         }
         
         doubanMovies = result.movies;
+        totalPages = result.total_pages;
+        totalMovies = result.total;
         
         resultDiv.innerHTML = `
             <div class="alert alert-info py-2">
-                共 <strong>${result.total}</strong> 部电影，其中 <strong>${result.new_count}</strong> 部是新增的（${result.total - result.new_count} 部已存在）
+                共 <strong>${result.total}</strong> 部电影，当前第 <strong>${result.page}/${result.total_pages}</strong> 页，本页 <strong>${result.new_count}</strong> 部新增
             </div>
         `;
         
+        renderPagination();
         renderMovieList();
         document.getElementById('syncBtn').disabled = false;
         
@@ -134,7 +147,68 @@ async function fetchMovies() {
         resultDiv.innerHTML = `<div class="alert alert-danger">获取失败: ${e.message}</div>`;
     } finally {
         btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-download me-1"></i>获取豆瓣电影';
+        btn.innerHTML = '<i class="bi bi-download me-1"></i>获取电影';
+    }
+}
+
+function renderPagination() {
+    const container = document.getElementById('pagination');
+    if (totalPages <= 1) {
+        container.innerHTML = '';
+        return;
+    }
+    
+    let html = '<nav><ul class="pagination pagination-sm justify-content-center">';
+    
+    // 上一页
+    html += `<li class="page-item ${currentPage <= 1 ? 'disabled' : ''}">
+        <a class="page-link" href="javascript:void(0)" onclick="fetchMovies(${currentPage - 1})">上一页</a>
+    </li>`;
+    
+    // 页码（显示当前页前后各2页）
+    var startPage = Math.max(1, currentPage - 2);
+    var endPage = Math.min(totalPages, currentPage + 2);
+    
+    if (startPage > 1) {
+        html += `<li class="page-item"><a class="page-link" href="javascript:void(0)" onclick="fetchMovies(1)">1</a></li>`;
+        if (startPage > 2) html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+    }
+    
+    for (var i = startPage; i <= endPage; i++) {
+        html += `<li class="page-item ${i === currentPage ? 'active' : ''}">
+            <a class="page-link" href="javascript:void(0)" onclick="fetchMovies(${i})">${i}</a>
+        </li>`;
+    }
+    
+    if (endPage < totalPages) {
+        if (endPage < totalPages - 1) html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+        html += `<li class="page-item"><a class="page-link" href="javascript:void(0)" onclick="fetchMovies(${totalPages})">${totalPages}</a></li>`;
+    }
+    
+    // 下一页
+    html += `<li class="page-item ${currentPage >= totalPages ? 'disabled' : ''}">
+        <a class="page-link" href="javascript:void(0)" onclick="fetchMovies(${currentPage + 1})">下一页</a>
+    </li>`;
+    
+    // 跳转输入
+    html += `<li class="page-item">
+        <span class="d-inline-flex align-items-center ms-2">
+            <input type="number" id="jumpPage" class="form-control form-control-sm" style="width:70px" min="1" max="${totalPages}" value="${currentPage}">
+            <button class="btn btn-outline-primary btn-sm ms-1" onclick="jumpToPage()">跳转</button>
+        </span>
+    </li>`;
+    
+    html += '</ul></nav>';
+    container.innerHTML = html;
+}
+
+function jumpToPage() {
+    var input = document.getElementById('jumpPage');
+    var page = parseInt(input.value);
+    if (page >= 1 && page <= totalPages) {
+        fetchMovies(page);
+    } else {
+        showToast('页码范围: 1-' + totalPages, 'warning');
     }
 }
 
@@ -154,7 +228,7 @@ function renderMovieList() {
             : '<span class="badge bg-success">新增</span>';
         html += `<tr>
             <td><input type="checkbox" class="movie-check" data-idx="${i}" ${m.exists ? '' : 'checked'}></td>
-            <td class="text-muted">${i + 1}</td>
+            <td class="text-muted">${(currentPage - 1) * 15 + i + 1}</td>
             <td>${m.title}</td>
             <td class="text-muted">${m.year || '-'}</td>
             <td>${status}</td>

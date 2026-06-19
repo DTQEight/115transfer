@@ -1023,7 +1023,7 @@ def douban_check():
 
 @app.route('/douban/fetch', methods=['POST'])
 def douban_fetch():
-    """获取豆瓣看过的电影列表"""
+    """获取豆瓣看过的电影列表（按页）"""
     user_id = request.form.get('user_id', '').strip()
     if not user_id:
         config = douban.load_config()
@@ -1031,7 +1031,17 @@ def douban_fetch():
     if not user_id:
         return jsonify({'success': False, 'message': '请输入豆瓣用户ID'})
 
-    movies, err = douban.fetch_all_watched_movies(user_id)
+    # 支持按页获取，默认第1页，每页15部
+    try:
+        page = int(request.form.get('page', 1))
+        if page < 1:
+            page = 1
+    except:
+        page = 1
+    per_page = 15
+    start = (page - 1) * per_page
+
+    movies, total, err = douban.fetch_watched_movies(user_id, start, per_page)
     if err:
         return jsonify({'success': False, 'message': err})
 
@@ -1050,12 +1060,32 @@ def douban_fetch():
     for m in movies:
         m['exists'] = m['title'] in existing_names
 
+    import math
+    total_pages = math.ceil(total / per_page) if total > 0 else 0
+
     return jsonify({
         'success': True,
         'movies': movies,
-        'total': len(movies),
+        'total': total,
+        'page': page,
+        'per_page': per_page,
+        'total_pages': total_pages,
         'new_count': sum(1 for m in movies if not m['exists']),
     })
+
+
+@app.route('/douban/movie_info', methods=['POST'])
+def douban_movie_info():
+    """获取单个电影的中文名（访问subject页面）"""
+    subject_url = request.form.get('url', '').strip()
+    if not subject_url:
+        return jsonify({'success': False, 'message': '缺少电影URL'})
+
+    name, err = douban.fetch_movie_chinese_name(subject_url)
+    if err:
+        return jsonify({'success': False, 'message': err})
+
+    return jsonify({'success': True, 'name': name})
 
 
 @app.route('/douban/sync', methods=['POST'])

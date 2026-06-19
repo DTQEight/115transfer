@@ -298,7 +298,7 @@ async function syncSelected() {
 }
 
 // 页面加载时读取配置
-document.addEventListener('DOMContentLoaded', async function() {
+(async function loadDoubanConfig() {
     try {
         var resp = await fetch('/douban/config');
         if (!resp.ok) return;
@@ -312,5 +312,5 @@ document.addEventListener('DOMContentLoaded', async function() {
     } catch (e) {
         console.error('加载豆瓣配置失败:', e);
     }
-});
+})();
 {% endblock %}

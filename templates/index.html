@@ -136,10 +136,18 @@
                                 <td><span class="badge-page">{{ movie.page }}</span></td>
                                 <td class="fw-medium">{{ movie.name }}</td>
                                 <td>
-                                    <span onclick="copyMagnet({{ movie.id }}, {{ movie.page }})" 
-                                          class="copy-btn {% if movie.is_empty %}empty-magnet{% endif %}">
-                                        {{ movie.magnet_display }}
-                                    </span>
+                                    <div class="input-group input-group-sm">
+                                        <input type="text" class="form-control form-control-sm magnet-input {% if movie.is_empty %}border-warning{% endif %}"
+                                               value="{{ movie.magnet }}"
+                                               data-id="{{ movie.id }}"
+                                               data-page="{{ movie.page }}"
+                                               placeholder="输入磁力链接"
+                                               onblur="saveMagnetInline(this)"
+                                               onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
+                                        <button class="btn btn-outline-secondary btn-sm" onclick="copyMagnet({{ movie.id }}, {{ movie.page }})" title="复制">
+                                            <i class="bi bi-clipboard"></i>
+                                        </button>
+                                    </div>
                                 </td>
                                 <td class="text-muted small">{{ movie.save_time }}</td>
                                 <td>
@@ -180,6 +188,42 @@
 {% endblock %}
 
 {% block extra_script %}
+        // 内联保存磁力链接
+        async function saveMagnetInline(input) {
+            var id = input.dataset.id;
+            var page = input.dataset.page;
+            var magnet = input.value.trim();
+            var originalValue = input.defaultValue;
+
+            // 如果值没变化，不保存
+            if (magnet === originalValue) return;
+
+            // 获取当前电影名
+            var row = input.closest('tr');
+            var name = row ? row.querySelector('.fw-medium').textContent.trim() : '';
+
+            try {
+                var resp = await fetch('/update/' + id, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `page=${page}&name=${encodeURIComponent(name)}&magnet=${encodeURIComponent(magnet)}`
+                });
+                var result = await resp.json();
+                if (result.success) {
+                    input.defaultValue = magnet;
+                    if (magnet) input.classList.remove('border-warning');
+                    else input.classList.add('border-warning');
+                    showToast('磁力链接已保存', 'success');
+                } else {
+                    showToast(result.message || '保存失败', 'danger');
+                    input.value = originalValue;
+                }
+            } catch (e) {
+                showToast('保存失败', 'danger');
+                input.value = originalValue;
+            }
+        }
+
         document.addEventListener('keydown', (e) => {
             if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'F') {
                 e.preventDefault();

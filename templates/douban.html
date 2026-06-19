@@ -298,14 +298,19 @@ async function syncSelected() {
 }
 
 // 页面加载时读取配置
-(async function() {
+document.addEventListener('DOMContentLoaded', async function() {
     try {
-        const resp = await fetch('/douban/config');
-        const result = await resp.json();
+        var resp = await fetch('/douban/config');
+        if (!resp.ok) return;
+        var result = await resp.json();
         if (result.success && result.config) {
-            if (result.config.user_id) document.getElementById('userId').value = result.config.user_id;
-            if (result.config.cookie) document.getElementById('doubanCookie').value = result.config.cookie;
+            var userIdInput = document.getElementById('userId');
+            var cookieInput = document.getElementById('doubanCookie');
+            if (result.config.user_id && userIdInput) userIdInput.value = result.config.user_id;
+            if (result.config.cookie && cookieInput) cookieInput.value = result.config.cookie;
         }
-    } catch (e) {}
-})();
+    } catch (e) {
+        console.error('加载豆瓣配置失败:', e);
+    }
+});
 {% endblock %}

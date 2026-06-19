@@ -72,7 +72,7 @@ def fetch_watched_movies(user_id, start=0, count=15):
 
         # 模式1: <a ... class="nbg" ... title="电影名 英文名 (年份)">
         for m in re.finditer(
-            r'class="nbg"[^>]*?title="([^"]*)"',
+            r'class="?nbg"?[^>]*?title="([^"]*)"',
             html, re.DOTALL
         ):
             title_str = m.group(1)
@@ -98,6 +98,25 @@ def fetch_watched_movies(user_id, start=0, count=15):
                 if title and title not in seen:
                     seen.add(title)
                     movies.append({'title': title, 'url': '', 'year': '', 'rating': ''})
+
+        # 模式3: <a ... title="中文名 ..." ... class="nbg">
+        if not movies:
+            for m in re.finditer(
+                r'title="([^"]*)"[^>]*?class="?nbg"?',
+                html, re.DOTALL
+            ):
+                title_str = m.group(1)
+                if title_str in seen:
+                    continue
+                seen.add(title_str)
+                year_match = re.search(r'\((\d{4})\)\s*$', title_str)
+                year = year_match.group(1) if year_match else ''
+                title_clean = re.split(r'\s+[A-Za-z]', title_str)[0].strip()
+                if not title_clean:
+                    title_clean = title_str.split('(')[0].strip()
+                title_clean = re.sub(r'\s*\(\d{4}\)\s*$', '', title_clean).strip()
+                if title_clean:
+                    movies.append({'title': title_clean, 'url': '', 'year': year, 'rating': ''})
 
         # 获取总数
         total_match = re.search(r'<span class="count">\s*[\（(](\d+)[\)）]\s*</span>', html)

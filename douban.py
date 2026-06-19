@@ -68,48 +68,36 @@ def fetch_watched_movies(user_id, start=0, count=15):
 
         # 解析电影列表
         movies = []
-        # 匹配模式: <li class="item"> ... <a href="https://movie.douban.com/subject/xxx/" ... >电影名</a> ... <span class="date">2019</span>
-        # 或者更简单的模式
-        items = re.findall(
-            r'<div class="item">\s*<a[^>]*href="(https://movie\.douban\.com/subject/\d+/)"[^>]*>\s*<img[^>]*alt="([^"]*)"[^>]*/>\s*</a>.*?<li class="title">[^<]*<a[^>]*>([^<]*)</a>.*?(?:<span class="date">([^<]*)</span>)?',
+        seen = set()
+
+        # 模式1: <a ... class="nbg" ... title="电影名 英文名 (年份)">
+        for m in re.finditer(
+            r'class="nbg"[^>]*?title="([^"]*)"',
             html, re.DOTALL
-        )
+        ):
+            title_str = m.group(1)
+            if title_str in seen:
+                continue
+            seen.add(title_str)
+            year_match = re.search(r'\((\d{4})\)\s*$', title_str)
+            year = year_match.group(1) if year_match else ''
+            title_clean = re.split(r'\s+[A-Za-z]', title_str)[0].strip()
+            if not title_clean:
+                title_clean = title_str.split('(')[0].strip()
+            title_clean = re.sub(r'\s*\(\d{4}\)\s*$', '', title_clean).strip()
+            if title_clean:
+                movies.append({'title': title_clean, 'url': '', 'year': year, 'rating': ''})
 
-        if not items:
-            # 备用解析模式
-            items = re.findall(
-                r'<a[^>]*href="(https://movie\.douban\.com/subject/\d+/)"[^>]*class="nbg"[^>]*title="([^"]*)"',
-                html, re.DOTALL
-            )
-            for url, title in items:
-                movies.append({
-                    'title': title.strip(),
-                    'url': url,
-                    'year': '',
-                    'rating': '',
-                })
-        else:
-            for url, alt, title, date in items:
-                year_match = re.search(r'(\d{4})', date if date else '')
-                movies.append({
-                    'title': title.strip() if title.strip() else alt.strip(),
-                    'url': url,
-                    'year': year_match.group(1) if year_match else '',
-                    'rating': '',
-                })
-
-        # 如果两种模式都没匹配到，尝试最简单的模式
+        # 模式2: <li class="title"><a ... >电影名</a></li>
         if not movies:
-            titles = re.findall(r'title="([^"]+)"[^>]*class="nbg"', html)
-            if not titles:
-                titles = re.findall(r'class="title">([^<]+)<', html)
-            for title in titles:
-                movies.append({
-                    'title': title.strip(),
-                    'url': '',
-                    'year': '',
-                    'rating': '',
-                })
+            for m in re.finditer(
+                r'<li class="title">\s*<a[^>]*>([^<]+)</a>',
+                html, re.DOTALL
+            ):
+                title = m.group(1).strip()
+                if title and title not in seen:
+                    seen.add(title)
+                    movies.append({'title': title, 'url': '', 'year': '', 'rating': ''})
 
         # 获取总数
         total_match = re.search(r'<span class="count">\s*[\（(](\d+)[\)）]\s*</span>', html)
@@ -163,7 +151,7 @@ def check_cookie(user_id):
     if not cookie:
         return False, '未配置豆瓣Cookie'
 
-    movies, total, err = fetch_watched_movies(user_id, 0, 1)
+    movies, total, err = fetch_watched_movies(user_id, 0, 15)
     if err:
         return False, err
-    return True, f'Cookie有效，共{total}部看过的电影'
+    return True, f'Cookie有效，本页获取到{len(movies)}部电影，页面报告共{total}部'

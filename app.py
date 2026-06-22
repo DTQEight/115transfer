@@ -943,12 +943,25 @@ def media_identify():
 
 @app.route('/media/search', methods=['POST'])
 def media_search():
-    """手动搜索TMDB，返回多个结果供选择"""
+    """手动搜索TMDB，返回多个结果供选择。支持TMDB ID直接识别。"""
     query = request.form.get('query', '').strip()
     year = request.form.get('year', '').strip()
     if not query:
         return jsonify({'success': False, 'message': '请输入搜索名称'})
     year_int = int(year) if year.isdigit() else None
+
+    # 如果输入是纯数字，当作TMDB ID直接查询
+    if query.isdigit():
+        from media.tmdb import get_media_by_id
+        result, err = get_media_by_id(int(query))
+        if result:
+            primary, secondary = classify(result)
+            result['primary'] = primary
+            result['secondary'] = secondary
+            return jsonify({'success': True, 'results': [result], 'count': 1})
+        # ID查询失败，继续搜索
+        pass
+
     from media.tmdb import search_multi
     results, err = search_multi(query, year=year_int)
     if err:

@@ -118,8 +118,76 @@ def get_tv_detail(tv_id, language='zh-CN'):
         return None, f'获取详情失败: {str(e)}'
 
 
+def get_media_by_id(tmdb_id, language='zh-CN'):
+    """通过TMDB ID直接获取电影或电视剧详情"""
+    api_key = get_tmdb_api_key()
+    if not api_key:
+        return None, '未配置TMDB API Key'
+
+    # 先尝试电影
+    detail, err = get_movie_detail(tmdb_id, language)
+    if detail:
+        return _format_movie_result(detail, 'movie'), None
+
+    # 再尝试电视剧
+    detail, err = get_tv_detail(tmdb_id, language)
+    if detail:
+        return _format_tv_result(detail), None
+
+    return None, f'TMDB ID {tmdb_id} 未找到'
+
+
+def _format_movie_result(detail, media_type='movie'):
+    """格式化电影结果"""
+    return {
+        'tmdb_id': detail.get('id'),
+        'media_type': media_type,
+        'title': detail.get('title') or detail.get('name', ''),
+        'original_title': detail.get('original_title') or detail.get('original_name', ''),
+        'year': (detail.get('release_date') or detail.get('first_air_date') or '')[:4],
+        'genres': [g.get('name', '') for g in detail.get('genres', [])],
+        'genre_ids': [g.get('id') for g in detail.get('genres', [])],
+        'original_language': detail.get('original_language', ''),
+        'production_countries': [c.get('iso_3166_1', '') for c in detail.get('production_countries', [])],
+        'overview': detail.get('overview', ''),
+        'poster_path': detail.get('poster_path', ''),
+        'vote_average': detail.get('vote_average', 0),
+    }
+
+
+def _format_tv_result(detail):
+    """格式化电视剧结果"""
+    return {
+        'tmdb_id': detail.get('id'),
+        'media_type': 'tv',
+        'title': detail.get('name') or detail.get('title', ''),
+        'original_title': detail.get('original_name') or detail.get('original_title', ''),
+        'year': (detail.get('first_air_date') or detail.get('release_date') or '')[:4],
+        'genres': [g.get('name', '') for g in detail.get('genres', [])],
+        'genre_ids': [g.get('id') for g in detail.get('genres', [])],
+        'original_language': detail.get('original_language', ''),
+        'production_countries': [c.get('iso_3166_1', '') for c in detail.get('origin_country', [])],
+        'overview': detail.get('overview', ''),
+        'poster_path': detail.get('poster_path', ''),
+        'vote_average': detail.get('vote_average', 0),
+    }
+
+
 def identify_media(name, year=None):
-    """自动识别媒体，多策略搜索"""
+    """自动识别媒体，多策略搜索
+
+    支持两种输入：
+    1. TMDB ID（纯数字）- 直接获取详情
+    2. 电影名 - 多策略搜索
+    """
+    # 如果输入是纯数字，当作TMDB ID直接查询
+    if name.isdigit():
+        result, err = get_media_by_id(int(name))
+        if result:
+            return result, None
+        # ID查询失败，继续尝试搜索
+        pass
+
     # 策略1: 原始名称搜索（带年份）
     results, err = search_multi(name, year=year)
     if err:

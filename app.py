@@ -1037,11 +1037,13 @@ def baidu_test():
 @app.route('/baidu/search', methods=['POST'])
 def baidu_search():
     keyword = (request.form.get('keyword') or '').strip()
+    page = request.form.get('page', '1').strip()
+    page = int(page) if page.isdigit() else 1
     if not keyword:
         return jsonify({'success': False, 'message': '请输入搜索关键词'})
     try:
-        results = baidu_forum.search(keyword)
-        return jsonify({'success': True, 'results': results, 'count': len(results)})
+        result = baidu_forum.search(keyword, page=page)
+        return jsonify({'success': True, **result})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 

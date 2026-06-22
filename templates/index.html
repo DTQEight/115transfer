@@ -429,26 +429,28 @@
         function searchForumForMovie(movieName, movieId, moviePage) {
             magnetSearchMovieId = movieId;
             magnetSearchMoviePage = moviePage;
+            magnetSearchKeyword = movieName;
             document.getElementById('magnetSearchQuery').value = movieName;
             document.getElementById('magnetSearchResults').innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>搜索中...</p>';
             new bootstrap.Modal(document.getElementById('magnetSearchModal')).show();
-            doSearchForumMagnet(movieName);
+            doSearchForumMagnet(movieName, 1);
         }
 
         async function searchForumMagnet() {
             var query = document.getElementById('magnetSearchQuery').value.trim();
             if (!query) return;
-            await doSearchForumMagnet(query);
+            magnetSearchKeyword = query;
+            await doSearchForumMagnet(query, 1);
         }
 
-        async function doSearchForumMagnet(query) {
+        async function doSearchForumMagnet(query, page) {
             var el = document.getElementById('magnetSearchResults');
             el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>搜索中...</p>';
             try {
                 var resp = await fetch('/baidu/search', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: 'keyword=' + encodeURIComponent(query)
+                    body: 'keyword=' + encodeURIComponent(query) + '&page=' + (page || 1)
                 });
                 var result = await resp.json();
                 if (!result.success) {
@@ -459,8 +461,9 @@
                     el.innerHTML = '<p class="text-muted text-center">未找到结果</p>';
                     return;
                 }
-                var html = '<p class="text-muted small mb-2">找到 ' + result.count + ' 个结果，点击获取磁力链接</p>';
-                html += '<div class="list-group" style="max-height:400px;overflow-y:auto;">';
+                var totalCount = result.total_count || result.results.length;
+                var html = '<p class="text-muted small mb-2">共 ' + totalCount + ' 个结果，第 ' + result.page + '/' + result.total_pages + ' 页</p>';
+                html += '<div class="list-group" style="max-height:350px;overflow-y:auto;">';
                 result.results.forEach(function(r) {
                     var title = escapeHtml(r.title);
                     var meta = (r.forum || '') + ' · ' + (r.replies || '0') + '回复 · ' + (r.views || '0') + '查看';
@@ -476,6 +479,30 @@
                     '</button>';
                 });
                 html += '</div>';
+                // 分页
+                if (result.total_pages > 1) {
+                    html += '<nav class="mt-2"><ul class="pagination pagination-sm justify-content-center mb-0">';
+                    if (result.page > 1) {
+                        html += '<li class="page-item"><a class="page-link" href="javascript:void(0)" onclick="doSearchForumMagnet(magnetSearchKeyword,' + (result.page - 1) + ')"><i class="bi bi-chevron-left"></i></a></li>';
+                    }
+                    var start = Math.max(1, result.page - 2);
+                    var end = Math.min(result.total_pages, result.page + 2);
+                    if (start > 1) {
+                        html += '<li class="page-item"><a class="page-link" href="javascript:void(0)" onclick="doSearchForumMagnet(magnetSearchKeyword,1)">1</a></li>';
+                        if (start > 2) html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+                    }
+                    for (var p = start; p <= end; p++) {
+                        html += '<li class="page-item ' + (p === result.page ? 'active' : '') + '"><a class="page-link" href="javascript:void(0)" onclick="doSearchForumMagnet(magnetSearchKeyword,' + p + ')">' + p + '</a></li>';
+                    }
+                    if (end < result.total_pages) {
+                        if (end < result.total_pages - 1) html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+                        html += '<li class="page-item"><a class="page-link" href="javascript:void(0)" onclick="doSearchForumMagnet(magnetSearchKeyword,' + result.total_pages + ')">' + result.total_pages + '</a></li>';
+                    }
+                    if (result.page < result.total_pages) {
+                        html += '<li class="page-item"><a class="page-link" href="javascript:void(0)" onclick="doSearchForumMagnet(magnetSearchKeyword,' + (result.page + 1) + ')"><i class="bi bi-chevron-right"></i></a></li>';
+                    }
+                    html += '</ul></nav>';
+                }
                 el.innerHTML = html;
             } catch (e) {
                 el.innerHTML = '<p class="text-danger text-center">搜索失败: ' + escapeHtml(e.message) + '</p>';

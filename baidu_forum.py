@@ -111,44 +111,68 @@ def _login(s, username, password):
     return s
 
 
-def search(keyword, max_results=20):
-    """搜索电影帖子
+def search(keyword, page=1):
+    """搜索电影帖子，支持分页
 
     Returns:
-        [{'tid': ..., 'title': ..., 'forum': ..., 'replies': ..., 'views': ..., 'author': ..., 'date': ...}, ...]
+        {'results': [...], 'page': N, 'total_pages': N, 'total_count': N, 'searchid': '...'}
     """
     s = _get_session()
-    # GBK编码关键词
     kw_encoded = urllib.parse.quote(keyword, encoding='gbk')
-    url = BASE + f'search.php?mod=forum&searchsubmit=yes&srchtxt={kw_encoded}'
+
+    # 第1页需要先获取searchid
+    if page == 1:
+        url = BASE + f'search.php?mod=forum&searchsubmit=yes&srchtxt={kw_encoded}'
+    else:
+        # 后续页需要searchid，先检查缓存
+        cache = load_config()
+        searchid = cache.get('last_searchid', '')
+        if not searchid:
+            url = BASE + f'search.php?mod=forum&searchsubmit=yes&srchtxt={kw_encoded}'
+            page = 1
+        else:
+            url = BASE + f'search.php?mod=forum&searchid={searchid}&orderby=lastpost&ascdesc=desc&searchsubmit=yes&kw={kw_encoded}&page={page}'
+
     r = s.get(url, timeout=15, allow_redirects=True)
     r.encoding = 'gbk'
 
+    # 提取searchid并缓存
+    searchid_m = re.search(r'searchid=(\d+)', r.url)
+    if searchid_m:
+        searchid = searchid_m.group(1)
+        cfg = load_config()
+        cfg['last_searchid'] = searchid
+        save_config(cfg)
+    else:
+        searchid = ''
+
     # 无结果
     if '没有找到' in r.text or '没有匹配' in r.text:
-        return []
+        return {'results': [], 'page': page, 'total_pages': 0, 'total_count': 0, 'searchid': searchid}
+
+    # 提取总结果数
+    cnt_m = re.search(r'相关内容\s*(\d+)\s*个', r.text)
+    total_count = int(cnt_m.group(1)) if cnt_m else 0
+
+    # 提取分页数（从分页链接中提取最大页码）
+    page_nums = [int(p) for p in re.findall(r'page=(\d+)', r.text)]
+    total_pages = max(page_nums) if page_nums else 1
 
     results = []
-    # 搜索结果在 <li class="pbw" id="tid"> 中
     items = re.findall(
         r'<li class="pbw" id="(\d+)">(.*?)</li>',
         r.text, re.DOTALL
     )
     for tid, body in items:
-        # 标题（去除HTML标签）
         title_m = re.search(r'<a[^>]*href="forum\.php\?mod=viewthread&amp;tid=\d+[^"]*"[^>]*>(.*?)</a>', body, re.DOTALL)
         title = _strip_html(title_m.group(1)) if title_m else ''
-        # 版块
         forum_m = re.search(r'class="xi1">([^<]+)</a>', body)
         forum = forum_m.group(1).strip() if forum_m else ''
-        # 回复/查看
         stats_m = re.search(r'(\d+)\s*个回复\s*-\s*(\d+)\s*次查看', body)
         replies = stats_m.group(1) if stats_m else '0'
         views = stats_m.group(2) if stats_m else '0'
-        # 作者
         author_m = re.search(r'home\.php\?mod=space&amp;uid=\d+"[^>]*>([^<]+)</a>', body)
         author = author_m.group(1).strip() if author_m else ''
-        # 日期
         date_m = re.search(r'<span>(\d{4}-\d{1,2}-\d{1,2}[^<]*)</span>', body)
         date = date_m.group(1).strip() if date_m else ''
 
@@ -161,9 +185,14 @@ def search(keyword, max_results=20):
             'author': author,
             'date': date,
         })
-        if len(results) >= max_results:
-            break
-    return results
+
+    return {
+        'results': results,
+        'page': page,
+        'total_pages': total_pages,
+        'total_count': total_count,
+        'searchid': searchid,
+    }
 
 
 def get_thread_attachments(tid):

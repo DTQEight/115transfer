@@ -225,14 +225,11 @@ def torrent_to_magnet(torrent_content):
     # 提取name用于展示
     name = _extract_torrent_name(torrent_content)
 
-    # 提取tracker用于拼接完整磁力链接
+    # 提取tracker
     trackers = _extract_trackers(torrent_content)
 
+    # 磁力链接最小格式：只需要info_hash（约60字符）
     magnet = f'magnet:?xt=urn:btih:{info_hash}'
-    if name:
-        magnet += f'&dn={urllib.parse.quote(name)}'
-    for t in trackers[:3]:
-        magnet += f'&tr={urllib.parse.quote(t)}'
     return {
         'info_hash': info_hash,
         'name': name,

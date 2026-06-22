@@ -381,33 +381,58 @@ async function identifyAll() {
         return;
     }
     showLoading();
-    let successCount = 0;
+    // 收集未识别的文件
+    const items = [];
+    const indices = [];
     for (let i = 0; i < scannedFiles.length; i++) {
         if (identifiedResults[i] && identifiedResults[i].identified) continue;
-        const file = scannedFiles[i];
-        try {
-            const resp = await fetch('/media/identify', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                body: `name=${encodeURIComponent(file.cleaned_name)}&year=${file.year || ''}`
-            });
-            const result = await resp.json();
-            if (result.success) {
-                identifiedResults[i] = {
-                    ...file,
-                    tmdb: result.tmdb,
-                    primary: result.primary,
-                    secondary: result.secondary,
-                    identified: true,
-                };
-                successCount++;
-            }
-        } catch (e) {}
-        await new Promise(r => setTimeout(r, 300));
+        items.push({name: scannedFiles[i].cleaned_name, year: scannedFiles[i].year || null});
+        indices.push(i);
     }
-    renderIdentifiedResults();
-    hideLoading();
-    showToast(`批量识别完成: ${successCount}/${scannedFiles.length} 成功`, 'success');
+    if (items.length === 0) {
+        hideLoading();
+        showToast('所有文件已识别', 'info');
+        return;
+    }
+    try {
+        const resp = await fetch('/media/identify_batch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'items=' + encodeURIComponent(JSON.stringify(items))
+        });
+        const result = await resp.json();
+        if (result.success) {
+            let successCount = 0;
+            result.results.forEach((r, j) => {
+                const i = indices[j];
+                if (r.success) {
+                    identifiedResults[i] = {
+                        ...scannedFiles[i],
+                        tmdb: r.tmdb,
+                        primary: r.primary,
+                        secondary: r.secondary,
+                        identified: true,
+                    };
+                    successCount++;
+                } else {
+                    identifiedResults[i] = {
+                        ...scannedFiles[i],
+                        identified: false,
+                        error: r.error,
+                    };
+                }
+            });
+            renderIdentifiedResults();
+            hideLoading();
+            showToast(`批量识别完成: ${successCount}/${items.length} 成功`, 'success');
+        } else {
+            hideLoading();
+            showToast(result.message || '批量识别失败', 'danger');
+        }
+    } catch (e) {
+        hideLoading();
+        showToast('批量识别失败: ' + e.message, 'danger');
+    }
 }
 
 function renderIdentifiedResults() {
@@ -629,6 +654,18 @@ function selectManualResult(resultIndex) {
     showToast(`已手动识别: ${r.title}`, 'success');
 }
 
+// 加载已保存的分类根目录
+async function loadOrganizeRoot() {
+    try {
+        const resp = await fetch('/media/organize_root');
+        const result = await resp.json();
+        if (result.success && result.cid) {
+            document.getElementById('organizeRootCid').value = result.cid;
+            document.getElementById('organizeRootName').textContent = result.name || result.cid;
+        }
+    } catch (e) {}
+}
+
 // 目录选择（分类根目录）
 async function loadOrganizeDirs(cid) {
     const listEl = document.getElementById('organizeModalDirList');
@@ -680,13 +717,22 @@ function openOrganizeDirBrowser() {
 
 function confirmOrganizeDir() {
     const current = organizeModalDirStack[organizeModalDirStack.length - 1];
-    document.getElementById('organizeRootCid').value = current.id;
-    document.getElementById('organizeRootName').textContent = organizeModalDirStack.map(d => d.name).join(' / ');
+    const cid = current.id;
+    const name = organizeModalDirStack.map(d => d.name).join(' / ');
+    document.getElementById('organizeRootCid').value = cid;
+    document.getElementById('organizeRootName').textContent = name;
     bootstrap.Modal.getInstance(document.getElementById('organizeDirModal')).hide();
-    showToast(`分类根目录已设为: ${organizeModalDirStack.map(d => d.name).join(' / ')}`, 'info');
+    // 保存到后端
+    fetch('/media/organize_root', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: `cid=${encodeURIComponent(cid)}&name=${encodeURIComponent(name)}`
+    });
+    showToast(`分类根目录已设为: ${name}`, 'info');
 }
 
 // 初始化
 loadTmdbKey();
+loadOrganizeRoot();
 loadMediaDirs('0');
 {% endblock %}

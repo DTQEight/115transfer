@@ -3,10 +3,21 @@ import requests
 import os
 import json
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 
 TMDB_BASE_URL = 'https://api.themoviedb.org/3'
 
 CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'cloud115_config.json')
+
+# 全局Session复用TCP连接 + 内存缓存
+_SESSION = requests.Session()
+_SESSION.trust_env = False
+_CACHE_LOCK = threading.Lock()
+_SEARCH_CACHE = {}  # (query, year) -> results
+_DETAIL_CACHE = {}  # (media_type, tmdb_id) -> detail
+_IDENTIFY_CACHE = {}  # (name, year) -> result
 
 
 def _load_config():
@@ -34,6 +45,11 @@ def search_multi(query, year=None, language='zh-CN'):
     if not api_key:
         return None, '未配置TMDB API Key'
 
+    cache_key = (query, year, language)
+    with _CACHE_LOCK:
+        if cache_key in _SEARCH_CACHE:
+            return _SEARCH_CACHE[cache_key], None
+
     try:
         all_results = []
         # 通用搜索
@@ -44,7 +60,7 @@ def search_multi(query, year=None, language='zh-CN'):
             'language': language,
             'page': 1,
         }
-        resp = requests.get(url, params=params, timeout=15)
+        resp = _SESSION.get(url, params=params, timeout=15)
         data = resp.json()
         if resp.status_code == 200:
             for r in data.get('results', []):
@@ -63,7 +79,7 @@ def search_multi(query, year=None, language='zh-CN'):
                         year_key: int(year),
                         'page': 1,
                     }
-                    resp = requests.get(url, params=params, timeout=15)
+                    resp = _SESSION.get(url, params=params, timeout=15)
                     if resp.status_code == 200:
                         for r in resp.json().get('results', []):
                             r['media_type'] = endpoint
@@ -79,6 +95,8 @@ def search_multi(query, year=None, language='zh-CN'):
                 return 0 if r_year == str(year) else 1
             all_results.sort(key=year_score)
 
+        with _CACHE_LOCK:
+            _SEARCH_CACHE[cache_key] = all_results
         return all_results, None
     except Exception as e:
         return None, f'搜索失败: {str(e)}'
@@ -90,13 +108,21 @@ def get_movie_detail(movie_id, language='zh-CN'):
     if not api_key:
         return None, '未配置TMDB API Key'
 
+    cache_key = ('movie', movie_id, language)
+    with _CACHE_LOCK:
+        if cache_key in _DETAIL_CACHE:
+            return _DETAIL_CACHE[cache_key], None
+
     try:
         url = f'{TMDB_BASE_URL}/movie/{movie_id}'
         params = {'api_key': api_key, 'language': language}
-        resp = requests.get(url, params=params, timeout=15)
+        resp = _SESSION.get(url, params=params, timeout=15)
         if resp.status_code != 200:
             return None, '获取详情失败'
-        return resp.json(), None
+        data = resp.json()
+        with _CACHE_LOCK:
+            _DETAIL_CACHE[cache_key] = data
+        return data, None
     except Exception as e:
         return None, f'获取详情失败: {str(e)}'
 
@@ -107,13 +133,21 @@ def get_tv_detail(tv_id, language='zh-CN'):
     if not api_key:
         return None, '未配置TMDB API Key'
 
+    cache_key = ('tv', tv_id, language)
+    with _CACHE_LOCK:
+        if cache_key in _DETAIL_CACHE:
+            return _DETAIL_CACHE[cache_key], None
+
     try:
         url = f'{TMDB_BASE_URL}/tv/{tv_id}'
         params = {'api_key': api_key, 'language': language}
-        resp = requests.get(url, params=params, timeout=15)
+        resp = _SESSION.get(url, params=params, timeout=15)
         if resp.status_code != 200:
             return None, '获取详情失败'
-        return resp.json(), None
+        data = resp.json()
+        with _CACHE_LOCK:
+            _DETAIL_CACHE[cache_key] = data
+        return data, None
     except Exception as e:
         return None, f'获取详情失败: {str(e)}'
 
@@ -180,6 +214,22 @@ def identify_media(name, year=None):
     1. TMDB ID（纯数字）- 直接获取详情
     2. 电影名 - 多策略搜索
     """
+    cache_key = (name, year)
+    with _CACHE_LOCK:
+        if cache_key in _IDENTIFY_CACHE:
+            cached = _IDENTIFY_CACHE[cache_key]
+            if cached[0] is not None:
+                return cached[0], None
+            return None, cached[1]
+
+    result, err = _identify_media_impl(name, year)
+    with _CACHE_LOCK:
+        _IDENTIFY_CACHE[cache_key] = (result, err)
+    return result, err
+
+
+def _identify_media_impl(name, year=None):
+    """identify_media 的实际实现"""
     # 如果输入是纯数字，当作TMDB ID直接查询
     if name.isdigit():
         result, err = get_media_by_id(int(name))
@@ -270,3 +320,37 @@ def identify_media(name, year=None):
         'poster_path': best.get('poster_path', ''),
         'vote_average': best.get('vote_average', 0),
     }, None
+
+
+def identify_batch(items, max_workers=5):
+    """批量识别媒体（并发）
+
+    Args:
+        items: [{'name': ..., 'year': ...}, ...]
+        max_workers: 最大并发数
+
+    Returns:
+        [{'success': bool, 'result': ..., 'error': ...}, ...] 顺序与items一致
+    """
+    results = [None] * len(items)
+
+    def _worker(idx, item):
+        name = item.get('name', '')
+        year = item.get('year')
+        if not name:
+            return idx, {'success': False, 'error': '名称为空'}
+        try:
+            result, err = identify_media(name, year)
+            if result:
+                return idx, {'success': True, 'result': result}
+            return idx, {'success': False, 'error': err or '未识别'}
+        except Exception as e:
+            return idx, {'success': False, 'error': str(e)}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_worker, i, item) for i, item in enumerate(items)]
+        for future in as_completed(futures):
+            idx, res = future.result()
+            results[idx] = res
+
+    return results

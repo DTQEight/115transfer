@@ -895,9 +895,40 @@ def wechat_menu():
 # ==================== 115网盘整理路由 ====================
 
 from media.scanner import scan_115_directory, get_directory_tree
-from media.tmdb import identify_media, get_tmdb_api_key, set_tmdb_api_key
+from media.tmdb import identify_media, identify_batch, get_tmdb_api_key, set_tmdb_api_key
 from media.classifier import classify, get_all_categories
 from media.organizer import organize_files
+
+CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'cloud115_config.json')
+
+def _load_media_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+def _save_media_config(cfg):
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+@app.route('/media/organize_root', methods=['GET'])
+def media_get_organize_root():
+    cfg = _load_media_config()
+    cid = cfg.get('organize_root_cid', '')
+    name = cfg.get('organize_root_name', '')
+    return jsonify({'success': True, 'cid': cid, 'name': name})
+
+
+@app.route('/media/organize_root', methods=['POST'])
+def media_set_organize_root():
+    cid = request.form.get('cid', '').strip()
+    name = request.form.get('name', '').strip()
+    cfg = _load_media_config()
+    cfg['organize_root_cid'] = cid
+    cfg['organize_root_name'] = name
+    _save_media_config(cfg)
+    return jsonify({'success': True})
 
 
 @app.route('/media')
@@ -938,6 +969,46 @@ def media_identify():
         'tmdb': result,
         'primary': primary,
         'secondary': secondary,
+    })
+
+
+@app.route('/media/identify_batch', methods=['POST'])
+def media_identify_batch():
+    """批量识别媒体（并发）"""
+    import json as _json
+    items_json = request.form.get('items', '[]')
+    try:
+        items = _json.loads(items_json)
+    except Exception:
+        return jsonify({'success': False, 'message': 'items参数格式错误'})
+
+    if not items:
+        return jsonify({'success': False, 'message': '无待识别项'})
+
+    results = identify_batch(items, max_workers=5)
+    # 整理结果，附加分类
+    out = []
+    for r in results:
+        if r and r.get('success') and r.get('result'):
+            tmdb = r['result']
+            primary, secondary = classify(tmdb)
+            out.append({
+                'success': True,
+                'tmdb': tmdb,
+                'primary': primary,
+                'secondary': secondary,
+            })
+        else:
+            out.append({
+                'success': False,
+                'error': (r or {}).get('error', '未识别'),
+            })
+    success_count = sum(1 for x in out if x['success'])
+    return jsonify({
+        'success': True,
+        'results': out,
+        'count': len(out),
+        'success_count': success_count,
     })
 
 

@@ -416,6 +416,12 @@ function renderIdentifiedResults() {
         tbody.innerHTML = '<tr><td colspan="5" class="text-muted text-center">扫描文件后进行识别</td></tr>';
         return;
     }
+
+    const categories = {
+        '电影': ['华语电影', '外语电影', '动画电影', '纪录片'],
+        '电视剧': ['日番', '国漫', '国产剧', '日韩剧', '欧美剧', '综艺', '儿童', '纪录片'],
+    };
+
     let html = '';
     identifiedResults.forEach((item, i) => {
         if (!item.identified) {
@@ -423,13 +429,28 @@ function renderIdentifiedResults() {
                 <td><input type="checkbox" class="file-checkbox" data-index="${i}"></td>
                 <td title="${item.name}">${item.name.length > 40 ? item.name.substring(0, 40) + '...' : item.name}</td>
                 <td class="text-muted">未识别</td>
-                <td class="text-muted">-</td>
+                <td>
+                    <select class="form-select form-select-sm" onchange="changePrimary(${i}, this.value)" style="width:auto;display:inline-block;">
+                        <option value="电影">电影</option>
+                        <option value="电视剧">电视剧</option>
+                    </select>
+                    <select class="form-select form-select-sm ms-1" onchange="changeSecondary(${i}, this.value)" style="width:auto;display:inline-block;" id="secondary-${i}">
+                        ${categories['电影'].map(c => `<option value="${c}">${c}</option>`).join('')}
+                    </select>
+                </td>
                 <td><button class="btn btn-outline-primary btn-sm" onclick="identifySingle(${i})"><i class="bi bi-magic"></i></button>
                     <button class="btn btn-outline-warning btn-sm ms-1" onclick="openManualSearch(${i})" title="手动识别"><i class="bi bi-pencil-square"></i></button></td>
             </tr>`;
         } else {
             const tmdb = item.tmdb;
             const posterUrl = tmdb.poster_path ? `https://image.tmdb.org/t/p/w92${tmdb.poster_path}` : '';
+            const primaryOptions = Object.keys(categories).map(p =>
+                `<option value="${p}" ${p === item.primary ? 'selected' : ''}>${p}</option>`
+            ).join('');
+            const secondaryList = categories[item.primary] || categories['电影'];
+            const secondaryOptions = secondaryList.map(s =>
+                `<option value="${s}" ${s === item.secondary ? 'selected' : ''}>${s}</option>`
+            ).join('');
             html += `<tr>
                 <td><input type="checkbox" class="file-checkbox" data-index="${i}" checked></td>
                 <td title="${item.name}">${item.name.length > 40 ? item.name.substring(0, 40) + '...' : item.name}</td>
@@ -444,8 +465,12 @@ function renderIdentifiedResults() {
                     </div>
                 </td>
                 <td>
-                    <span class="badge bg-primary">${item.primary}</span>
-                    <span class="badge bg-info ms-1">${item.secondary}</span>
+                    <select class="form-select form-select-sm" onchange="changePrimary(${i}, this.value)" style="width:auto;display:inline-block;">
+                        ${primaryOptions}
+                    </select>
+                    <select class="form-select form-select-sm ms-1" onchange="changeSecondary(${i}, this.value)" style="width:auto;display:inline-block;" id="secondary-${i}">
+                        ${secondaryOptions}
+                    </select>
                 </td>
                 <td>
                     <button class="btn btn-outline-primary btn-sm" onclick="identifySingle(${i})" title="重新识别"><i class="bi bi-arrow-repeat"></i></button>
@@ -455,6 +480,28 @@ function renderIdentifiedResults() {
         }
     });
     tbody.innerHTML = html || '<tr><td colspan="5" class="text-muted text-center">无数据</td></tr>';
+}
+
+function changePrimary(index, primary) {
+    const categories = {
+        '电影': ['华语电影', '外语电影', '动画电影', '纪录片'],
+        '电视剧': ['日番', '国漫', '国产剧', '日韩剧', '欧美剧', '综艺', '儿童', '纪录片'],
+    };
+    identifiedResults[index].primary = primary;
+    const secondaryList = categories[primary] || [];
+    if (secondaryList.length > 0 && !secondaryList.includes(identifiedResults[index].secondary)) {
+        identifiedResults[index].secondary = secondaryList[0];
+    }
+    const select = document.getElementById(`secondary-${index}`);
+    if (select) {
+        select.innerHTML = secondaryList.map(s =>
+            `<option value="${s}" ${s === identifiedResults[index].secondary ? 'selected' : ''}>${s}</option>`
+        ).join('');
+    }
+}
+
+function changeSecondary(index, secondary) {
+    identifiedResults[index].secondary = secondary;
 }
 
 function toggleSelectAll() {

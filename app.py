@@ -354,6 +354,8 @@ def cloud115_transfer(movie_id, page):
 @app.route('/cloud115/batch_transfer', methods=['POST'])
 def cloud115_batch_transfer():
     page = request.form.get('page', '')
+    save_path_id = request.form.get('save_path_id', '').strip()
+
     if not page:
         return jsonify({'success': False, 'message': '未指定页码'})
 
@@ -361,6 +363,30 @@ def cloud115_batch_transfer():
         page_num = int(page)
     except (ValueError, TypeError):
         return jsonify({'success': False, 'message': '页码格式错误'})
+
+    # 如果指定了目录，在该目录下创建页码子目录
+    actual_save_path = None
+    if save_path_id:
+        dir_name = f'第{page_num}页'
+        # 先查找是否已存在该页码目录
+        success, msg, items = cloud115.list_files(save_path_id, show_dir=1)
+        if success:
+            for item in items:
+                if item.get('type') == 'dir' and item.get('name') == dir_name:
+                    actual_save_path = item['cid']
+                    break
+        # 不存在则创建
+        if not actual_save_path:
+            success, msg = cloud115.create_dir(save_path_id, dir_name)
+            if success:
+                success2, msg2, items = cloud115.list_files(save_path_id, show_dir=1)
+                if success2:
+                    for item in items:
+                        if item.get('type') == 'dir' and item.get('name') == dir_name:
+                            actual_save_path = item['cid']
+                            break
+        if not actual_save_path:
+            return jsonify({'success': False, 'message': f'无法创建目录: {dir_name}'})
 
     try:
         with data_lock:
@@ -379,12 +405,13 @@ def cloud115_batch_transfer():
         if not magnets:
             return jsonify({'success': False, 'message': '当前页没有有效的磁力链接'})
 
-        results = cloud115.batch_add_offline_tasks(magnets)
+        results = cloud115.batch_add_offline_tasks(magnets, save_path_id=actual_save_path)
         success_count = sum(1 for r in results if r['success'])
         fail_count = len(results) - success_count
+        dir_info = f'（保存到: 第{page_num}页）' if actual_save_path else ''
         return jsonify({
             'success': True,
-            'message': f'批量转存完成: 成功 {success_count}, 失败 {fail_count}',
+            'message': f'批量转存完成: 成功 {success_count}, 失败 {fail_count}{dir_info}',
             'results': results
         })
     except Exception as e:

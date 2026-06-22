@@ -67,9 +67,15 @@
                             </button>
                         </div>
                         <div class="vr d-none d-md-block"></div>
-                        <button onclick="batchTransfer115()" class="btn btn-sm btn-primary" title="批量转存当前页所有磁力链接到115网盘">
-                            <i class="bi bi-cloud-upload me-1"></i>批量转存
-                        </button>
+                        <div class="input-group input-group-sm" style="width: 250px;">
+                            <input type="text" id="batchSavePath" class="form-control" value="根目录" readonly>
+                            <button onclick="openBatchDirSelector()" class="btn btn-outline-secondary" title="选择保存目录">
+                                <i class="bi bi-folder2-open"></i>
+                            </button>
+                            <button onclick="batchTransfer115()" class="btn btn-primary" title="批量转存当前页所有磁力链接到115网盘">
+                                <i class="bi bi-cloud-upload me-1"></i>批量转存
+                            </button>
+                        </div>
                         <button onclick="open115Tasks()" class="btn btn-sm btn-outline-secondary" title="查看115离线任务列表">
                             <i class="bi bi-list-task me-1"></i>任务
                         </button>
@@ -185,6 +191,32 @@
                             {% endfor %}
                         </tbody>
                     </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 目录选择模态框 -->
+        <div class="modal fade" id="batchDirModal" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title"><i class="bi bi-folder2-open me-2"></i>选择保存目录</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-2 text-muted small" id="batchDirBreadcrumb">根目录</div>
+                        <div id="batchDirList" style="max-height: 300px; overflow-y: auto;">
+                            <p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>加载中...</p>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="batchDirGoBack()">
+                            <i class="bi bi-arrow-left me-1"></i>返回上级
+                        </button>
+                        <button type="button" class="btn btn-primary btn-sm" onclick="batchDirConfirm()">
+                            <i class="bi bi-check-lg me-1"></i>选择当前目录
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -357,20 +389,88 @@
             hideLoading();
         }
 
+        // ===== 目录选择器 =====
+        var batchDirStack = [{id: '', name: '根目录'}];
+        var batchSavePathId = '';
+        var batchSavePathName = '根目录';
+
+        function openBatchDirSelector() {
+            batchDirStack = [{id: '', name: '根目录'}];
+            document.getElementById('batchDirBreadcrumb').textContent = '根目录';
+            new bootstrap.Modal(document.getElementById('batchDirModal')).show();
+            loadBatchDirs('');
+        }
+
+        async function loadBatchDirs(cid) {
+            var listEl = document.getElementById('batchDirList');
+            listEl.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>加载中...</p>';
+            try {
+                var resp = await fetch('/media/browse?cid=' + cid);
+                var result = await resp.json();
+                if (!result.success || !result.items) {
+                    listEl.innerHTML = '<p class="text-muted text-center">加载失败</p>';
+                    return;
+                }
+                var dirs = result.items.filter(function(item) { return item.type === 'dir'; });
+                if (dirs.length === 0) {
+                    listEl.innerHTML = '<p class="text-muted text-center">此目录为空</p>';
+                    return;
+                }
+                var html = '<div class="list-group">';
+                dirs.forEach(function(dir) {
+                    html += '<button type="button" class="list-group-item list-group-item-action py-2" onclick="batchDirEnter(\'' + dir.cid + '\', \'' + dir.name.replace(/'/g, "\\'") + '\')">' +
+                        '<i class="bi bi-folder me-2"></i>' + dir.name +
+                    '</button>';
+                });
+                html += '</div>';
+                listEl.innerHTML = html;
+            } catch (e) {
+                listEl.innerHTML = '<p class="text-danger text-center">加载失败</p>';
+            }
+        }
+
+        function batchDirEnter(cid, name) {
+            batchDirStack.push({id: cid, name: name});
+            document.getElementById('batchDirBreadcrumb').textContent = batchDirStack.map(function(d) { return d.name; }).join(' / ');
+            loadBatchDirs(cid);
+        }
+
+        function batchDirGoBack() {
+            if (batchDirStack.length > 1) {
+                batchDirStack.pop();
+                var current = batchDirStack[batchDirStack.length - 1];
+                document.getElementById('batchDirBreadcrumb').textContent = batchDirStack.map(function(d) { return d.name; }).join(' / ');
+                loadBatchDirs(current.id);
+            }
+        }
+
+        function batchDirConfirm() {
+            var current = batchDirStack[batchDirStack.length - 1];
+            batchSavePathId = current.id;
+            batchSavePathName = batchDirStack.map(function(d) { return d.name; }).join(' / ');
+            document.getElementById('batchSavePath').value = batchSavePathName;
+            bootstrap.Modal.getInstance(document.getElementById('batchDirModal')).hide();
+            showToast('保存目录已设为: ' + batchSavePathName, 'info');
+        }
+
         async function batchTransfer115() {
             if (!currentPage) {
                 showToast('请先选择一个页码', 'danger');
                 return;
             }
-            if (!confirm(`确定要批量转存页码 ${currentPage} 的所有磁力链接到115网盘吗？`)) {
+            if (!confirm(`确定要批量转存页码 ${currentPage} 的所有磁力链接到115网盘吗？\n保存位置: ${batchSavePathName}/第${currentPage}页`)) {
                 return;
             }
             showLoading();
             try {
+                var body = 'page=' + currentPage;
+                if (batchSavePathId) {
+                    body += '&save_path_id=' + batchSavePathId;
+                }
                 const response = await fetch('/cloud115/batch_transfer', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: `page=${currentPage}`
+                    body: body
                 });
                 const result = await response.json();
                 showToast(result.message, result.success ? 'success' : 'danger');

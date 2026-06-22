@@ -159,6 +159,13 @@
                                                 class="btn btn-outline-danger action-btn">
                                             <i class="bi bi-trash"></i>
                                         </button>
+                                        <button class="btn btn-outline-info action-btn search-magnet-btn"
+                                                data-name="{{ movie.name }}"
+                                                data-id="{{ movie.id }}"
+                                                data-page="{{ movie.page }}"
+                                                title="搜索磁力链接">
+                                            <i class="bi bi-magnet"></i>
+                                        </button>
                                         {% if not movie.is_empty %}
                                         <button onclick="transferTo115({{ movie.id }}, {{ movie.page }})" 
                                                 class="btn btn-outline-success action-btn" title="转存到115网盘">
@@ -178,6 +185,29 @@
                             {% endfor %}
                         </tbody>
                     </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 搜索磁力链接模态框 -->
+        <div class="modal fade" id="magnetSearchModal" tabindex="-1">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title"><i class="bi bi-magnet me-2"></i>搜索磁力链接</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="input-group mb-3">
+                            <input type="text" id="magnetSearchQuery" class="form-control" onkeydown="if(event.key==='Enter'){searchForumMagnet();}">
+                            <button class="btn btn-primary" onclick="searchForumMagnet()">
+                                <i class="bi bi-search me-1"></i>搜索
+                            </button>
+                        </div>
+                        <div id="magnetSearchResults">
+                            <p class="text-muted text-center">输入关键词搜索</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -380,5 +410,151 @@
                 showToast('获取任务列表失败', 'danger');
             }
             hideLoading();
+        }
+
+        // ===== 论坛搜索磁力链接 =====
+        var magnetSearchMovieId = 0;
+        var magnetSearchMoviePage = 0;
+
+        // 事件委托：点击搜索按钮
+        document.addEventListener('click', function(e) {
+            var btn = e.target.closest('.search-magnet-btn');
+            if (!btn) return;
+            var movieName = btn.dataset.name || '';
+            var movieId = btn.dataset.id || '';
+            var moviePage = btn.dataset.page || '';
+            searchForumForMovie(movieName, movieId, moviePage);
+        });
+
+        function searchForumForMovie(movieName, movieId, moviePage) {
+            magnetSearchMovieId = movieId;
+            magnetSearchMoviePage = moviePage;
+            document.getElementById('magnetSearchQuery').value = movieName;
+            document.getElementById('magnetSearchResults').innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>搜索中...</p>';
+            new bootstrap.Modal(document.getElementById('magnetSearchModal')).show();
+            doSearchForumMagnet(movieName);
+        }
+
+        async function searchForumMagnet() {
+            var query = document.getElementById('magnetSearchQuery').value.trim();
+            if (!query) return;
+            await doSearchForumMagnet(query);
+        }
+
+        async function doSearchForumMagnet(query) {
+            var el = document.getElementById('magnetSearchResults');
+            el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>搜索中...</p>';
+            try {
+                var resp = await fetch('/baidu/search', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'keyword=' + encodeURIComponent(query)
+                });
+                var result = await resp.json();
+                if (!result.success) {
+                    el.innerHTML = '<p class="text-danger text-center">' + (result.message || '搜索失败') + '</p>';
+                    return;
+                }
+                if (!result.results || result.results.length === 0) {
+                    el.innerHTML = '<p class="text-muted text-center">未找到结果</p>';
+                    return;
+                }
+                var html = '<p class="text-muted small mb-2">找到 ' + result.count + ' 个结果，点击获取磁力链接</p>';
+                html += '<div class="list-group" style="max-height:400px;overflow-y:auto;">';
+                result.results.forEach(function(r) {
+                    var title = escapeHtml(r.title);
+                    var meta = (r.forum || '') + ' · ' + (r.replies || '0') + '回复 · ' + (r.views || '0') + '查看';
+                    if (r.date) meta += ' · ' + r.date;
+                    html += '<button type="button" class="list-group-item list-group-item-action" onclick="fetchMagnetAndApply(\'' + r.tid + '\', this)">' +
+                        '<div class="d-flex justify-content-between align-items-center">' +
+                            '<div class="me-2">' +
+                                '<div class="fw-bold small">' + title + '</div>' +
+                                '<small class="text-muted">' + escapeHtml(meta) + '</small>' +
+                            '</div>' +
+                            '<span class="badge bg-info fetch-magnet-badge">获取</span>' +
+                        '</div>' +
+                    '</button>';
+                });
+                html += '</div>';
+                el.innerHTML = html;
+            } catch (e) {
+                el.innerHTML = '<p class="text-danger text-center">搜索失败: ' + escapeHtml(e.message) + '</p>';
+            }
+        }
+
+        async function fetchMagnetAndApply(tid, btn) {
+            var badge = btn.querySelector('.fetch-magnet-badge');
+            if (badge) {
+                badge.className = 'badge bg-warning fetch-magnet-badge';
+                badge.textContent = '获取中...';
+            }
+            btn.disabled = true;
+            try {
+                var resp = await fetch('/baidu/magnet', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'tid=' + tid
+                });
+                var result = await resp.json();
+                if (!result.success) {
+                    if (badge) {
+                        badge.className = 'badge bg-danger fetch-magnet-badge';
+                        badge.textContent = '失败';
+                    }
+                    showToast(result.message || '获取失败', 'danger');
+                    btn.disabled = false;
+                    return;
+                }
+                var magnet = result.magnet;
+                // 填入对应电影的磁力链接输入框
+                var magnetInput = document.querySelector('.magnet-input[data-id="' + magnetSearchMovieId + '"]');
+                if (magnetInput) {
+                    magnetInput.value = magnet;
+                    // 触发保存
+                    await saveMagnetInlineDirect(magnetInput, magnet);
+                }
+                // 关闭模态框
+                bootstrap.Modal.getInstance(document.getElementById('magnetSearchModal')).hide();
+                showToast('磁力链接已保存', 'success');
+            } catch (e) {
+                if (badge) {
+                    badge.className = 'badge bg-danger fetch-magnet-badge';
+                    badge.textContent = '失败';
+                }
+                showToast('获取失败: ' + e.message, 'danger');
+                btn.disabled = false;
+            }
+        }
+
+        async function saveMagnetInlineDirect(input, magnet) {
+            var id = input.dataset.id;
+            var page = input.dataset.page;
+            var row = input.closest('tr');
+            var name = row ? row.querySelector('.fw-medium').textContent.trim() : '';
+            try {
+                var resp = await fetch('/update/' + id, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'page=' + page + '&name=' + encodeURIComponent(name) + '&magnet=' + encodeURIComponent(magnet)
+                });
+                var result = await resp.json();
+                if (result.success) {
+                    input.defaultValue = magnet;
+                    if (magnet) input.classList.remove('border-warning');
+                    else input.classList.add('border-warning');
+                }
+            } catch (e) {
+                console.error('保存失败', e);
+            }
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 {% endblock %}

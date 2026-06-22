@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+
+{% block title %}115Transfer - 电影搜索{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <!-- 配置卡片 -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-gear me-2"></i>论坛配置
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label">账号</label>
+                    <input type="text" id="forumUser" class="form-control" placeholder="论坛账号">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">密码</label>
+                    <input type="password" id="forumPass" class="form-control" placeholder="论坛密码">
+                </div>
+                <div class="d-flex gap-2">
+                    <button onclick="saveForumConfig()" class="btn btn-primary">
+                        <i class="bi bi-save me-1"></i>保存配置
+                    </button>
+                    <button onclick="testForumLogin()" class="btn btn-outline-success">
+                        <i class="bi bi-check-circle me-1"></i>测试登录
+                    </button>
+                </div>
+                <div id="configResult" class="mt-3"></div>
+            </div>
+        </div>
+
+        <!-- 搜索卡片 -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-search me-2"></i>搜索电影
+            </div>
+            <div class="card-body">
+                <div class="input-group mb-3">
+                    <input type="text" id="searchKeyword" class="form-control" placeholder="输入电影名称（中文或英文）" onkeydown="if(event.key==='Enter'){searchMovies();}">
+                    <button onclick="searchMovies()" class="btn btn-primary">
+                        <i class="bi bi-search me-1"></i>搜索
+                    </button>
+                </div>
+                <div id="searchResult"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// 页面加载时读取配置
+(async function loadForumConfig() {
+    try {
+        var resp = await fetch('/baidu/config');
+        if (!resp.ok) return;
+        var result = await resp.json();
+        if (result.success && result.config) {
+            if (result.config.username) document.getElementById('forumUser').value = result.config.username;
+            if (result.config.password) document.getElementById('forumPass').value = result.config.password;
+        }
+    } catch (e) {
+        console.error('加载配置失败:', e);
+    }
+})();
+
+function showResult(elId, html, type) {
+    var el = document.getElementById(elId);
+    var cls = type === 'danger' ? 'alert-danger' : (type === 'success' ? 'alert-success' : 'alert-info');
+    el.innerHTML = '<div class="alert ' + cls + ' mb-0">' + html + '</div>';
+}
+
+async function saveForumConfig() {
+    var username = document.getElementById('forumUser').value.trim();
+    var password = document.getElementById('forumPass').value.trim();
+    if (!username || !password) {
+        showResult('configResult', '请输入账号和密码', 'danger');
+        return;
+    }
+    try {
+        var resp = await fetch('/baidu/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username: username, password: password})
+        });
+        var result = await resp.json();
+        if (result.success) {
+            showResult('configResult', '配置已保存', 'success');
+        } else {
+            showResult('configResult', result.message || '保存失败', 'danger');
+        }
+    } catch (e) {
+        showResult('configResult', '保存失败: ' + e.message, 'danger');
+    }
+}
+
+async function testForumLogin() {
+    showResult('configResult', '<i class="bi bi-arrow-repeat me-1"></i>测试中...', 'info');
+    try {
+        var resp = await fetch('/baidu/test');
+        var result = await resp.json();
+        if (result.success) {
+            showResult('configResult', result.message, 'success');
+        } else {
+            showResult('configResult', result.message, 'danger');
+        }
+    } catch (e) {
+        showResult('configResult', '测试失败: ' + e.message, 'danger');
+    }
+}
+
+async function searchMovies() {
+    var keyword = document.getElementById('searchKeyword').value.trim();
+    if (!keyword) {
+        showToast('请输入搜索关键词', 'danger');
+        return;
+    }
+    var el = document.getElementById('searchResult');
+    el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>搜索中...</p>';
+    try {
+        var resp = await fetch('/baidu/search', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'keyword=' + encodeURIComponent(keyword)
+        });
+        var result = await resp.json();
+        if (!result.success) {
+            el.innerHTML = '<div class="alert alert-danger">' + (result.message || '搜索失败') + '</div>';
+            return;
+        }
+        if (!result.results || result.results.length === 0) {
+            el.innerHTML = '<div class="alert alert-info">未找到结果</div>';
+            return;
+        }
+        var html = '<p class="text-muted mb-2">找到 ' + result.count + ' 个结果</p>';
+        html += '<div class="list-group">';
+        result.results.forEach(function(r, i) {
+            var title = escapeHtml(r.title);
+            var meta = (r.forum || '') + ' · ' + (r.replies || '0') + '回复 · ' + (r.views || '0') + '查看';
+            if (r.date) meta += ' · ' + r.date;
+            if (r.author) meta += ' · ' + escapeHtml(r.author);
+            html += '<div class="list-group-item list-group-item-action">' +
+                '<div class="d-flex justify-content-between align-items-start">' +
+                    '<div class="me-2 flex-grow-1">' +
+                        '<h6 class="mb-1">' + title + '</h6>' +
+                        '<small class="text-muted">' + escapeHtml(meta) + '</small>' +
+                    '</div>' +
+                    '<div class="d-flex gap-1 flex-shrink-0">' +
+                        '<button class="btn btn-sm btn-outline-primary" onclick="getMagnet(' + r.tid + ', this)" title="获取磁力链接">' +
+                            '<i class="bi bi-magnet"></i>' +
+                        '</button>' +
+                        '<button class="btn btn-sm btn-outline-success" onclick="saveTo115(' + r.tid + ', this)" title="添加到115离线下载">' +
+                            '<i class="bi bi-cloud-plus"></i>' +
+                        '</button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="mt-2" id="magnet-' + r.tid + '"></div>' +
+            '</div>';
+        });
+        html += '</div>';
+        el.innerHTML = html;
+    } catch (e) {
+        el.innerHTML = '<div class="alert alert-danger">搜索失败: ' + escapeHtml(e.message) + '</div>';
+    }
+}
+
+async function getMagnet(tid, btn) {
+    var el = document.getElementById('magnet-' + tid);
+    el.innerHTML = '<small class="text-muted"><i class="bi bi-arrow-repeat me-1"></i>获取磁力链接中...</small>';
+    btn.disabled = true;
+    try {
+        var resp = await fetch('/baidu/magnet', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'tid=' + tid
+        });
+        var result = await resp.json();
+        if (!result.success) {
+            el.innerHTML = '<small class="text-danger">' + escapeHtml(result.message || '获取失败') + '</small>';
+            return;
+        }
+        var magnet = result.magnet;
+        var name = result.name || '';
+        el.innerHTML =
+            '<div class="input-group input-group-sm">' +
+                '<input type="text" class="form-control" value="' + escapeHtml(magnet) + '" readonly onclick="this.select()">' +
+                '<button class="btn btn-outline-secondary" onclick="copyText(\'' + magnet.replace(/'/g, "\\'") + '\')">复制</button>' +
+                '<button class="btn btn-outline-success" onclick="addMagnetTo115(\'' + magnet.replace(/'/g, "\\'") + '\', ' + tid + ')">添加到115</button>' +
+            '</div>' +
+            (name ? '<small class="text-muted mt-1 d-block">' + escapeHtml(name) + '</small>' : '');
+    } catch (e) {
+        el.innerHTML = '<small class="text-danger">获取失败: ' + escapeHtml(e.message) + '</small>';
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function saveTo115(tid, btn) {
+    btn.disabled = true;
+    var original = btn.innerHTML;
+    btn.innerHTML = '<i class="bi bi-arrow-repeat"></i>';
+    try {
+        var resp = await fetch('/baidu/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'tid=' + tid
+        });
+        var result = await resp.json();
+        if (result.success) {
+            showToast(result.message, 'success');
+        } else {
+            showToast(result.message || '添加失败', 'danger');
+        }
+    } catch (e) {
+        showToast('添加失败: ' + e.message, 'danger');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = original;
+    }
+}
+
+async function addMagnetTo115(magnet, tid) {
+    try {
+        var resp = await fetch('/baidu/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'magnet=' + encodeURIComponent(magnet)
+        });
+        var result = await resp.json();
+        if (result.success) {
+            showToast(result.message, 'success');
+        } else {
+            showToast(result.message || '添加失败', 'danger');
+        }
+    } catch (e) {
+        showToast('添加失败: ' + e.message, 'danger');
+    }
+}
+
+function copyText(text) {
+    navigator.clipboard.writeText(text).then(function() {
+        showToast('已复制', 'success');
+    }).catch(function() {
+        showToast('复制失败', 'danger');
+    });
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+</script>
+{% endblock %}

@@ -9,6 +9,7 @@ COPY app.py .
 COPY cloud115.py .
 COPY wechat_work.py .
 COPY douban.py .
+COPY baidu_forum.py .
 COPY media/ media/
 COPY templates/ templates/
 COPY VERSION .

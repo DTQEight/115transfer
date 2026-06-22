@@ -986,6 +986,96 @@ def media_tree():
     return jsonify({'success': True, 'tree': tree})
 
 
+# ===== 论坛电影搜索 =====
+
+import baidu_forum
+
+
+@app.route('/baidu')
+def baidu_page():
+    return render_template('baidu.html', version=VERSION)
+
+
+@app.route('/baidu/config', methods=['GET', 'POST'])
+def baidu_config():
+    if request.method == 'GET':
+        config = baidu_forum.load_config()
+        # 不返回密码明文
+        return jsonify({
+            'success': True,
+            'config': {
+                'username': config.get('username', ''),
+                'password': config.get('password', ''),
+            }
+        })
+    data = request.get_json(force=True, silent=True) or {}
+    username = (data.get('username') or '').strip()
+    password = (data.get('password') or '').strip()
+    if not username or not password:
+        return jsonify({'success': False, 'message': '请输入账号和密码'})
+    config = baidu_forum.load_config()
+    config['username'] = username
+    config['password'] = password
+    # 账号密码变更后清除旧的cookie缓存
+    config.pop('cookies', None)
+    config.pop('cookies_ts', None)
+    baidu_forum.save_config(config)
+    return jsonify({'success': True, 'message': '配置已保存'})
+
+
+@app.route('/baidu/test')
+def baidu_test():
+    try:
+        s = baidu_forum._get_session()
+        if baidu_forum._is_logged_in(s):
+            return jsonify({'success': True, 'message': '登录成功'})
+        return jsonify({'success': False, 'message': '登录失败，请检查账号密码'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/baidu/search', methods=['POST'])
+def baidu_search():
+    keyword = (request.form.get('keyword') or '').strip()
+    if not keyword:
+        return jsonify({'success': False, 'message': '请输入搜索关键词'})
+    try:
+        results = baidu_forum.search(keyword)
+        return jsonify({'success': True, 'results': results, 'count': len(results)})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/baidu/magnet', methods=['POST'])
+def baidu_magnet():
+    tid = (request.form.get('tid') or '').strip()
+    if not tid:
+        return jsonify({'success': False, 'message': '缺少帖子ID'})
+    try:
+        result = baidu_forum.get_magnet_from_thread(tid)
+        return jsonify({'success': True, **result})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/baidu/save', methods=['POST'])
+def baidu_save():
+    """获取磁力链接并添加到115离线下载"""
+    tid = (request.form.get('tid') or '').strip()
+    magnet = (request.form.get('magnet') or '').strip()
+    try:
+        if not magnet:
+            # 没有直接传磁力链接，从帖子获取
+            if not tid:
+                return jsonify({'success': False, 'message': '缺少帖子ID或磁力链接'})
+            result = baidu_forum.get_magnet_from_thread(tid)
+            magnet = result['magnet']
+        success, msg = cloud115.add_offline_task(magnet)
+        return jsonify({'success': success, 'message': msg, 'magnet': magnet})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
 # ===== 豆瓣同步 =====
 
 @app.route('/douban')

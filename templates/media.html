@@ -124,11 +124,12 @@
                 <div class="mb-3">
                     <label class="form-label small">分类根目录 (115 CID)</label>
                     <div class="input-group">
-                        <input type="text" id="organizeRootCid" class="form-control form-control-sm" value="0" placeholder="0 = 根目录">
+                        <span id="organizeRootDisplay" class="form-control form-control-sm" style="background-color: #f8f9fa; min-width: 200px;">未选择</span>
+                        <input type="hidden" id="organizeRootCid" value="">
                         <button class="btn btn-outline-primary btn-sm" onclick="openOrganizeDirBrowser()">
                             <i class="bi bi-folder2-open"></i> 选择
                         </button>
-                        <span id="organizeRootName" class="input-group-text small">根目录</span>
+                        <span id="organizeRootName" class="input-group-text small" style="min-width: 120px;">未选择</span>
                     </div>
                 </div>
                 <div class="table-responsive">
@@ -661,9 +662,18 @@ async function loadOrganizeRoot() {
         const result = await resp.json();
         if (result.success && result.cid) {
             document.getElementById('organizeRootCid').value = result.cid;
-            document.getElementById('organizeRootName').textContent = result.name || result.cid;
+            document.getElementById('organizeRootDisplay').textContent = result.name || 'CID: ' + result.cid;
+            document.getElementById('organizeRootName').textContent = result.name || 'CID: ' + result.cid;
+        } else {
+            document.getElementById('organizeRootCid').value = '';
+            document.getElementById('organizeRootDisplay').textContent = '未选择';
+            document.getElementById('organizeRootName').textContent = '未选择';
         }
-    } catch (e) {}
+    } catch (e) {
+        document.getElementById('organizeRootCid').value = '';
+        document.getElementById('organizeRootDisplay').textContent = '未选择';
+        document.getElementById('organizeRootName').textContent = '未选择';
+    }
 }
 
 // 目录选择（分类根目录）
@@ -720,6 +730,7 @@ function confirmOrganizeDir() {
     const cid = current.id;
     const name = organizeModalDirStack.map(d => d.name).join(' / ');
     document.getElementById('organizeRootCid').value = cid;
+    document.getElementById('organizeRootDisplay').textContent = name;
     document.getElementById('organizeRootName').textContent = name;
     bootstrap.Modal.getInstance(document.getElementById('organizeDirModal')).hide();
     // 保存到后端

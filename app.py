@@ -896,25 +896,14 @@ def wechat_menu():
 
 from media.scanner import scan_115_directory, get_directory_tree
 from media.tmdb import identify_media, identify_batch, get_tmdb_api_key, set_tmdb_api_key
+from media.tmdb import _load_config as _tmdb_load_config
 from media.classifier import classify, get_all_categories
 from media.organizer import organize_files
-
-CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'cloud115_config.json')
-
-def _load_media_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
-
-def _save_media_config(cfg):
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
 @app.route('/media/organize_root', methods=['GET'])
 def media_get_organize_root():
-    cfg = _load_media_config()
+    cfg = _tmdb_load_config()
     cid = cfg.get('organize_root_cid', '')
     name = cfg.get('organize_root_name', '')
     return jsonify({'success': True, 'cid': cid, 'name': name})
@@ -922,12 +911,15 @@ def media_get_organize_root():
 
 @app.route('/media/organize_root', methods=['POST'])
 def media_set_organize_root():
+    import json as _json
     cid = request.form.get('cid', '').strip()
     name = request.form.get('name', '').strip()
-    cfg = _load_media_config()
+    cfg = _tmdb_load_config()
     cfg['organize_root_cid'] = cid
     cfg['organize_root_name'] = name
-    _save_media_config(cfg)
+    from media.tmdb import CONFIG_FILE
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        _json.dump(cfg, f, ensure_ascii=False, indent=2)
     return jsonify({'success': True})
 
 

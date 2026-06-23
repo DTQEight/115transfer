@@ -43,6 +43,7 @@
                         <i class="bi bi-search me-1"></i>搜索
                     </button>
                 </div>
+                <div id="formatFilter"></div>
                 <div id="searchResult"></div>
             </div>
         </div>
@@ -111,6 +112,83 @@ async function testForumLogin() {
 }
 
 var searchKeyword = '';
+var currentResults = [];
+var activeFormat = '';
+
+function detectFormat(title) {
+    var t = title.toUpperCase();
+    // 杜比视界 (Dolby Vision) 优先
+    if (/DOLBY[\s.]?VISION|DV[\s.]|DoVi/i.test(t)) return '杜比视界';
+    // 4K蓝光原盘
+    if (/\b(4K|2160P)\b/.test(t) && /\b(BLU[\s-]?RAY|REMUX)\b.*\b(原盘|DISC|ISO)\b|\b(原盘|DISC|ISO)\b.*\b(BLU[\s-]?RAY|REMUX)\b/i.test(t)) return '4K蓝光原盘';
+    // 3D
+    if (/\b3D\b/i.test(t)) return '3D';
+    // 蓝光原盘
+    if (/\b(原盘|DISC|ISO)\b/i.test(t) && /\b(BLU[\s-]?RAY|BDREMUX)\b/i.test(t)) return '蓝光原盘';
+    // 4K蓝光
+    if (/\b(4K|2160P)\b/.test(t) && /\b(BLU[\s-]?RAY|BDREMUX|REMUX)\b/i.test(t)) return '4K蓝光';
+    // 1080P Remux
+    if (/\b1080P?\b/.test(t) && /\bREMUX\b/i.test(t)) return '1080P-Remux';
+    // 1080P蓝光
+    if (/\b1080P?\b/.test(t) && /\b(BLU[\s-]?RAY|BDRIP|BDREMUX)\b/i.test(t)) return '1080P蓝光';
+    // WEB-4K
+    if (/\b(4K|2160P)\b/.test(t) && /\b(WEB[\s-]?(DL|RIP)|WEBDL)\b/i.test(t)) return 'WEB-4K';
+    // WEB-1080P
+    if (/\b1080P?\b/.test(t) && /\b(WEB[\s-]?(DL|RIP)|WEBDL)\b/i.test(t)) return 'WEB-1080P';
+    // 4K其他
+    if (/\b(4K|2160P)\b/.test(t)) return '4K蓝光';
+    // 1080P其他
+    if (/\b1080P?\b/.test(t)) return '1080P蓝光';
+    return '其他';
+}
+
+function getFormatBadgeColor(fmt) {
+    var colors = {
+        '4K蓝光': 'danger',
+        '4K蓝光原盘': 'danger',
+        '杜比视界': 'warning text-dark',
+        '1080P蓝光': 'primary',
+        '1080P-Remux': 'info text-dark',
+        'WEB-4K': 'success',
+        'WEB-1080P': 'success',
+        '蓝光原盘': 'secondary',
+        '3D': 'dark',
+        '其他': 'light text-dark'
+    };
+    return colors[fmt] || 'light text-dark';
+}
+
+function renderFormatFilter() {
+    var counts = {};
+    var order = ['4K蓝光', '4K蓝光原盘', '1080P蓝光', '1080P-Remux', 'WEB-4K', 'WEB-1080P', '杜比视界', '蓝光原盘', '3D', '其他'];
+    currentResults.forEach(function(r) {
+        var fmt = r._format || '其他';
+        counts[fmt] = (counts[fmt] || 0) + 1;
+    });
+    var html = '<div class="d-flex flex-wrap gap-1 mb-3">';
+    html += '<button class="btn btn-sm ' + (!activeFormat ? 'btn-dark' : 'btn-outline-dark') + '" onclick="filterByFormat(\'\')">全部 (' + currentResults.length + ')</button>';
+    order.forEach(function(fmt) {
+        if (counts[fmt]) {
+            var cls = activeFormat === fmt ? 'btn-' + getFormatBadgeColor(fmt) : 'btn-outline-' + getFormatBadgeColor(fmt);
+            html += '<button class="btn btn-sm ' + cls + '" onclick="filterByFormat(\'' + fmt + '\')">' + fmt + ' (' + counts[fmt] + ')</button>';
+        }
+    });
+    html += '</div>';
+    document.getElementById('formatFilter').innerHTML = html;
+}
+
+function filterByFormat(fmt) {
+    activeFormat = fmt;
+    renderFormatFilter();
+    var items = document.querySelectorAll('.search-item');
+    items.forEach(function(el) {
+        if (!fmt || el.dataset.format === fmt) {
+            el.style.display = '';
+        } else {
+            el.style.display = 'none';
+        }
+    });
+}
 
 async function searchMovies(page) {
     var keyword = document.getElementById('searchKeyword').value.trim();
@@ -138,17 +216,23 @@ async function searchMovies(page) {
             return;
         }
         var totalCount = result.total_count || result.results.length;
+        currentResults = result.results;
+        currentResults.forEach(function(r) { r._format = detectFormat(r.title); });
+        activeFormat = '';
+        renderFormatFilter();
         var html = '<p class="text-muted mb-2">共 ' + totalCount + ' 个结果，当前第 ' + result.page + '/' + result.total_pages + ' 页（每页约30条）</p>';
         html += '<div class="list-group">';
         result.results.forEach(function(r, i) {
             var title = escapeHtml(r.title);
+            var fmt = r._format || '其他';
+            var badgeColor = getFormatBadgeColor(fmt);
             var meta = (r.forum || '') + ' · ' + (r.replies || '0') + '回复 · ' + (r.views || '0') + '查看';
             if (r.date) meta += ' · ' + r.date;
             if (r.author) meta += ' · ' + escapeHtml(r.author);
-            html += '<div class="list-group-item list-group-item-action">' +
+            html += '<div class="list-group-item list-group-item-action search-item" data-format="' + fmt + '">' +
                 '<div class="d-flex justify-content-between align-items-start">' +
                     '<div class="me-2 flex-grow-1">' +
-                        '<h6 class="mb-1">' + title + '</h6>' +
+                        '<h6 class="mb-1"><span class="badge bg-' + badgeColor + ' me-1">' + fmt + '</span>' + title + '</h6>' +
                         '<small class="text-muted">' + escapeHtml(meta) + '</small>' +
                     '</div>' +
                     '<div class="d-flex gap-1 flex-shrink-0">' +

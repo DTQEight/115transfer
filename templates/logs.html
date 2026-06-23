@@ -96,9 +96,7 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// 初始化 - 页面加载后自动获取日志，并每5秒自动刷新
-window.addEventListener('load', function() {
-    loadLogs();
-    setInterval(loadLogs, 5000);
-});
+// 初始化 - 立即加载日志，并每5秒自动刷新
+loadLogs();
+setInterval(loadLogs, 5000);
 {% endblock %}

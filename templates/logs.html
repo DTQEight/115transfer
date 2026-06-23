@@ -23,10 +23,6 @@
                         <option value="1000">1000条</option>
                     </select>
                     <button class="btn btn-sm btn-outline-primary" onclick="loadLogs()"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
-                    <div class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" id="autoRefresh">
-                        <label class="form-check-label small" for="autoRefresh">自动刷新</label>
-                    </div>
                     <button class="btn btn-sm btn-outline-danger" onclick="clearLogs()"><i class="bi bi-trash"></i> 清空</button>
                 </div>
             </div>
@@ -42,8 +38,6 @@
 {% endblock %}
 
 {% block extra_script %}
-var autoRefreshTimer = null;
-
 async function loadLogs() {
     var level = document.getElementById('logLevel').value;
     var keyword = document.getElementById('logKeyword').value.trim();
@@ -51,10 +45,10 @@ async function loadLogs() {
     var container = document.getElementById('logContainer');
     var stats = document.getElementById('logStats');
     try {
-        var url = '/logs/api?limit=' + limit;
+        var url = '/logs/api?limit=' + limit + '&_=' + Date.now();
         if (level) url += '&level=' + encodeURIComponent(level);
         if (keyword) url += '&keyword=' + encodeURIComponent(keyword);
-        var resp = await fetch(url);
+        var resp = await fetch(url, {cache: 'no-store'});
         var result = await resp.json();
         if (!result.success) {
             container.innerHTML = '<p class="text-danger">' + escapeHtml(result.message || '加载失败') + '</p>';
@@ -66,7 +60,6 @@ async function loadLogs() {
             return;
         }
         var html = '';
-        // 倒序显示（最新在上）
         for (var i = result.lines.length - 1; i >= 0; i--) {
             var line = result.lines[i];
             var color = '#333';
@@ -79,16 +72,6 @@ async function loadLogs() {
         container.innerHTML = html;
     } catch (e) {
         container.innerHTML = '<p class="text-danger">加载失败: ' + escapeHtml(e.message) + '</p>';
-    }
-}
-
-function toggleAutoRefresh() {
-    var cb = document.getElementById('autoRefresh');
-    if (cb.checked) {
-        loadLogs();
-        autoRefreshTimer = setInterval(loadLogs, 5000);
-    } else {
-        if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
     }
 }
 
@@ -113,7 +96,9 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// 初始化
-loadLogs();
-document.getElementById('autoRefresh').addEventListener('change', toggleAutoRefresh);
+// 初始化 - 页面加载后自动获取日志，并每5秒自动刷新
+window.addEventListener('load', function() {
+    loadLogs();
+    setInterval(loadLogs, 5000);
+});
 {% endblock %}

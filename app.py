@@ -8,6 +8,7 @@ import zoneinfo
 import threading
 import hashlib
 import logging
+from logging.handlers import RotatingFileHandler
 import cloud115
 import wechat_work
 import douban
@@ -20,8 +21,8 @@ LOG_FILE = os.path.join(LOG_DIR, 'app.log')
 logger = logging.getLogger('115transfer')
 logger.setLevel(logging.INFO)
 
-# 文件日志
-fh = logging.FileHandler(LOG_FILE, encoding='utf-8')
+# 文件日志（轮转：单个文件最大10MB，保留5个备份）
+fh = RotatingFileHandler(LOG_FILE, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
 fh.setLevel(logging.INFO)
 fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
 logger.addHandler(fh)

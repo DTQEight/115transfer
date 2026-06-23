@@ -7,9 +7,30 @@ from datetime import datetime
 import zoneinfo
 import threading
 import hashlib
+import logging
 import cloud115
 import wechat_work
 import douban
+
+# 日志配置
+LOG_DIR = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, 'app.log')
+
+logger = logging.getLogger('115transfer')
+logger.setLevel(logging.INFO)
+
+# 文件日志
+fh = logging.FileHandler(LOG_FILE, encoding='utf-8')
+fh.setLevel(logging.INFO)
+fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+logger.addHandler(fh)
+
+# 控制台日志
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+ch.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))
+logger.addHandler(ch)
 
 user_states = {}
 
@@ -341,6 +362,7 @@ def cloud115_transfer(movie_id, page):
         if row.empty:
             return jsonify({'success': False, 'message': '电影记录不存在'})
 
+        movie_name = row.iloc[0]['电影名']
         magnet = row.iloc[0]['磁力链接']
         if pd.isna(magnet) or str(magnet).strip() == '':
             return jsonify({'success': False, 'message': '磁力链接为空'})
@@ -349,8 +371,13 @@ def cloud115_transfer(movie_id, page):
         save_path = get_or_create_page_dir(page)
         success, msg = cloud115.add_offline_task(str(magnet), save_path_id=save_path)
         dir_info = f'（保存到: 第{page}页）' if save_path else ''
+        if success:
+            logger.info(f'[转存] 成功: {movie_name} (ID:{movie_id}, 页:{page})')
+        else:
+            logger.warning(f'[转存] 失败: {movie_name} - {msg}')
         return jsonify({'success': success, 'message': msg + dir_info})
     except Exception as e:
+        logger.error(f'[转存] 异常: {str(e)}')
         return jsonify({'success': False, 'message': f'转存失败: {str(e)}'})
 
 
@@ -415,6 +442,7 @@ def cloud115_batch_transfer():
         success_count = sum(1 for r in results if r['success'])
         fail_count = len(results) - success_count
         dir_info = f'（保存到: 第{page_num}页）' if save_path else ''
+        logger.info(f'[批量转存] 页码:{page_num}, 成功:{success_count}, 失败:{fail_count}')
         return jsonify({
             'success': True,
             'message': f'批量转存完成: 成功 {success_count}, 失败 {fail_count}{dir_info}',
@@ -513,6 +541,7 @@ def wechat_callback():
     echostr = request.args.get('echostr', '')
 
     print(f'[WeChat Callback] Token: {token[:10]}..., Signature: {msg_signature}, Timestamp: {timestamp}, Nonce: {nonce}, Echostr: {echostr[:20] if echostr else "None"}', flush=True)
+    logger.info(f'[WeChat Callback] Token: {token[:10]}..., Signature: {msg_signature}')
 
     if not token:
         return '未配置企业微信', 500
@@ -525,13 +554,16 @@ def wechat_callback():
         if crypto:
             is_valid = crypto.verify_signature(msg_signature, timestamp, nonce, echostr)
             print(f'[WeChat Callback] Signature valid: {is_valid}', flush=True)
+            logger.info(f'[WeChat Callback] Signature valid: {is_valid}')
             if is_valid:
                 try:
                     decrypted, _ = crypto.decrypt_message(echostr)
                     print(f'[WeChat Callback] Decrypted echostr: {decrypted}', flush=True)
+                    logger.info(f'[WeChat Callback] Decrypted echostr')
                     return decrypted
                 except Exception as e:
                     print(f'[WeChat Callback] Decrypt error: {e}', flush=True)
+                    logger.error(f'[WeChat Callback] Decrypt error: {e}')
                     return echostr
         return '签名验证失败', 403
 
@@ -542,8 +574,10 @@ def wechat_callback():
             encrypt_elem = root.find('Encrypt')
             encrypt_content = encrypt_elem.text if encrypt_elem is not None else ''
             print(f'[WeChat Callback] Encrypt content: {encrypt_content[:30]}...', flush=True)
+            logger.info(f'[WeChat Callback] Encrypt content received')
             if not crypto.verify_signature(msg_signature, timestamp, nonce, encrypt_content):
                 print(f'[WeChat Callback] POST signature verification failed', flush=True)
+                logger.warning('[WeChat Callback] POST signature verification failed')
                 return '签名验证失败', 403
             if encrypt_elem is not None:
                 decrypted, from_user = crypto.decrypt_message(encrypt_elem.text)
@@ -737,9 +771,11 @@ def wechat_callback():
 
             reply = wechat_work.truncate_reply(reply)
             print(f'[WeChat Reply] To: {from_user}, From: {to_user}, Content: {reply[:50]}', flush=True)
+            logger.info(f'[WeChat Reply] To: {from_user}, Content: {reply[:50]}')
             if crypto:
                 reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply, crypto)
                 print(f'[WeChat Reply] XML: {reply_xml[:200]}', flush=True)
+                logger.debug(f'[WeChat Reply] XML generated')
                 return reply_xml, 200, {'Content-Type': 'application/xml'}
             else:
                 reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply)
@@ -749,6 +785,7 @@ def wechat_callback():
             event = msg.get('Event', '')
             event_key = msg.get('EventKey', '')
             print(f'[WeChat Event] Type: {event}, Key: {event_key}', flush=True)
+            logger.info(f'[WeChat Event] Type: {event}, Key: {event_key}')
 
             if event == 'click':
                 user_states.pop(from_user, None)
@@ -858,6 +895,7 @@ def wechat_test():
         return jsonify({'success': False, 'message': '请输入测试消息'})
     
     print(f'[WeChat Test] Received: {content}', flush=True)
+    logger.info(f'[WeChat Test] Received: {content}')
     result = wechat_work.handle_text_message(content)
     
     if isinstance(result, dict):
@@ -1061,10 +1099,17 @@ def media_organize():
     source_cid = data.get('source_cid', '0')
     if not file_list:
         return jsonify({'success': False, 'message': '没有要整理的文件'})
+    logger.info(f'[整理] 开始整理 {len(file_list)} 个文件, 根目录:{root_cid}')
     results = organize_files(file_list, root_cid, source_cid)
+    success_count = len(results["success"])
+    fail_count = len(results["failed"])
+    logger.info(f'[整理] 完成: 成功 {success_count}, 失败 {fail_count}')
+    if fail_count > 0:
+        for f in results["failed"][:5]:
+            logger.warning(f'[整理] 失败: {f.get("name", "")} - {f.get("reason", "")}')
     return jsonify({
         'success': True,
-        'message': f'整理完成: 成功 {len(results["success"])} 个, 失败 {len(results["failed"])} 个',
+        'message': f'整理完成: 成功 {success_count} 个, 失败 {fail_count} 个',
         'results': results,
     })
 
@@ -1152,8 +1197,10 @@ def baidu_search():
         return jsonify({'success': False, 'message': '请输入搜索关键词'})
     try:
         result = baidu_forum.search(keyword, page=page)
+        logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 结果:{result.get("total_count", 0)}个')
         return jsonify({'success': True, **result})
     except Exception as e:
+        logger.error(f'[搜索] 失败: {keyword} - {str(e)}')
         return jsonify({'success': False, 'message': str(e)})
 
 
@@ -1164,8 +1211,39 @@ def baidu_magnet():
         return jsonify({'success': False, 'message': '缺少帖子ID'})
     try:
         result = baidu_forum.get_magnet_from_thread(tid)
+        logger.info(f'[磁力] 帖子:{tid}, 获取成功')
         return jsonify({'success': True, **result})
     except Exception as e:
+        logger.error(f'[磁力] 帖子:{tid}, 失败: {str(e)}')
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/baidu/batch_magnets', methods=['POST'])
+def baidu_batch_magnets():
+    """并发批量获取多个帖子的磁力链接"""
+    tids_raw = (request.form.get('tids') or '').strip()
+    if not tids_raw:
+        return jsonify({'success': False, 'message': '缺少帖子ID列表'})
+    tids = [t.strip() for t in tids_raw.split(',') if t.strip()]
+    if not tids:
+        return jsonify({'success': False, 'message': '帖子ID列表为空'})
+    if len(tids) > 30:
+        return jsonify({'success': False, 'message': '单次最多30个'})
+    try:
+        import time as _t
+        start = _t.time()
+        result = baidu_forum.batch_get_magnets(tids, max_workers=6)
+        cost = round(_t.time() - start, 1)
+        logger.info(f'[批量磁力] 共:{len(tids)}, 成功:{len(result["success"])}, 失败:{len(result["failed"])}, 耗时:{cost}s')
+        return jsonify({
+            'success': True,
+            'magnets': result['success'],
+            'failed': result['failed'],
+            'total': len(tids),
+            'cost': cost,
+        })
+    except Exception as e:
+        logger.error(f'[批量磁力] 失败: {str(e)}')
         return jsonify({'success': False, 'message': str(e)})
 
 

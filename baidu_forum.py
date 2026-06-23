@@ -15,6 +15,9 @@ import time
 import hashlib
 import urllib.parse
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 CONFIG_FILE = os.path.join(
     os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))),
@@ -23,6 +26,11 @@ CONFIG_FILE = os.path.join(
 
 BASE = 'https://10001.baidubaidu.win/'
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+# 全局Session复用，避免每次操作都重新创建Session和验证登录
+_global_session = None
+_global_session_ts = 0
+_session_lock = __import__('threading').Lock()
 
 
 def load_config():
@@ -38,36 +46,74 @@ def save_config(config):
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 
+def _build_session():
+    """构建带连接池的session（不含登录态）"""
+    s = requests.Session()
+    s.headers.update({'User-Agent': UA})
+    s.trust_env = False  # 忽略系统代理环境变量
+    # 配置连接池：增大连接数，启用重试，复用TCP连接
+    retry = Retry(total=2, backoff_factor=0.3,
+                  status_forcelist=[500, 502, 503, 504],
+                  allowed_methods=["GET", "POST"])
+    adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry)
+    s.mount('http://', adapter)
+    s.mount('https://', adapter)
+    return s
+
+
 def _get_session():
-    """构建带登录态的session"""
+    """获取带登录态的全局session（复用，避免每次创建+验证）
+
+    策略：
+    - 全局session存在且未过期(6小时)则直接复用，不再每次发请求验证登录态
+    - 失效或不存在则重新登录
+    - 这样单次获取磁力链接从原来的4次HTTP请求(2次验证+1帖子页+1下载)
+      降为2次(1帖子页+1下载)，且复用TCP连接
+    """
+    global _global_session, _global_session_ts
     config = load_config()
     username = config.get('username', '').strip()
     password = config.get('password', '').strip()
     if not username or not password:
         raise ValueError('未配置论坛账号密码')
 
-    s = requests.Session()
-    s.headers.update({'User-Agent': UA})
-    s.trust_env = False  # 忽略系统代理环境变量
+    with _session_lock:
+        # 复用全局session（6小时内有效）
+        if _global_session is not None and (time.time() - _global_session_ts < 21600):
+            return _global_session
 
-    # 若有缓存的cookies且未过期，直接复用
-    cached = config.get('cookies')
-    cached_ts = config.get('cookies_ts', 0)
-    if cached and (time.time() - cached_ts < 86400):
-        for k, v in cached.items():
-            s.cookies.set(k, v, domain='10001.baidubaidu.win')
-        # 验证一下
-        if _is_logged_in(s):
-            return s
-        # 失效则重新登录
+        s = _build_session()
 
-    _login(s, username, password)
-    # 缓存cookies
-    new_config = load_config()
-    new_config['cookies'] = dict(s.cookies)
-    new_config['cookies_ts'] = time.time()
-    save_config(new_config)
-    return s
+        # 尝试复用缓存的cookies
+        cached = config.get('cookies')
+        cached_ts = config.get('cookies_ts', 0)
+        if cached and (time.time() - cached_ts < 86400):
+            for k, v in cached.items():
+                s.cookies.set(k, v, domain='10001.baidubaidu.win')
+            # 轻量验证：只在首次加载时验证一次，之后信任全局session
+            if _is_logged_in(s):
+                _global_session = s
+                _global_session_ts = time.time()
+                return s
+
+        # 重新登录
+        _login(s, username, password)
+        # 缓存cookies
+        new_config = load_config()
+        new_config['cookies'] = dict(s.cookies)
+        new_config['cookies_ts'] = time.time()
+        save_config(new_config)
+        _global_session = s
+        _global_session_ts = time.time()
+        return s
+
+
+def _reset_session():
+    """重置全局session（登录失效时调用）"""
+    global _global_session, _global_session_ts
+    with _session_lock:
+        _global_session = None
+        _global_session_ts = 0
 
 
 def _is_logged_in(s):
@@ -133,7 +179,7 @@ def search(keyword, page=1):
         else:
             url = BASE + f'search.php?mod=forum&searchid={searchid}&orderby=lastpost&ascdesc=desc&searchsubmit=yes&kw={kw_encoded}&page={page}'
 
-    r = s.get(url, timeout=15, allow_redirects=True)
+    r = s.get(url, timeout=(5, 15), allow_redirects=True)
     r.encoding = 'gbk'
 
     # 提取searchid并缓存
@@ -196,48 +242,19 @@ def search(keyword, page=1):
 
 
 def get_thread_attachments(tid):
-    """获取帖子中的附件下载链接
+    """获取帖子中的附件下载链接（兼容接口，使用全局session）
 
     Returns:
         [{'aid': ..., 'filename': ..., 'url': ...}, ...]
     """
     s = _get_session()
-    url = BASE + f'forum.php?mod=viewthread&tid={tid}'
-    r = s.get(url, timeout=15)
-    r.encoding = 'gbk'
-
-    attachments = []
-    # 附件链接格式: forum.php?mod=attachment&aid=xxx&nothumb=yes (或带其他参数)
-    # aid 是 base64 编码的字符串
-    aids = re.findall(
-        r'href="forum\.php\?mod=attachment&amp;aid=([^"&]+)[^"]*"',
-        r.text
-    )
-    seen = set()
-    for aid in aids:
-        if aid in seen:
-            continue
-        seen.add(aid)
-        # 文件名从附件附近的文本提取
-        attach_url = BASE + f'forum.php?mod=attachment&aid={urllib.parse.quote(aid)}&nothumb=yes'
-        attachments.append({
-            'aid': aid,
-            'url': attach_url,
-            'filename': '',
-        })
-    return attachments
+    return _get_thread_attachments_with_session(s, tid)
 
 
 def download_torrent(attach_url):
-    """下载种子文件，返回二进制内容"""
+    """下载种子文件，返回二进制内容（兼容接口，使用全局session）"""
     s = _get_session()
-    r = s.get(attach_url, timeout=30, allow_redirects=True)
-    if r.status_code != 200:
-        raise RuntimeError(f'下载附件失败: HTTP {r.status_code}')
-    # 检查是否真的是torrent文件（以 d8:announce 或 d4:info 开头）
-    if not r.content[:1] == b'd':
-        raise RuntimeError('附件不是有效的种子文件')
-    return r.content, r.headers.get('Content-Disposition', '')
+    return _download_torrent_with_session(s, attach_url)
 
 
 def torrent_to_magnet(torrent_content):
@@ -376,7 +393,8 @@ def get_magnet_from_thread(tid):
     Returns:
         {'tid': ..., 'magnet': ..., 'name': ..., 'info_hash': ..., 'filename': ...}
     """
-    attachments = get_thread_attachments(tid)
+    s = _get_session()
+    attachments = _get_thread_attachments_with_session(s, tid)
     if not attachments:
         raise RuntimeError('帖子中没有找到附件')
 
@@ -384,7 +402,7 @@ def get_magnet_from_thread(tid):
     last_err = ''
     for att in attachments:
         try:
-            content, disposition = download_torrent(att['url'])
+            content, disposition = _download_torrent_with_session(s, att['url'])
             # 从Content-Disposition提取文件名
             if disposition:
                 fn_m = re.search(r'filename="([^"]+)"', disposition)
@@ -398,3 +416,70 @@ def get_magnet_from_thread(tid):
             last_err = str(e)
             continue
     raise RuntimeError(f'所有附件解析失败: {last_err}')
+
+
+def _get_thread_attachments_with_session(s, tid):
+    """使用已有session获取帖子附件（避免重复创建session）"""
+    url = BASE + f'forum.php?mod=viewthread&tid={tid}'
+    r = s.get(url, timeout=(5, 15))
+    r.encoding = 'gbk'
+
+    attachments = []
+    aids = re.findall(
+        r'href="forum\.php\?mod=attachment&amp;aid=([^"&]+)[^"]*"',
+        r.text
+    )
+    seen = set()
+    for aid in aids:
+        if aid in seen:
+            continue
+        seen.add(aid)
+        attach_url = BASE + f'forum.php?mod=attachment&aid={urllib.parse.quote(aid)}&nothumb=yes'
+        attachments.append({
+            'aid': aid,
+            'url': attach_url,
+            'filename': '',
+        })
+    return attachments
+
+
+def _download_torrent_with_session(s, attach_url):
+    """使用已有session下载种子（避免重复创建session）"""
+    r = s.get(attach_url, timeout=(5, 30), allow_redirects=True)
+    if r.status_code != 200:
+        raise RuntimeError(f'下载附件失败: HTTP {r.status_code}')
+    if not r.content[:1] == b'd':
+        raise RuntimeError('附件不是有效的种子文件')
+    return r.content, r.headers.get('Content-Disposition', '')
+
+
+def batch_get_magnets(tids, max_workers=6):
+    """并发批量获取多个帖子的磁力链接
+
+    Args:
+        tids: 帖子ID列表
+        max_workers: 最大并发数
+
+    Returns:
+        {'success': [...], 'failed': [...]}
+    """
+    results = {'success': [], 'failed': []}
+    if not tids:
+        return results
+
+    def _worker(tid):
+        try:
+            r = get_magnet_from_thread(tid)
+            return ('ok', tid, r)
+        except Exception as e:
+            return ('err', tid, str(e))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(_worker, tid): tid for tid in tids}
+        for fut in as_completed(futures):
+            status, tid, data = fut.result()
+            if status == 'ok':
+                results['success'].append(data)
+            else:
+                results['failed'].append({'tid': tid, 'error': data})
+    return results

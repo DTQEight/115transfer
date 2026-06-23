@@ -420,6 +420,24 @@
         var magnetCurrentResults = [];
         var magnetActiveFormat = '';
 
+        function copyText(text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function() {
+                    showToast('已复制', 'success');
+                }).catch(function() { fallbackCopy(text); });
+            } else { fallbackCopy(text); }
+        }
+        function fallbackCopy(text) {
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand('copy'); showToast('已复制', 'success'); }
+            catch (e) { showToast('复制失败，请手动复制', 'danger'); }
+            document.body.removeChild(ta);
+        }
+
         function detectFormat(title) {
             var t = title.toUpperCase();
             if (/DOLBY[\s.]?VISION|DV[\s.]|DoVi/i.test(t)) return '杜比视界';
@@ -517,14 +535,18 @@
                 magnetActiveFormat = '';
                 renderMagnetFormatFilter();
                 var html = '<p class="text-muted small mb-2">共 ' + totalCount + ' 个结果，第 ' + result.page + '/' + result.total_pages + ' 页</p>';
-                html += '<div class="list-group" style="max-height:350px;overflow-y:auto;">';
+                html += '<div class="mb-2 d-flex gap-2 flex-wrap align-items-center">';
+                html += '<button class="btn btn-sm btn-warning" onclick="batchFetchMagnets()" id="magnetBatchBtn"><i class="bi bi-lightning-charge me-1"></i>批量获取本页磁力</button>';
+                html += '<span class="text-muted small" id="magnetBatchStatus"></span>';
+                html += '</div>';
+                html += '<div class="list-group" style="max-height:300px;overflow-y:auto;">';
                 result.results.forEach(function(r) {
                     var title = escapeHtml(r.title);
                     var fmt = r._format || '其他';
                     var badgeColor = getFormatBadgeColor(fmt);
                     var meta = (r.forum || '') + ' · ' + (r.replies || '0') + '回复 · ' + (r.views || '0') + '查看';
                     if (r.date) meta += ' · ' + r.date;
-                    html += '<button type="button" class="list-group-item list-group-item-action magnet-search-item" data-format="' + fmt + '" onclick="fetchMagnetAndApply(\'' + r.tid + '\', this)">' +
+                    html += '<div class="list-group-item list-group-item-action magnet-search-item" data-format="' + fmt + '" data-tid="' + r.tid + '" id="magnet-item-' + r.tid + '" style="cursor:pointer;" onclick="fetchMagnetAndApply(\'' + r.tid + '\', this)">' +
                         '<div class="d-flex justify-content-between align-items-center">' +
                             '<div class="me-2">' +
                                 '<div class="fw-bold small"><span class="badge bg-' + badgeColor + ' me-1">' + fmt + '</span>' + title + '</div>' +
@@ -532,7 +554,8 @@
                             '</div>' +
                             '<span class="badge bg-info fetch-magnet-badge">获取</span>' +
                         '</div>' +
-                    '</button>';
+                        '<div class="mt-1" id="magnet-detail-' + r.tid + '"></div>' +
+                    '</div>';
                 });
                 html += '</div>';
                 // 分页
@@ -563,6 +586,71 @@
             } catch (e) {
                 el.innerHTML = '<p class="text-danger text-center">搜索失败: ' + escapeHtml(e.message) + '</p>';
             }
+        }
+
+        async function batchFetchMagnets() {
+            if (!magnetCurrentResults || magnetCurrentResults.length === 0) {
+                showToast('当前没有搜索结果', 'danger');
+                return;
+            }
+            var tids = magnetCurrentResults.map(function(r) { return r.tid; });
+            var btn = document.getElementById('magnetBatchBtn');
+            var statusEl = document.getElementById('magnetBatchStatus');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>并发获取中...';
+            statusEl.textContent = '正在并发获取 ' + tids.length + ' 个，请稍候...';
+            tids.forEach(function(tid) {
+                var el = document.getElementById('magnet-detail-' + tid);
+                if (el) el.innerHTML = '<small class="text-muted">排队中...</small>';
+            });
+            try {
+                var resp = await fetch('/baidu/batch_magnets', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'tids=' + tids.join(',')
+                });
+                var result = await resp.json();
+                if (!result.success) {
+                    showToast(result.message || '批量获取失败', 'danger');
+                    statusEl.textContent = '批量获取失败';
+                    return;
+                }
+                var ok = 0;
+                (result.magnets || []).forEach(function(m) {
+                    ok++;
+                    var el = document.getElementById('magnet-detail-' + m.tid);
+                    if (!el) return;
+                    var magnet = m.magnet;
+                    el.innerHTML = '<div class="input-group input-group-sm">' +
+                        '<input type="text" class="form-control" value="' + escapeHtml(magnet) + '" readonly onclick="event.stopPropagation();this.select()">' +
+                        '<button class="btn btn-outline-secondary" onclick="event.stopPropagation();copyText(\'' + magnet.replace(/'/g, "\\'") + '\')">复制</button>' +
+                        '<button class="btn btn-success" onclick="event.stopPropagation();applyMagnetToMovie(\'' + magnet.replace(/'/g, "\\'") + '\')">应用</button>' +
+                    '</div>';
+                });
+                (result.failed || []).forEach(function(f) {
+                    var el = document.getElementById('magnet-detail-' + f.tid);
+                    if (el) el.innerHTML = '<small class="text-danger">失败: ' + escapeHtml(f.error) + '</small>';
+                });
+                var fail = (result.failed || []).length;
+                statusEl.textContent = '完成: 成功' + ok + ' / 失败' + fail + ' / 耗时' + (result.cost || 0) + 's';
+                showToast('批量获取完成，成功' + ok + '个', ok > 0 ? 'success' : 'warning');
+            } catch (e) {
+                showToast('批量获取失败: ' + e.message, 'danger');
+                statusEl.textContent = '批量获取失败';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-lightning-charge me-1"></i>批量获取本页磁力';
+            }
+        }
+
+        async function applyMagnetToMovie(magnet) {
+            var magnetInput = document.querySelector('.magnet-input[data-id="' + magnetSearchMovieId + '"]');
+            if (magnetInput) {
+                magnetInput.value = magnet;
+                await saveMagnetInlineDirect(magnetInput, magnet);
+            }
+            bootstrap.Modal.getInstance(document.getElementById('magnetSearchModal')).hide();
+            showToast('磁力链接已保存', 'success');
         }
 
         async function fetchMagnetAndApply(tid, btn) {

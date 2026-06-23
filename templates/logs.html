@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block title %}115Transfer - 日志查看{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-journal-text me-2"></i>系统日志</span>
+                <div class="d-flex gap-2 align-items-center">
+                    <select id="logLevel" class="form-select form-select-sm" style="width:auto;" onchange="loadLogs()">
+                        <option value="">全部级别</option>
+                        <option value="INFO">INFO</option>
+                        <option value="WARNING">WARNING</option>
+                        <option value="ERROR">ERROR</option>
+                    </select>
+                    <input type="text" id="logKeyword" class="form-control form-control-sm" placeholder="关键词搜索..." style="width:200px;" onkeyup="if(event.key==='Enter')loadLogs()">
+                    <select id="logLimit" class="form-select form-select-sm" style="width:auto;" onchange="loadLogs()">
+                        <option value="100">100条</option>
+                        <option value="200" selected>200条</option>
+                        <option value="500">500条</option>
+                        <option value="1000">1000条</option>
+                    </select>
+                    <button class="btn btn-sm btn-outline-primary" onclick="loadLogs()"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="autoRefresh">
+                        <label class="form-check-label small" for="autoRefresh">自动刷新</label>
+                    </div>
+                    <button class="btn btn-sm btn-outline-danger" onclick="clearLogs()"><i class="bi bi-trash"></i> 清空</button>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div id="logStats" class="px-3 pt-2 pb-1 text-muted small border-bottom"></div>
+                <div id="logContainer" style="height:calc(100vh - 220px);overflow-y:auto;font-family:Consolas,Monaco,'Courier New',monospace;font-size:13px;line-height:1.6;background:#1e1e1e;color:#d4d4d4;padding:12px;">
+                    <p class="text-center text-muted">加载中...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var autoRefreshTimer = null;
+
+async function loadLogs() {
+    var level = document.getElementById('logLevel').value;
+    var keyword = document.getElementById('logKeyword').value.trim();
+    var limit = document.getElementById('logLimit').value;
+    var container = document.getElementById('logContainer');
+    var stats = document.getElementById('logStats');
+    try {
+        var url = '/logs/api?limit=' + limit;
+        if (level) url += '&level=' + encodeURIComponent(level);
+        if (keyword) url += '&keyword=' + encodeURIComponent(keyword);
+        var resp = await fetch(url);
+        var result = await resp.json();
+        if (!result.success) {
+            container.innerHTML = '<p class="text-danger">' + escapeHtml(result.message || '加载失败') + '</p>';
+            return;
+        }
+        stats.textContent = '共 ' + result.total + ' 条日志，显示最新 ' + result.lines.length + ' 条';
+        if (result.lines.length === 0) {
+            container.innerHTML = '<p class="text-muted text-center mt-4">暂无日志</p>';
+            return;
+        }
+        var html = '';
+        // 倒序显示（最新在上）
+        for (var i = result.lines.length - 1; i >= 0; i--) {
+            var line = result.lines[i];
+            var color = '#d4d4d4';
+            var bg = '';
+            if (line.indexOf('[ERROR]') >= 0) { color = '#f48771'; bg = 'background:rgba(244,135,113,0.08);'; }
+            else if (line.indexOf('[WARNING]') >= 0) { color = '#cca700'; bg = 'background:rgba(204,167,0,0.06);'; }
+            else if (line.indexOf('[INFO]') >= 0) { color = '#4ec9b0'; }
+            html += '<div style="padding:2px 8px;border-bottom:1px solid #333;white-space:pre-wrap;word-break:break-all;color:' + color + ';' + bg + '">' + escapeHtml(line) + '</div>';
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<p class="text-danger">加载失败: ' + escapeHtml(e.message) + '</p>';
+    }
+}
+
+function toggleAutoRefresh() {
+    var cb = document.getElementById('autoRefresh');
+    if (cb.checked) {
+        loadLogs();
+        autoRefreshTimer = setInterval(loadLogs, 5000);
+    } else {
+        if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+    }
+}
+
+async function clearLogs() {
+    if (!confirm('确定要清空所有日志吗？')) return;
+    try {
+        var resp = await fetch('/logs/clear', { method: 'POST' });
+        var result = await resp.json();
+        if (result.success) {
+            loadLogs();
+        } else {
+            alert(result.message || '清空失败');
+        }
+    } catch (e) {
+        alert('清空失败: ' + e.message);
+    }
+}
+
+function escapeHtml(text) {
+    var div = document.createElement('div');
+    div.appendChild(document.createTextNode(text));
+    return div.innerHTML;
+}
+
+// 初始化
+loadLogs();
+document.getElementById('autoRefresh').addEventListener('change', toggleAutoRefresh);
+</script>
+{% endblock %}

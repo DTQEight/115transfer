@@ -1427,6 +1427,62 @@ def douban_sync():
         return jsonify({'success': False, 'message': f'同步失败: {str(e)}'})
 
 
+# ===== 日志查看 =====
+
+@app.route('/logs')
+def logs_page():
+    return render_template('logs.html', version=VERSION)
+
+
+@app.route('/logs/api')
+def logs_api():
+    """读取日志文件，支持按关键词/级别筛选，返回最近N条"""
+    keyword = request.args.get('keyword', '').strip()
+    level = request.args.get('level', '').strip().upper()
+    try:
+        limit = int(request.args.get('limit', 200))
+        limit = min(limit, 1000)
+    except:
+        limit = 200
+
+    if not os.path.exists(LOG_FILE):
+        return jsonify({'success': True, 'lines': [], 'total': 0})
+
+    try:
+        with open(LOG_FILE, 'r', encoding='utf-8', errors='replace') as f:
+            all_lines = f.readlines()
+
+        # 筛选
+        filtered = []
+        for line in all_lines:
+            if keyword and keyword not in line:
+                continue
+            if level:
+                if f'[{level}]' not in line:
+                    continue
+            filtered.append(line.rstrip('\n\r'))
+
+        total = len(filtered)
+        # 返回最新的limit条（倒序显示）
+        lines = filtered[-limit:]
+        return jsonify({'success': True, 'lines': lines, 'total': total})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/logs/clear', methods=['POST'])
+def logs_clear():
+    """清空日志文件"""
+    try:
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'w', encoding='utf-8') as f:
+                pass
+            logger.info('[日志] 日志已清空')
+        return jsonify({'success': True, 'message': '日志已清空'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
 if __name__ == '__main__':
     debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
     app.run(host='0.0.0.0', port=3698, debug=debug)

@@ -204,6 +204,7 @@
                                 <i class="bi bi-search me-1"></i>搜索
                             </button>
                         </div>
+                        <div id="magnetFormatFilter"></div>
                         <div id="magnetSearchResults">
                             <p class="text-muted text-center">输入关键词搜索</p>
                         </div>
@@ -415,6 +416,55 @@
         // ===== 论坛搜索磁力链接 =====
         var magnetSearchMovieId = 0;
         var magnetSearchMoviePage = 0;
+        var magnetSearchKeyword = '';
+        var magnetCurrentResults = [];
+        var magnetActiveFormat = '';
+
+        function detectFormat(title) {
+            var t = title.toUpperCase();
+            if (/DOLBY[\s.]?VISION|DV[\s.]|DoVi/i.test(t)) return '杜比视界';
+            if (/\b(4K|2160P)\b/.test(t) && /\b(BLU[\s-]?RAY|REMUX)\b.*\b(原盘|DISC|ISO)\b|\b(原盘|DISC|ISO)\b.*\b(BLU[\s-]?RAY|REMUX)\b/i.test(t)) return '4K蓝光原盘';
+            if (/\b3D\b/i.test(t)) return '3D';
+            if (/\b(原盘|DISC|ISO)\b/i.test(t) && /\b(BLU[\s-]?RAY|BDREMUX)\b/i.test(t)) return '蓝光原盘';
+            if (/\b(4K|2160P)\b/.test(t) && /\b(BLU[\s-]?RAY|BDREMUX|REMUX)\b/i.test(t)) return '4K蓝光';
+            if (/\b1080P?\b/.test(t) && /\bREMUX\b/i.test(t)) return '1080P-Remux';
+            if (/\b1080P?\b/.test(t) && /\b(BLU[\s-]?RAY|BDRIP|BDREMUX)\b/i.test(t)) return '1080P蓝光';
+            if (/\b(4K|2160P)\b/.test(t) && /\b(WEB[\s-]?(DL|RIP)|WEBDL)\b/i.test(t)) return 'WEB-4K';
+            if (/\b1080P?\b/.test(t) && /\b(WEB[\s-]?(DL|RIP)|WEBDL)\b/i.test(t)) return 'WEB-1080P';
+            if (/\b(4K|2160P)\b/.test(t)) return '4K蓝光';
+            if (/\b1080P?\b/.test(t)) return '1080P蓝光';
+            return '其他';
+        }
+
+        function getFormatBadgeColor(fmt) {
+            var colors = {'4K蓝光':'danger','4K蓝光原盘':'danger','杜比视界':'warning text-dark','1080P蓝光':'primary','1080P-Remux':'info text-dark','WEB-4K':'success','WEB-1080P':'success','蓝光原盘':'secondary','3D':'dark','其他':'light text-dark'};
+            return colors[fmt] || 'light text-dark';
+        }
+
+        function renderMagnetFormatFilter() {
+            var counts = {};
+            var order = ['4K蓝光','4K蓝光原盘','1080P蓝光','1080P-Remux','WEB-4K','WEB-1080P','杜比视界','蓝光原盘','3D','其他'];
+            magnetCurrentResults.forEach(function(r) { var fmt = r._format || '其他'; counts[fmt] = (counts[fmt] || 0) + 1; });
+            var html = '<div class="d-flex flex-wrap gap-1 mb-2">';
+            html += '<button class="btn btn-sm ' + (!magnetActiveFormat ? 'btn-dark' : 'btn-outline-dark') + '" onclick="filterMagnetFormat(\'\')">全部 (' + magnetCurrentResults.length + ')</button>';
+            order.forEach(function(fmt) {
+                if (counts[fmt]) {
+                    var cls = magnetActiveFormat === fmt ? 'btn-' + getFormatBadgeColor(fmt) : 'btn-outline-' + getFormatBadgeColor(fmt);
+                    html += '<button class="btn btn-sm ' + cls + '" onclick="filterMagnetFormat(\'' + fmt + '\')">' + fmt + ' (' + counts[fmt] + ')</button>';
+                }
+            });
+            html += '</div>';
+            document.getElementById('magnetFormatFilter').innerHTML = html;
+        }
+
+        function filterMagnetFormat(fmt) {
+            magnetActiveFormat = fmt;
+            renderMagnetFormatFilter();
+            var items = document.querySelectorAll('.magnet-search-item');
+            items.forEach(function(el) {
+                el.style.display = (!fmt || el.dataset.format === fmt) ? '' : 'none';
+            });
+        }
 
         // 事件委托：点击搜索按钮
         document.addEventListener('click', function(e) {
@@ -462,16 +512,22 @@
                     return;
                 }
                 var totalCount = result.total_count || result.results.length;
+                magnetCurrentResults = result.results;
+                magnetCurrentResults.forEach(function(r) { r._format = detectFormat(r.title); });
+                magnetActiveFormat = '';
+                renderMagnetFormatFilter();
                 var html = '<p class="text-muted small mb-2">共 ' + totalCount + ' 个结果，第 ' + result.page + '/' + result.total_pages + ' 页</p>';
                 html += '<div class="list-group" style="max-height:350px;overflow-y:auto;">';
                 result.results.forEach(function(r) {
                     var title = escapeHtml(r.title);
+                    var fmt = r._format || '其他';
+                    var badgeColor = getFormatBadgeColor(fmt);
                     var meta = (r.forum || '') + ' · ' + (r.replies || '0') + '回复 · ' + (r.views || '0') + '查看';
                     if (r.date) meta += ' · ' + r.date;
-                    html += '<button type="button" class="list-group-item list-group-item-action" onclick="fetchMagnetAndApply(\'' + r.tid + '\', this)">' +
+                    html += '<button type="button" class="list-group-item list-group-item-action magnet-search-item" data-format="' + fmt + '" onclick="fetchMagnetAndApply(\'' + r.tid + '\', this)">' +
                         '<div class="d-flex justify-content-between align-items-center">' +
                             '<div class="me-2">' +
-                                '<div class="fw-bold small">' + title + '</div>' +
+                                '<div class="fw-bold small"><span class="badge bg-' + badgeColor + ' me-1">' + fmt + '</span>' + title + '</div>' +
                                 '<small class="text-muted">' + escapeHtml(meta) + '</small>' +
                             '</div>' +
                             '<span class="badge bg-info fetch-magnet-badge">获取</span>' +

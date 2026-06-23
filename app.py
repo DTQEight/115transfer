@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, jsonify
+from flask import Flask, render_template, request, redirect, url_for, jsonify, Response, stream_with_context
 import pandas as pd
 import os
 import shutil
@@ -8,6 +8,8 @@ import zoneinfo
 import threading
 import hashlib
 import logging
+import time
+import queue
 from logging.handlers import RotatingFileHandler
 import cloud115
 import wechat_work
@@ -21,6 +23,21 @@ LOG_FILE = os.path.join(LOG_DIR, 'app.log')
 logger = logging.getLogger('115transfer')
 logger.setLevel(logging.INFO)
 
+# 实时日志订阅器：维护一个订阅者队列列表，新日志会推送到所有队列
+_log_subscribers = []
+_log_subscribers_lock = threading.Lock()
+
+class _SubscriberLogHandler(logging.Handler):
+    """自定义日志处理器：将新日志推送给所有订阅者"""
+    def emit(self, record):
+        msg = self.format(record)
+        with _log_subscribers_lock:
+            for q in _log_subscribers:
+                try:
+                    q.put_nowait(msg)
+                except queue.Full:
+                    pass  # 队列满则丢弃，避免阻塞
+
 # 文件日志（轮转：单个文件最大10MB，保留5个备份）
 fh = RotatingFileHandler(LOG_FILE, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
 fh.setLevel(logging.INFO)
@@ -32,6 +49,12 @@ ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 ch.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))
 logger.addHandler(ch)
+
+# 实时推送日志处理器
+sh = _SubscriberLogHandler()
+sh.setLevel(logging.INFO)
+sh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+logger.addHandler(sh)
 
 user_states = {}
 
@@ -1469,6 +1492,69 @@ def logs_api():
         return jsonify({'success': True, 'lines': lines, 'total': total})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/logs/stream')
+def logs_stream():
+    """SSE 实时日志流：先推送历史日志，再持续推送新日志"""
+    keyword = request.args.get('keyword', '').strip()
+    level = request.args.get('level', '').strip().upper()
+    try:
+        limit = int(request.args.get('limit', 200))
+        limit = min(limit, 1000)
+    except:
+        limit = 200
+
+    def generate():
+        # 1. 创建订阅队列
+        q = queue.Queue(maxsize=500)
+        with _log_subscribers_lock:
+            _log_subscribers.append(q)
+
+        try:
+            # 2. 推送历史日志（最新的 limit 条）
+            history = []
+            if os.path.exists(LOG_FILE):
+                with open(LOG_FILE, 'r', encoding='utf-8', errors='replace') as f:
+                    all_lines = f.readlines()
+                for line in all_lines:
+                    line = line.rstrip('\n\r')
+                    if keyword and keyword not in line:
+                        continue
+                    if level and f'[{level}]' not in line:
+                        continue
+                    history.append(line)
+                history = history[-limit:]
+                for line in history:
+                    yield f'data: {line}\n\n'
+
+            # 3. 持续推送新日志
+            while True:
+                try:
+                    msg = q.get(timeout=15)
+                    # 应用筛选
+                    if keyword and keyword not in msg:
+                        continue
+                    if level and f'[{level}]' not in msg:
+                        continue
+                    yield f'data: {msg}\n\n'
+                except queue.Empty:
+                    # 发送心跳保持连接
+                    yield ': heartbeat\n\n'
+        finally:
+            with _log_subscribers_lock:
+                if q in _log_subscribers:
+                    _log_subscribers.remove(q)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive'
+        }
+    )
 
 
 @app.route('/logs/clear', methods=['POST'])

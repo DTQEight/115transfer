@@ -170,6 +170,6 @@ document.getElementById('logContainer').addEventListener('scroll', function() {
     }
 });
 
-// 立即连接
-connect();
+// 立即连接 - 使用 setTimeout(0) 确保在当前脚本执行完后立即连接
+setTimeout(connect, 0);
 {% endblock %}

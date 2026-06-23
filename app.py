@@ -1572,4 +1572,5 @@ def logs_clear():
 
 if __name__ == '__main__':
     debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
-    app.run(host='0.0.0.0', port=3698, debug=debug)
+    # threaded=True: 多线程处理请求，避免 SSE 长连接阻塞其他请求
+    app.run(host='0.0.0.0', port=3698, debug=debug, threaded=True)

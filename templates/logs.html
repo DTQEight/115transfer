@@ -42,7 +42,6 @@
 {% endblock %}
 
 {% block extra_script %}
-<script>
 var autoRefreshTimer = null;
 
 async function loadLogs() {
@@ -117,5 +116,4 @@ function escapeHtml(text) {
 // 初始化
 loadLogs();
 document.getElementById('autoRefresh').addEventListener('change', toggleAutoRefresh);
-</script>
 {% endblock %}

@@ -23,7 +23,6 @@
                         <option value="1000">1000条</option>
                     </select>
                     <button class="btn btn-sm btn-outline-danger" onclick="clearLogs()"><i class="bi bi-trash"></i> 清空</button>
-                    <button class="btn btn-sm btn-outline-secondary" onclick="toggleAutoScroll()" id="autoScrollBtn"><i class="bi bi-arrow-down-circle"></i> 自动滚动</button>
                 </div>
             </div>
             <div class="card-body p-0">
@@ -59,15 +58,6 @@ async function clearLogs() {
     }
 }
 
-var _autoScroll = true;
-function toggleAutoScroll() {
-    _autoScroll = !_autoScroll;
-    var btn = document.getElementById('autoScrollBtn');
-    if (btn) {
-        btn.className = _autoScroll ? 'btn btn-sm btn-outline-secondary' : 'btn btn-sm btn-secondary';
-    }
-}
-
 document.addEventListener('DOMContentLoaded', function() {
     var logContainer = document.getElementById('logContainer');
     var logConnStatus = document.getElementById('logConnStatus');
@@ -75,7 +65,6 @@ document.addEventListener('DOMContentLoaded', function() {
     var logLevel = document.getElementById('logLevel');
     var logLimit = document.getElementById('logLimit');
     var logKeyword = document.getElementById('logKeyword');
-    var autoScrollBtn = document.getElementById('autoScrollBtn');
 
     if (!logContainer || !logConnStatus || !logCountEl || !logLevel || !logLimit || !logKeyword) {
         console.error('[logs] 必要的DOM元素不存在');
@@ -103,9 +92,8 @@ document.addEventListener('DOMContentLoaded', function() {
             logContainer.removeChild(logContainer.firstChild);
         }
         logCountEl.textContent = '已显示 ' + logContainer.childNodes.length + ' 条';
-        if (_autoScroll) {
-            logContainer.scrollTop = logContainer.scrollHeight;
-        }
+        // 默认自动滚动到底部
+        logContainer.scrollTop = logContainer.scrollHeight;
     }
 
     function buildApiUrl(since) {
@@ -159,17 +147,6 @@ document.addEventListener('DOMContentLoaded', function() {
     logKeyword.addEventListener('input', function() {
         clearTimeout(keywordTimer);
         keywordTimer = setTimeout(restartPolling, 500);
-    });
-
-    logContainer.addEventListener('scroll', function() {
-        var atBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight < 30;
-        if (!atBottom && _autoScroll) {
-            _autoScroll = false;
-            if (autoScrollBtn) autoScrollBtn.className = 'btn btn-sm btn-secondary';
-        } else if (atBottom && !_autoScroll) {
-            _autoScroll = true;
-            if (autoScrollBtn) autoScrollBtn.className = 'btn btn-sm btn-outline-secondary';
-        }
     });
 
     startPolling();

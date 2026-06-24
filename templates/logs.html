@@ -40,105 +40,17 @@
 {% endblock %}
 
 {% block extra_script %}
-var lastTs = '';
-var logCount = 0;
-var autoScroll = true;
-var pollTimer = null;
-
-function getLineStyle(line) {
-    if (line.indexOf('[ERROR]') >= 0) return 'color:#dc3545;background:rgba(220,53,69,0.06);';
-    if (line.indexOf('[WARNING]') >= 0) return 'color:#d39e00;background:rgba(211,158,0,0.06);';
-    if (line.indexOf('[INFO]') >= 0) return 'color:#198754;';
-    return 'color:#333;';
-}
-
-function appendLog(line) {
-    var container = document.getElementById('logContainer');
-    var div = document.createElement('div');
-    div.style.cssText = 'padding:2px 8px;border-bottom:1px solid #eee;white-space:pre-wrap;word-break:break-all;' + getLineStyle(line);
-    div.textContent = line;
-    container.appendChild(div);
-    logCount++;
-    while (container.childNodes.length > 1000) {
-        container.removeChild(container.firstChild);
-    }
-    document.getElementById('logCount').textContent = '已显示 ' + container.childNodes.length + ' 条';
-    if (autoScroll) {
-        container.scrollTop = container.scrollHeight;
-    }
-}
-
-function getFilterParams() {
-    var level = document.getElementById('logLevel').value;
-    var keyword = document.getElementById('logKeyword').value.trim();
-    var limit = document.getElementById('logLimit').value;
-    return { level: level, keyword: keyword, limit: limit };
-}
-
-function buildApiUrl(since) {
-    var p = getFilterParams();
-    var url = '/logs/api?limit=' + p.limit;
-    if (p.level) url += '&level=' + encodeURIComponent(p.level);
-    if (p.keyword) url += '&keyword=' + encodeURIComponent(p.keyword);
-    if (since) url += '&since=' + encodeURIComponent(since);
-    return url;
-}
-
-async function fetchLogs() {
-    try {
-        var resp = await fetch(buildApiUrl(lastTs), { cache: 'no-store' });
-        var result = await resp.json();
-        if (!result.success) return;
-        if (result.lines && result.lines.length > 0) {
-            for (var i = 0; i < result.lines.length; i++) {
-                appendLog(result.lines[i]);
-            }
-            if (result.last_ts) lastTs = result.last_ts;
-        }
-        document.getElementById('logConnStatus').textContent = '已连接 · ' + new Date().toLocaleTimeString();
-        document.getElementById('liveBadge').className = 'badge bg-success ms-2';
-        document.getElementById('liveBadge').innerHTML = '<span class="spinner-grow spinner-grow-sm" style="width:0.6rem;height:0.6rem;"></span> 实时';
-    } catch (e) {
-        document.getElementById('logConnStatus').textContent = '连接错误: ' + e.message;
-        document.getElementById('liveBadge').className = 'badge bg-danger ms-2';
-        document.getElementById('liveBadge').innerHTML = '<i class="bi bi-exclamation-circle"></i> 错误';
-    }
-}
-
-function startPolling() {
-    if (pollTimer) clearInterval(pollTimer);
-    // 立即拉取一次，然后每2秒拉取
-    fetchLogs();
-    pollTimer = setInterval(fetchLogs, 2000);
-}
-
-function restartPolling() {
-    lastTs = '';
-    document.getElementById('logContainer').innerHTML = '';
-    logCount = 0;
-    startPolling();
-}
-
-function toggleAutoScroll() {
-    autoScroll = !autoScroll;
-    var btn = document.getElementById('autoScrollBtn');
-    if (autoScroll) {
-        btn.className = 'btn btn-sm btn-outline-secondary';
-    } else {
-        btn.className = 'btn btn-sm btn-secondary';
-    }
-}
-
+// 全局函数（被 onclick 调用）
 async function clearLogs() {
     if (!confirm('确定要清空所有日志吗？')) return;
     try {
         var resp = await fetch('/logs/clear', { method: 'POST' });
         var result = await resp.json();
         if (result.success) {
-            document.getElementById('logContainer').innerHTML = '';
-            logCount = 0;
-            lastTs = '';
-            document.getElementById('logCount').textContent = '日志已清空';
+            var c = document.getElementById('logContainer');
+            if (c) c.innerHTML = '';
+            var cnt = document.getElementById('logCount');
+            if (cnt) cnt.textContent = '日志已清空';
         } else {
             alert(result.message || '清空失败');
         }
@@ -147,28 +59,119 @@ async function clearLogs() {
     }
 }
 
-// 筛选条件变化时重新加载
-document.getElementById('logLevel').addEventListener('change', restartPolling);
-document.getElementById('logLimit').addEventListener('change', restartPolling);
-var keywordTimer = null;
-document.getElementById('logKeyword').addEventListener('input', function() {
-    clearTimeout(keywordTimer);
-    keywordTimer = setTimeout(restartPolling, 500);
-});
-
-// 容器滚动时检测是否到底，自动切换滚动状态
-document.getElementById('logContainer').addEventListener('scroll', function() {
-    var container = this;
-    var atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 30;
-    if (!atBottom && autoScroll) {
-        autoScroll = false;
-        document.getElementById('autoScrollBtn').className = 'btn btn-sm btn-secondary';
-    } else if (atBottom && !autoScroll) {
-        autoScroll = true;
-        document.getElementById('autoScrollBtn').className = 'btn btn-sm btn-outline-secondary';
+var _autoScroll = true;
+function toggleAutoScroll() {
+    _autoScroll = !_autoScroll;
+    var btn = document.getElementById('autoScrollBtn');
+    if (btn) {
+        btn.className = _autoScroll ? 'btn btn-sm btn-outline-secondary' : 'btn btn-sm btn-secondary';
     }
-});
+}
 
-// 立即开始轮询
-startPolling();
+document.addEventListener('DOMContentLoaded', function() {
+    var logContainer = document.getElementById('logContainer');
+    var logConnStatus = document.getElementById('logConnStatus');
+    var logCountEl = document.getElementById('logCount');
+    var logLevel = document.getElementById('logLevel');
+    var logLimit = document.getElementById('logLimit');
+    var logKeyword = document.getElementById('logKeyword');
+    var autoScrollBtn = document.getElementById('autoScrollBtn');
+
+    if (!logContainer || !logConnStatus || !logCountEl || !logLevel || !logLimit || !logKeyword) {
+        console.error('[logs] 必要的DOM元素不存在');
+        return;
+    }
+
+    var lastTs = '';
+    var logCount = 0;
+    var pollTimer = null;
+
+    function getLineStyle(line) {
+        if (line.indexOf('[ERROR]') >= 0) return 'color:#dc3545;background:rgba(220,53,69,0.06);';
+        if (line.indexOf('[WARNING]') >= 0) return 'color:#d39e00;background:rgba(211,158,0,0.06);';
+        if (line.indexOf('[INFO]') >= 0) return 'color:#198754;';
+        return 'color:#333;';
+    }
+
+    function appendLog(line) {
+        var div = document.createElement('div');
+        div.style.cssText = 'padding:2px 8px;border-bottom:1px solid #eee;white-space:pre-wrap;word-break:break-all;' + getLineStyle(line);
+        div.textContent = line;
+        logContainer.appendChild(div);
+        logCount++;
+        while (logContainer.childNodes.length > 1000) {
+            logContainer.removeChild(logContainer.firstChild);
+        }
+        logCountEl.textContent = '已显示 ' + logContainer.childNodes.length + ' 条';
+        if (_autoScroll) {
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+    }
+
+    function buildApiUrl(since) {
+        var level = logLevel.value;
+        var keyword = logKeyword.value.trim();
+        var limit = logLimit.value;
+        var url = '/logs/api?limit=' + limit;
+        if (level) url += '&level=' + encodeURIComponent(level);
+        if (keyword) url += '&keyword=' + encodeURIComponent(keyword);
+        if (since) url += '&since=' + encodeURIComponent(since);
+        return url;
+    }
+
+    async function fetchLogs() {
+        try {
+            var resp = await fetch(buildApiUrl(lastTs), { cache: 'no-store' });
+            var result = await resp.json();
+            if (!result.success) {
+                logConnStatus.textContent = 'API错误: ' + (result.message || '未知');
+                return;
+            }
+            if (result.lines && result.lines.length > 0) {
+                for (var i = 0; i < result.lines.length; i++) {
+                    appendLog(result.lines[i]);
+                }
+                if (result.last_ts) lastTs = result.last_ts;
+            }
+            logConnStatus.textContent = '已连接 · ' + new Date().toLocaleTimeString();
+        } catch (e) {
+            logConnStatus.textContent = '请求失败: ' + e.message;
+            console.error('[logs] fetchLogs error:', e);
+        }
+    }
+
+    function startPolling() {
+        if (pollTimer) clearInterval(pollTimer);
+        fetchLogs();
+        pollTimer = setInterval(fetchLogs, 2000);
+    }
+
+    function restartPolling() {
+        lastTs = '';
+        logContainer.innerHTML = '';
+        logCount = 0;
+        startPolling();
+    }
+
+    logLevel.addEventListener('change', restartPolling);
+    logLimit.addEventListener('change', restartPolling);
+    var keywordTimer = null;
+    logKeyword.addEventListener('input', function() {
+        clearTimeout(keywordTimer);
+        keywordTimer = setTimeout(restartPolling, 500);
+    });
+
+    logContainer.addEventListener('scroll', function() {
+        var atBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight < 30;
+        if (!atBottom && _autoScroll) {
+            _autoScroll = false;
+            if (autoScrollBtn) autoScrollBtn.className = 'btn btn-sm btn-secondary';
+        } else if (atBottom && !_autoScroll) {
+            _autoScroll = true;
+            if (autoScrollBtn) autoScrollBtn.className = 'btn btn-sm btn-outline-secondary';
+        }
+    });
+
+    startPolling();
+});
 {% endblock %}

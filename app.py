@@ -1460,7 +1460,7 @@ def logs_page():
 
 @app.route('/logs/api')
 def logs_api():
-    """读取日志文件，支持按关键词/级别筛选，返回最近N条"""
+    """读取日志文件，支持按关键词/级别筛选和时间范围，返回最近N条"""
     keyword = request.args.get('keyword', '').strip()
     level = request.args.get('level', '').strip().upper()
     try:
@@ -1468,9 +1468,11 @@ def logs_api():
         limit = min(limit, 1000)
     except:
         limit = 200
+    # 增量拉取：只返回大于该时间戳的日志
+    since = request.args.get('since', '').strip()
 
     if not os.path.exists(LOG_FILE):
-        return jsonify({'success': True, 'lines': [], 'total': 0})
+        return jsonify({'success': True, 'lines': [], 'total': 0, 'last_ts': ''})
 
     try:
         with open(LOG_FILE, 'r', encoding='utf-8', errors='replace') as f:
@@ -1479,17 +1481,28 @@ def logs_api():
         # 筛选
         filtered = []
         for line in all_lines:
-            if keyword and keyword not in line:
+            line_s = line.rstrip('\n\r')
+            if keyword and keyword not in line_s:
                 continue
             if level:
-                if f'[{level}]' not in line:
+                if f'[{level}]' not in line_s:
                     continue
-            filtered.append(line.rstrip('\n\r'))
+            filtered.append(line_s)
+
+        # 增量模式：只返回 since 时间戳之后的日志
+        if since:
+            filtered = [l for l in filtered if l[:19] > since]
 
         total = len(filtered)
-        # 返回最新的limit条（倒序显示）
+        # 返回最新的limit条
         lines = filtered[-limit:]
-        return jsonify({'success': True, 'lines': lines, 'total': total})
+
+        # 提取最后一条日志的时间戳（用于下次增量）
+        last_ts = ''
+        if lines:
+            last_ts = lines[-1][:19]  # YYYY-MM-DD HH:MM:SS
+
+        return jsonify({'success': True, 'lines': lines, 'total': total, 'last_ts': last_ts})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
@@ -1512,11 +1525,14 @@ def logs_stream():
             _log_subscribers.append(q)
 
         try:
+            # 0. 立即发送一个 SSE 注释，让浏览器立刻触发 onopen
+            yield ': connected\n\n'
+
             # 2. 推送历史日志（最新的 limit 条）
-            history = []
             if os.path.exists(LOG_FILE):
                 with open(LOG_FILE, 'r', encoding='utf-8', errors='replace') as f:
                     all_lines = f.readlines()
+                history = []
                 for line in all_lines:
                     line = line.rstrip('\n\r')
                     if keyword and keyword not in line:
@@ -1525,8 +1541,14 @@ def logs_stream():
                         continue
                     history.append(line)
                 history = history[-limit:]
-                for line in history:
-                    yield f'data: {line}\n\n'
+
+                # 批量发送，每50行打包一次
+                batch = []
+                for i, line in enumerate(history):
+                    batch.append(f'data: {line}\n\n')
+                    if len(batch) >= 50 or i == len(history) - 1:
+                        yield ''.join(batch)
+                        batch = []
 
             # 3. 持续推送新日志
             while True:

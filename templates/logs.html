@@ -22,15 +22,14 @@
                         <option value="500">500条</option>
                         <option value="1000">1000条</option>
                     </select>
-                    <button class="btn btn-sm btn-outline-primary" onclick="reconnect()"><i class="bi bi-arrow-clockwise"></i> 重连</button>
                     <button class="btn btn-sm btn-outline-danger" onclick="clearLogs()"><i class="bi bi-trash"></i> 清空</button>
                     <button class="btn btn-sm btn-outline-secondary" onclick="toggleAutoScroll()" id="autoScrollBtn"><i class="bi bi-arrow-down-circle"></i> 自动滚动</button>
                 </div>
             </div>
             <div class="card-body p-0">
                 <div id="logStats" class="px-3 pt-2 pb-1 text-muted small border-bottom d-flex justify-content-between">
-                    <span id="logCount">等待日志...</span>
-                    <span id="logConnStatus">连接中...</span>
+                    <span id="logCount">加载中...</span>
+                    <span id="logConnStatus">加载中...</span>
                 </div>
                 <div id="logContainer" style="height:calc(100vh - 200px);overflow-y:auto;font-family:Consolas,Monaco,'Courier New',monospace;font-size:13px;line-height:1.6;padding:12px;background:#fafafa;">
                 </div>
@@ -41,19 +40,10 @@
 {% endblock %}
 
 {% block extra_script %}
-var evtSource = null;
+var lastTs = '';
 var logCount = 0;
 var autoScroll = true;
-
-function getFilterUrl() {
-    var level = document.getElementById('logLevel').value;
-    var keyword = document.getElementById('logKeyword').value.trim();
-    var limit = document.getElementById('logLimit').value;
-    var url = '/logs/stream?limit=' + limit;
-    if (level) url += '&level=' + encodeURIComponent(level);
-    if (keyword) url += '&keyword=' + encodeURIComponent(keyword);
-    return url;
-}
+var pollTimer = null;
 
 function getLineStyle(line) {
     if (line.indexOf('[ERROR]') >= 0) return 'color:#dc3545;background:rgba(220,53,69,0.06);';
@@ -69,7 +59,6 @@ function appendLog(line) {
     div.textContent = line;
     container.appendChild(div);
     logCount++;
-    // 限制DOM节点数量，避免过多
     while (container.childNodes.length > 1000) {
         container.removeChild(container.firstChild);
     }
@@ -79,44 +68,55 @@ function appendLog(line) {
     }
 }
 
-function connect() {
-    if (evtSource) {
-        evtSource.close();
-        evtSource = null;
-    }
-    document.getElementById('logContainer').innerHTML = '';
-    logCount = 0;
-    document.getElementById('logCount').textContent = '连接中...';
-    document.getElementById('logConnStatus').textContent = '连接中...';
-    document.getElementById('liveBadge').className = 'badge bg-warning ms-2';
-    document.getElementById('liveBadge').innerHTML = '<span class="spinner-grow spinner-grow-sm" style="width:0.6rem;height:0.6rem;"></span> 连接中';
-
-    evtSource = new EventSource(getFilterUrl());
-
-    evtSource.onopen = function() {
-        document.getElementById('logConnStatus').textContent = '已连接';
-        document.getElementById('liveBadge').className = 'badge bg-success ms-2';
-        document.getElementById('liveBadge').innerHTML = '<span class="spinner-grow spinner-grow-sm" style="width:0.6rem;height:0.6rem;"></span> 实时';
-    };
-
-    evtSource.onmessage = function(e) {
-        if (e.data) {
-            appendLog(e.data);
-        }
-    };
-
-    evtSource.onerror = function() {
-        document.getElementById('logConnStatus').textContent = '连接断开，5秒后重连...';
-        document.getElementById('liveBadge').className = 'badge bg-danger ms-2';
-        document.getElementById('liveBadge').innerHTML = '<i class="bi bi-exclamation-circle"></i> 断开';
-        evtSource.close();
-        evtSource = null;
-        setTimeout(connect, 5000);
-    };
+function getFilterParams() {
+    var level = document.getElementById('logLevel').value;
+    var keyword = document.getElementById('logKeyword').value.trim();
+    var limit = document.getElementById('logLimit').value;
+    return { level: level, keyword: keyword, limit: limit };
 }
 
-function reconnect() {
-    connect();
+function buildApiUrl(since) {
+    var p = getFilterParams();
+    var url = '/logs/api?limit=' + p.limit;
+    if (p.level) url += '&level=' + encodeURIComponent(p.level);
+    if (p.keyword) url += '&keyword=' + encodeURIComponent(p.keyword);
+    if (since) url += '&since=' + encodeURIComponent(since);
+    return url;
+}
+
+async function fetchLogs() {
+    try {
+        var resp = await fetch(buildApiUrl(lastTs), { cache: 'no-store' });
+        var result = await resp.json();
+        if (!result.success) return;
+        if (result.lines && result.lines.length > 0) {
+            for (var i = 0; i < result.lines.length; i++) {
+                appendLog(result.lines[i]);
+            }
+            if (result.last_ts) lastTs = result.last_ts;
+        }
+        document.getElementById('logConnStatus').textContent = '已连接 · ' + new Date().toLocaleTimeString();
+        document.getElementById('liveBadge').className = 'badge bg-success ms-2';
+        document.getElementById('liveBadge').innerHTML = '<span class="spinner-grow spinner-grow-sm" style="width:0.6rem;height:0.6rem;"></span> 实时';
+    } catch (e) {
+        document.getElementById('logConnStatus').textContent = '连接错误: ' + e.message;
+        document.getElementById('liveBadge').className = 'badge bg-danger ms-2';
+        document.getElementById('liveBadge').innerHTML = '<i class="bi bi-exclamation-circle"></i> 错误';
+    }
+}
+
+function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    // 立即拉取一次，然后每2秒拉取
+    fetchLogs();
+    pollTimer = setInterval(fetchLogs, 2000);
+}
+
+function restartPolling() {
+    lastTs = '';
+    document.getElementById('logContainer').innerHTML = '';
+    logCount = 0;
+    startPolling();
 }
 
 function toggleAutoScroll() {
@@ -124,8 +124,6 @@ function toggleAutoScroll() {
     var btn = document.getElementById('autoScrollBtn');
     if (autoScroll) {
         btn.className = 'btn btn-sm btn-outline-secondary';
-        var container = document.getElementById('logContainer');
-        container.scrollTop = container.scrollHeight;
     } else {
         btn.className = 'btn btn-sm btn-secondary';
     }
@@ -139,6 +137,7 @@ async function clearLogs() {
         if (result.success) {
             document.getElementById('logContainer').innerHTML = '';
             logCount = 0;
+            lastTs = '';
             document.getElementById('logCount').textContent = '日志已清空';
         } else {
             alert(result.message || '清空失败');
@@ -148,13 +147,13 @@ async function clearLogs() {
     }
 }
 
-// 筛选条件变化时重连
-document.getElementById('logLevel').addEventListener('change', connect);
-document.getElementById('logLimit').addEventListener('change', connect);
+// 筛选条件变化时重新加载
+document.getElementById('logLevel').addEventListener('change', restartPolling);
+document.getElementById('logLimit').addEventListener('change', restartPolling);
 var keywordTimer = null;
 document.getElementById('logKeyword').addEventListener('input', function() {
     clearTimeout(keywordTimer);
-    keywordTimer = setTimeout(connect, 500);
+    keywordTimer = setTimeout(restartPolling, 500);
 });
 
 // 容器滚动时检测是否到底，自动切换滚动状态
@@ -170,6 +169,6 @@ document.getElementById('logContainer').addEventListener('scroll', function() {
     }
 });
 
-// 立即连接 - 使用 setTimeout(0) 确保在当前脚本执行完后立即连接
-setTimeout(connect, 0);
+// 立即开始轮询
+startPolling();
 {% endblock %}

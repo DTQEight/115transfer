@@ -543,13 +543,16 @@
             new bootstrap.Modal(document.getElementById('editModal')).show();
         }
 
-        document.querySelector('tbody').addEventListener('click', (e) => {
-            const btn = e.target.closest('.edit-btn');
-            if (btn) {
-                const { id, page, name, magnet } = btn.dataset;
-                showEditModal(id, page, name, magnet);
-            }
-        });
+        const tbodyEl = document.querySelector('tbody');
+        if (tbodyEl) {
+            tbodyEl.addEventListener('click', (e) => {
+                const btn = e.target.closest('.edit-btn');
+                if (btn) {
+                    const { id, page, name, magnet } = btn.dataset;
+                    showEditModal(id, page, name, magnet);
+                }
+            });
+        }
 
         async function updateMovie() {
             const id = document.getElementById('editId').value;

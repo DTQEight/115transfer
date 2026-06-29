@@ -71,7 +71,6 @@ document.addEventListener('DOMContentLoaded', function() {
         return;
     }
 
-    var lastTs = '';
     var logCount = 0;
     var pollTimer = null;
 
@@ -82,45 +81,47 @@ document.addEventListener('DOMContentLoaded', function() {
         return 'color:#333;';
     }
 
-    function appendLog(line) {
-        var div = document.createElement('div');
-        div.style.cssText = 'padding:2px 8px;border-bottom:1px solid #eee;white-space:pre-wrap;word-break:break-all;' + getLineStyle(line);
-        div.textContent = line;
-        logContainer.appendChild(div);
-        logCount++;
-        while (logContainer.childNodes.length > 1000) {
-            logContainer.removeChild(logContainer.firstChild);
+    function renderLogs(lines) {
+        // 每次清空重新渲染，避免增量漏显
+        logContainer.innerHTML = '';
+        if (!lines || lines.length === 0) {
+            logContainer.innerHTML = '<div style="color:#999;text-align:center;padding:20px;">暂无匹配日志</div>';
+            logCountEl.textContent = '0 条';
+            return;
         }
-        logCountEl.textContent = '已显示 ' + logContainer.childNodes.length + ' 条';
-        // 默认自动滚动到底部
+        var frag = document.createDocumentFragment();
+        for (var i = 0; i < lines.length; i++) {
+            var div = document.createElement('div');
+            div.style.cssText = 'padding:2px 8px;border-bottom:1px solid #eee;white-space:pre-wrap;word-break:break-all;' + getLineStyle(lines[i]);
+            div.textContent = lines[i];
+            frag.appendChild(div);
+        }
+        logContainer.appendChild(frag);
+        logCount = lines.length;
+        logCountEl.textContent = lines.length + ' 条';
+        // 自动滚动到底部
         logContainer.scrollTop = logContainer.scrollHeight;
     }
 
-    function buildApiUrl(since) {
+    function buildApiUrl() {
         var level = logLevel.value;
         var keyword = logKeyword.value.trim();
         var limit = logLimit.value;
         var url = '/logs/api?limit=' + limit;
         if (level) url += '&level=' + encodeURIComponent(level);
         if (keyword) url += '&keyword=' + encodeURIComponent(keyword);
-        if (since) url += '&since=' + encodeURIComponent(since);
         return url;
     }
 
     async function fetchLogs() {
         try {
-            var resp = await fetch(buildApiUrl(lastTs), { cache: 'no-store' });
+            var resp = await fetch(buildApiUrl(), { cache: 'no-store' });
             var result = await resp.json();
             if (!result.success) {
                 logConnStatus.textContent = 'API错误: ' + (result.message || '未知');
                 return;
             }
-            if (result.lines && result.lines.length > 0) {
-                for (var i = 0; i < result.lines.length; i++) {
-                    appendLog(result.lines[i]);
-                }
-                if (result.last_ts) lastTs = result.last_ts;
-            }
+            renderLogs(result.lines || []);
             logConnStatus.textContent = '已连接 · ' + new Date().toLocaleTimeString();
         } catch (e) {
             logConnStatus.textContent = '请求失败: ' + e.message;
@@ -135,9 +136,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function restartPolling() {
-        lastTs = '';
-        logContainer.innerHTML = '';
-        logCount = 0;
         startPolling();
     }
 

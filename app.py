@@ -1460,7 +1460,7 @@ def logs_page():
 
 @app.route('/logs/api')
 def logs_api():
-    """读取日志文件，支持按关键词/级别筛选和时间范围，返回最近N条"""
+    """读取日志文件，支持按关键词/级别筛选，返回最近N条"""
     keyword = request.args.get('keyword', '').strip()
     level = request.args.get('level', '').strip().upper()
     try:
@@ -1468,17 +1468,15 @@ def logs_api():
         limit = min(limit, 1000)
     except:
         limit = 200
-    # 增量拉取：只返回大于该时间戳的日志
-    since = request.args.get('since', '').strip()
 
     if not os.path.exists(LOG_FILE):
-        return jsonify({'success': True, 'lines': [], 'total': 0, 'last_ts': ''})
+        return jsonify({'success': True, 'lines': [], 'total': 0})
 
     try:
         with open(LOG_FILE, 'r', encoding='utf-8', errors='replace') as f:
             all_lines = f.readlines()
 
-        # 筛选
+        # 按关键词和级别筛选
         filtered = []
         for line in all_lines:
             line_s = line.rstrip('\n\r')
@@ -1489,20 +1487,11 @@ def logs_api():
                     continue
             filtered.append(line_s)
 
-        # 增量模式：只返回 since 时间戳之后的日志
-        if since:
-            filtered = [l for l in filtered if l[:19] > since]
-
         total = len(filtered)
         # 返回最新的limit条
         lines = filtered[-limit:]
 
-        # 提取最后一条日志的时间戳（用于下次增量）
-        last_ts = ''
-        if lines:
-            last_ts = lines[-1][:19]  # YYYY-MM-DD HH:MM:SS
-
-        return jsonify({'success': True, 'lines': lines, 'total': total, 'last_ts': last_ts})
+        return jsonify({'success': True, 'lines': lines, 'total': total})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 

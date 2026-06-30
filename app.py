@@ -76,7 +76,7 @@ VERSION = "1.0.0"
 try:
     with open('VERSION', 'r') as f:
         VERSION = f.read().strip()
-except:
+except Exception:
     pass
 
 def load_movies():
@@ -85,7 +85,8 @@ def load_movies():
         df.to_excel(EXCEL_FILE, index=False)
         return df
 
-    current_hash = hashlib.md5(open(EXCEL_FILE, 'rb').read()).hexdigest()
+    with open(EXCEL_FILE, 'rb') as f:
+        current_hash = hashlib.md5(f.read()).hexdigest()
     if _movie_cache['hash'] == current_hash and _movie_cache['data'] is not None:
         return _movie_cache['data'].copy()
 
@@ -1329,7 +1330,7 @@ def douban_fetch():
         page = int(request.form.get('page', 1))
         if page < 1:
             page = 1
-    except:
+    except Exception:
         page = 1
     per_page = 15
     start = (page - 1) * per_page
@@ -1346,7 +1347,7 @@ def douban_fetch():
         if not df.empty:
             for name in df['电影名'].dropna():
                 existing_names.add(str(name).strip())
-    except:
+    except Exception:
         existing_names = set()
 
     # 标记哪些是新的
@@ -1456,7 +1457,7 @@ def logs_api():
     try:
         limit = int(request.args.get('limit', 200))
         limit = min(limit, 1000)
-    except:
+    except Exception:
         limit = 200
 
     if not os.path.exists(LOG_FILE):
@@ -1494,7 +1495,7 @@ def logs_stream():
     try:
         limit = int(request.args.get('limit', 200))
         limit = min(limit, 1000)
-    except:
+    except Exception:
         limit = 200
 
     def generate():

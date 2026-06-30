@@ -115,14 +115,18 @@ document.addEventListener('DOMContentLoaded', function() {
 
     async function fetchLogs() {
         try {
-            var resp = await fetch(buildApiUrl(), { cache: 'no-store' });
+            var url = buildApiUrl();
+            console.log('[logs] 请求:', url);
+            logConnStatus.textContent = '请求中...';
+            var resp = await fetch(url, { cache: 'no-store' });
             var result = await resp.json();
+            console.log('[logs] 返回:', result);
             if (!result.success) {
                 logConnStatus.textContent = 'API错误: ' + (result.message || '未知');
                 return;
             }
             renderLogs(result.lines || []);
-            logConnStatus.textContent = '已连接 · ' + new Date().toLocaleTimeString();
+            logConnStatus.textContent = '已连接 · ' + new Date().toLocaleTimeString() + ' · 返回' + (result.lines ? result.lines.length : 0) + '条';
         } catch (e) {
             logConnStatus.textContent = '请求失败: ' + e.message;
             console.error('[logs] fetchLogs error:', e);

@@ -2,6 +2,29 @@
 
 {% block title %}115Transfer - 电影管理{% endblock %}
 
+{% block extra_style %}
+/* 移动端隐藏次要列 */
+@media (max-width: 768px) {
+    .hide-mobile {
+        display: none !important;
+    }
+    .magnet-input {
+        min-width: 120px;
+        font-size: 0.75rem;
+    }
+    .btn-group-sm .action-btn {
+        padding: 0.15rem 0.3rem;
+        font-size: 0.7rem;
+    }
+    .search-box .form-control {
+        font-size: 0.9rem;
+    }
+    .card-header .small {
+        display: none;
+    }
+}
+{% endblock %}
+
 {% block content %}
         {% if error %}
         <div class="alert alert-danger alert-dismissible fade show" role="alert">
@@ -117,23 +140,23 @@
                     <table class="table table-hover mb-0">
                         <thead>
                             <tr>
-                                <th style="width:40px"></th>
+                                <th class="hide-mobile" style="width:40px"></th>
                                 <th style="width:60px">#</th>
-                                <th style="width:70px">页码</th>
+                                <th class="hide-mobile" style="width:70px">页码</th>
                                 <th>电影名</th>
                                 <th>磁力链接</th>
-                                <th style="width:100px">保存时间</th>
+                                <th class="hide-mobile" style="width:100px">保存时间</th>
                                 <th style="width:160px">操作</th>
                             </tr>
                         </thead>
                         <tbody>
                             {% for movie in movies %}
                             <tr class="movie-row" data-id="{{ movie.id }}">
-                                <td class="drag-handle text-center" style="cursor:grab;">
+                                <td class="drag-handle text-center hide-mobile" style="cursor:grab;">
                                     <i class="bi bi-grip-vertical"></i>
                                 </td>
                                 <td class="text-muted">{{ movie.id }}</td>
-                                <td><span class="badge-page">{{ movie.page }}</span></td>
+                                <td class="hide-mobile"><span class="badge-page">{{ movie.page }}</span></td>
                                 <td class="fw-medium">{{ movie.name }}</td>
                                 <td>
                                     <input type="text" class="form-control form-control-sm magnet-input {% if movie.is_empty %}border-warning{% endif %}"
@@ -145,7 +168,7 @@
                                            ondblclick="copyMagnet({{ movie.id }}, {{ movie.page }})"
                                            onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
                                 </td>
-                                <td class="text-muted small">{{ movie.save_time }}</td>
+                                <td class="text-muted small hide-mobile">{{ movie.save_time }}</td>
                                 <td>
                                     <div class="btn-group btn-group-sm">
                                         <button class="btn btn-outline-primary action-btn edit-btn"

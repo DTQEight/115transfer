@@ -9,7 +9,10 @@ from functools import lru_cache
 
 TMDB_BASE_URL = 'https://api.themoviedb.org/3'
 
-CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'cloud115_config.json')
+# cloud115_config.json 由 cloud115.py 统一管理（含读写锁），tmdb 模块复用同一文件
+import cloud115
+CONFIG_FILE = cloud115.CONFIG_FILE
+_load_config = cloud115.load_config
 
 # 全局Session复用TCP连接 + 内存缓存
 _SESSION = requests.Session()
@@ -20,23 +23,15 @@ _DETAIL_CACHE = {}  # (media_type, tmdb_id) -> detail
 _IDENTIFY_CACHE = {}  # (name, year) -> result
 
 
-def _load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
-
-
 def get_tmdb_api_key():
     config = _load_config()
     return config.get('tmdb_api_key', '')
 
 
 def set_tmdb_api_key(api_key):
-    config = _load_config()
-    config['tmdb_api_key'] = api_key
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+    def _update(cfg):
+        cfg['tmdb_api_key'] = api_key
+    cloud115.update_config(_update)
 
 
 def search_multi(query, year=None, language='zh-CN'):

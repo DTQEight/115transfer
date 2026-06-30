@@ -307,7 +307,7 @@ async function syncSelected() {
             var userIdInput = document.getElementById('userId');
             var cookieInput = document.getElementById('doubanCookie');
             if (result.config.user_id && userIdInput) userIdInput.value = result.config.user_id;
-            if (result.config.cookie && cookieInput) cookieInput.value = result.config.cookie;
+            if (result.config.has_cookie && cookieInput) cookieInput.placeholder = '已配置（留空则不修改）';
         }
     } catch (e) {
         console.error('加载豆瓣配置失败:', e);

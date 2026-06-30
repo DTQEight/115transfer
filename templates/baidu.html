@@ -59,7 +59,9 @@
         var result = await resp.json();
         if (result.success && result.config) {
             if (result.config.username) document.getElementById('forumUser').value = result.config.username;
-            if (result.config.password) document.getElementById('forumPass').value = result.config.password;
+            if (result.config.has_password) {
+                document.getElementById('forumPass').placeholder = '已配置（留空则不修改）';
+            }
         }
     } catch (e) {
         console.error('加载配置失败:', e);
@@ -75,8 +77,8 @@ function showResult(elId, html, type) {
 async function saveForumConfig() {
     var username = document.getElementById('forumUser').value.trim();
     var password = document.getElementById('forumPass').value.trim();
-    if (!username || !password) {
-        showResult('configResult', '请输入账号和密码', 'danger');
+    if (!username) {
+        showResult('configResult', '请输入账号', 'danger');
         return;
     }
     try {
@@ -88,6 +90,8 @@ async function saveForumConfig() {
         var result = await resp.json();
         if (result.success) {
             showResult('configResult', '配置已保存', 'success');
+            document.getElementById('forumPass').value = '';
+            document.getElementById('forumPass').placeholder = '已配置（留空则不修改）';
         } else {
             showResult('configResult', result.message || '保存失败', 'danger');
         }

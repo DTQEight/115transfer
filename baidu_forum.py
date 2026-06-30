@@ -14,6 +14,7 @@ import json
 import time
 import hashlib
 import urllib.parse
+import threading
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
@@ -30,20 +31,58 @@ UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 # 全局Session复用，避免每次操作都重新创建Session和验证登录
 _global_session = None
 _global_session_ts = 0
-_session_lock = __import__('threading').Lock()
+_session_lock = threading.Lock()
+
+# 配置文件读写锁：保护 load→modify→save 事务原子性
+_config_lock = threading.Lock()
+
+# searchid 内存缓存：按关键词缓存，避免写入共享配置文件造成并发覆盖
+_searchid_cache = {}
+_searchid_cache_lock = threading.Lock()
+_SEARCHID_CACHE_MAX = 50
 
 
-def load_config():
+def _get_cached_searchid(keyword):
+    with _searchid_cache_lock:
+        return _searchid_cache.get(keyword.lower())
+
+
+def _set_cached_searchid(keyword, searchid):
+    with _searchid_cache_lock:
+        if len(_searchid_cache) >= _SEARCHID_CACHE_MAX:
+            _searchid_cache.pop(next(iter(_searchid_cache)))
+        _searchid_cache[keyword.lower()] = searchid
+
+
+def _load_unlocked():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     return {}
 
 
-def save_config(config):
+def _save_unlocked(config):
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def load_config():
+    with _config_lock:
+        return _load_unlocked()
+
+
+def save_config(config):
+    with _config_lock:
+        _save_unlocked(config)
+
+
+def update_config(mutator):
+    """事务性更新配置：load → mutator(config) → save，整个过程持有锁"""
+    with _config_lock:
+        config = _load_unlocked()
+        mutator(config)
+        _save_unlocked(config)
 
 
 def _build_session():
@@ -98,11 +137,11 @@ def _get_session():
 
         # 重新登录
         _login(s, username, password)
-        # 缓存cookies
-        new_config = load_config()
-        new_config['cookies'] = dict(s.cookies)
-        new_config['cookies_ts'] = time.time()
-        save_config(new_config)
+        # 缓存cookies（事务性更新，避免覆盖并发修改的 username/password）
+        def _update(cfg):
+            cfg['cookies'] = dict(s.cookies)
+            cfg['cookies_ts'] = time.time()
+        update_config(_update)
         _global_session = s
         _global_session_ts = time.time()
         return s
@@ -170,9 +209,8 @@ def search(keyword, page=1):
     if page == 1:
         url = BASE + f'search.php?mod=forum&searchsubmit=yes&srchtxt={kw_encoded}'
     else:
-        # 后续页需要searchid，先检查缓存
-        cache = load_config()
-        searchid = cache.get('last_searchid', '')
+        # 后续页需要searchid，从内存缓存取（按关键词隔离，避免并发覆盖）
+        searchid = _get_cached_searchid(keyword)
         if not searchid:
             url = BASE + f'search.php?mod=forum&searchsubmit=yes&srchtxt={kw_encoded}'
             page = 1
@@ -182,13 +220,11 @@ def search(keyword, page=1):
     r = s.get(url, timeout=(5, 15), allow_redirects=True)
     r.encoding = 'gbk'
 
-    # 提取searchid并缓存
+    # 提取searchid并缓存到内存（不写文件，避免并发覆盖其他配置项）
     searchid_m = re.search(r'searchid=(\d+)', r.url)
     if searchid_m:
         searchid = searchid_m.group(1)
-        cfg = load_config()
-        cfg['last_searchid'] = searchid
-        save_config(cfg)
+        _set_cached_searchid(keyword, searchid)
     else:
         searchid = ''
 
@@ -394,6 +430,11 @@ def get_magnet_from_thread(tid):
         {'tid': ..., 'magnet': ..., 'name': ..., 'info_hash': ..., 'filename': ...}
     """
     s = _get_session()
+    return _get_magnet_from_thread_with_session(s, tid)
+
+
+def _get_magnet_from_thread_with_session(s, tid):
+    """使用指定 session 获取帖子磁力链接（已登录）"""
     attachments = _get_thread_attachments_with_session(s, tid)
     if not attachments:
         raise RuntimeError('帖子中没有找到附件')
@@ -467,9 +508,15 @@ def batch_get_magnets(tids, max_workers=6):
     if not tids:
         return results
 
+    import copy
+    base_session = _get_session()  # 已登录的全局 session
+
     def _worker(tid):
         try:
-            r = get_magnet_from_thread(tid)
+            # 每个线程拷贝一份 session（共享连接池配置和登录 cookies，但 requests.Session 非线程安全）
+            local_session = copy.copy(base_session)
+            local_session.cookies = base_session.cookies.copy()
+            r = _get_magnet_from_thread_with_session(local_session, tid)
             return ('ok', tid, r)
         except Exception as e:
             return ('err', tid, str(e))

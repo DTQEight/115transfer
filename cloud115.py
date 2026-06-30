@@ -2,10 +2,46 @@ import requests
 import json
 import os
 import time
+import threading
 
 CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'cloud115_config.json')
 
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+# 配置文件读写锁：cloud115_config.json 同时被 cloud115、media.tmdb、media.organizer 等模块访问，
+# 必须用同一把锁保护，避免 load→modify→save 事务期间被其他线程覆盖
+_config_lock = threading.Lock()
+
+
+def _load_unlocked():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+
+def _save_unlocked(config):
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def load_config():
+    with _config_lock:
+        return _load_unlocked()
+
+
+def save_config(config):
+    with _config_lock:
+        _save_unlocked(config)
+
+
+def update_config(mutator):
+    """事务性更新配置：load → mutator(config) → save，整个过程持有锁"""
+    with _config_lock:
+        config = _load_unlocked()
+        mutator(config)
+        _save_unlocked(config)
 
 
 def _request_with_retry(method, url, max_retries=3, **kwargs):
@@ -28,19 +64,6 @@ def _request_with_retry(method, url, max_retries=3, **kwargs):
                 continue
             raise
     return resp
-
-
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
-
-
-def save_config(config):
-    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
 
 
 def get_cookie_string():
@@ -96,7 +119,7 @@ def add_offline_task(magnet_url, save_path_id=None):
         return False, '未配置115 Cookie'
 
     if save_path_id is None:
-        save_path_id = get_default_save_path()
+        save_path_id, _ = get_default_save_path()
 
     try:
         url = 'https://115.com/web/lixian/?ct=lixian&ac=add_task_url'
@@ -148,7 +171,7 @@ def get_task_list(page=1):
 
 def batch_add_offline_tasks(magnet_urls, save_path_id=None):
     if save_path_id is None:
-        save_path_id = get_default_save_path()
+        save_path_id, _ = get_default_save_path()
     results = []
     for magnet in magnet_urls:
         success, msg = add_offline_task(magnet, save_path_id)
@@ -199,11 +222,13 @@ def get_default_save_path():
     return config.get('save_path_id', '0'), config.get('save_path_name', '根目录')
 
 
-def set_default_save_path(path_id, path_name='根目录'):
-    config = load_config()
-    config['save_path_id'] = path_id
-    config['save_path_name'] = path_name
-    save_config(config)
+def set_default_save_path(path_id, path_name=None):
+    def _update(cfg):
+        cfg['save_path_id'] = path_id
+        # 只在传入了非空 path_name 时才更新，避免覆盖用户已有设置
+        if path_name:
+            cfg['save_path_name'] = path_name
+    update_config(_update)
 
 
 def create_dir(parent_cid, dir_name):

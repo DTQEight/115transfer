@@ -365,9 +365,10 @@ def cloud115_set_config():
     cookie = request.form.get('cookie', '').strip()
     if not cookie:
         return jsonify({'success': False, 'message': 'Cookie不能为空'})
-    config = cloud115.load_config()
-    config['cookie'] = cookie
-    cloud115.save_config(config)
+
+    def _update(cfg):
+        cfg['cookie'] = cookie
+    cloud115.update_config(_update)
     return jsonify({'success': True, 'message': 'Cookie保存成功'})
 
 
@@ -503,8 +504,8 @@ def cloud115_get_save_path():
 
 @app.route('/cloud115/save_path', methods=['POST'])
 def cloud115_set_save_path():
-    path_id = request.form.get('path_id', '0')
-    path_name = request.form.get('path_name', '根目录')
+    path_id = request.form.get('path_id', '').strip() or '0'
+    path_name = request.form.get('path_name', '').strip() or None
     cloud115.set_default_save_path(path_id, path_name)
     return jsonify({'success': True, 'message': '默认保存目录已更新'})
 
@@ -535,21 +536,22 @@ def wechat_set_config():
     proxy_url = request.form.get('proxy_url', '').strip()
     if not corpid or not corpsecret:
         return jsonify({'success': False, 'message': '企业ID和应用Secret不能为空'})
-    config = wechat_work.load_config()
-    config['corpid'] = corpid
-    config['corpsecret'] = corpsecret
-    if agentid:
-        config['agentid'] = agentid
-    if token:
-        config['token'] = token
-    if encoding_aes_key:
-        config['encoding_aes_key'] = encoding_aes_key
-    if callback_url:
-        config['callback_url'] = callback_url
-    if proxy_url:
-        config['proxy_url'] = proxy_url
-    config.pop('access_token', None)
-    wechat_work.save_config(config)
+
+    def _update(cfg):
+        cfg['corpid'] = corpid
+        cfg['corpsecret'] = corpsecret
+        if agentid:
+            cfg['agentid'] = agentid
+        if token:
+            cfg['token'] = token
+        if encoding_aes_key:
+            cfg['encoding_aes_key'] = encoding_aes_key
+        if callback_url:
+            cfg['callback_url'] = callback_url
+        if proxy_url:
+            cfg['proxy_url'] = proxy_url
+        cfg.pop('access_token', None)
+    wechat_work.update_config(_update)
     return jsonify({'success': True, 'message': '企业微信配置保存成功'})
 
 
@@ -565,7 +567,7 @@ def wechat_callback():
     nonce = request.args.get('nonce', '')
     echostr = request.args.get('echostr', '')
 
-    logger.info(f'[WeChat Callback] Token: {token[:10]}..., Signature: {msg_signature}')
+    logger.info(f'[WeChat Callback] token_configured={bool(token)}, has_signature={bool(msg_signature)}, method={request.method}')
 
     if not token:
         return '未配置企业微信', 500
@@ -853,6 +855,7 @@ def wechat_callback():
 
         return 'success'
     except Exception as e:
+        logger.error(f'[WeChat Callback] 处理异常: {type(e).__name__}: {e}', exc_info=True)
         return 'success'
 
 
@@ -964,15 +967,13 @@ def media_get_organize_root():
 
 @app.route('/media/organize_root', methods=['POST'])
 def media_set_organize_root():
-    import json as _json
     cid = request.form.get('cid', '').strip()
     name = request.form.get('name', '').strip()
-    cfg = _tmdb_load_config()
-    cfg['organize_root_cid'] = cid
-    cfg['organize_root_name'] = name
-    from media.tmdb import CONFIG_FILE
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        _json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+    def _update(cfg):
+        cfg['organize_root_cid'] = cid
+        cfg['organize_root_name'] = name
+    cloud115.update_config(_update)
     return jsonify({'success': True})
 
 
@@ -1169,26 +1170,28 @@ def baidu_page():
 def baidu_config():
     if request.method == 'GET':
         config = baidu_forum.load_config()
-        # 不返回密码明文
+        # 不返回密码明文，前端只需知道是否已配置
         return jsonify({
             'success': True,
             'config': {
                 'username': config.get('username', ''),
-                'password': config.get('password', ''),
+                'has_password': bool(config.get('password', '')),
             }
         })
     data = request.get_json(force=True, silent=True) or {}
     username = (data.get('username') or '').strip()
     password = (data.get('password') or '').strip()
-    if not username or not password:
-        return jsonify({'success': False, 'message': '请输入账号和密码'})
-    config = baidu_forum.load_config()
-    config['username'] = username
-    config['password'] = password
-    # 账号密码变更后清除旧的cookie缓存
-    config.pop('cookies', None)
-    config.pop('cookies_ts', None)
-    baidu_forum.save_config(config)
+    if not username:
+        return jsonify({'success': False, 'message': '请输入账号'})
+
+    def _update(cfg):
+        cfg['username'] = username
+        if password:
+            cfg['password'] = password
+            # 账号密码变更后清除旧的cookie缓存
+            cfg.pop('cookies', None)
+            cfg.pop('cookies_ts', None)
+    baidu_forum.update_config(_update)
     return jsonify({'success': True, 'message': '配置已保存'})
 
 
@@ -1291,15 +1294,23 @@ def douban_page():
 def douban_config():
     if request.method == 'GET':
         config = douban.load_config()
-        return jsonify({'success': True, 'config': config})
+        # 不返回 cookie 明文，只返回是否已配置
+        return jsonify({
+            'success': True,
+            'config': {
+                'user_id': config.get('user_id', ''),
+                'has_cookie': bool(config.get('cookie', '')),
+            }
+        })
     cookie = request.form.get('cookie', '').strip()
     user_id = request.form.get('user_id', '').strip()
-    config = douban.load_config()
-    if cookie:
-        config['cookie'] = cookie
-    if user_id:
-        config['user_id'] = user_id
-    douban.save_config(config)
+
+    def _update(cfg):
+        if cookie:
+            cfg['cookie'] = cookie
+        if user_id:
+            cfg['user_id'] = user_id
+    douban.update_config(_update)
     return jsonify({'success': True, 'message': '配置已保存'})
 
 

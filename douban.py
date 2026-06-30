@@ -4,25 +4,47 @@ import re
 import json
 import os
 import time
+import threading
 import html as html_module
 
 CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'douban_config.json')
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
+# 配置文件读写锁：保护 load→modify→save 事务原子性
+_config_lock = threading.Lock()
 
-def load_config():
+
+def _load_unlocked():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except:
+        except Exception:
             pass
     return {}
 
 
-def save_config(config):
+def _save_unlocked(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def load_config():
+    with _config_lock:
+        return _load_unlocked()
+
+
+def save_config(config):
+    with _config_lock:
+        _save_unlocked(config)
+
+
+def update_config(mutator):
+    """事务性更新配置：load → mutator(config) → save，整个过程持有锁"""
+    with _config_lock:
+        config = _load_unlocked()
+        mutator(config)
+        _save_unlocked(config)
 
 
 def _get_headers():

@@ -7,23 +7,45 @@ import random
 import string
 import json
 import os
+import threading
 import requests
 from Crypto.Cipher import AES
 
 CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'wechat_work_config.json')
 
+# 配置文件读写锁：保护 load→modify→save 事务原子性
+_config_lock = threading.Lock()
 
-def load_config():
+
+def _load_unlocked():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     return {}
 
 
-def save_config(config):
+def _save_unlocked(config):
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def load_config():
+    with _config_lock:
+        return _load_unlocked()
+
+
+def save_config(config):
+    with _config_lock:
+        _save_unlocked(config)
+
+
+def update_config(mutator):
+    """事务性更新配置：load → mutator(config) → save，整个过程持有锁"""
+    with _config_lock:
+        config = _load_unlocked()
+        mutator(config)
+        _save_unlocked(config)
 
 
 def get_access_token():
@@ -44,8 +66,10 @@ def get_access_token():
         if data.get('errcode') == 0:
             token = data['access_token']
             expires = time.time() + data.get('expires_in', 7200) - 300
-            config['access_token'] = {'token': token, 'expires': expires}
-            save_config(config)
+
+            def _update(cfg):
+                cfg['access_token'] = {'token': token, 'expires': expires}
+            update_config(_update)
             return token, 'ok'
         return None, data.get('errmsg', '获取token失败')
     except Exception as e:

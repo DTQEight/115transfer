@@ -564,7 +564,6 @@ def wechat_callback():
     nonce = request.args.get('nonce', '')
     echostr = request.args.get('echostr', '')
 
-    print(f'[WeChat Callback] Token: {token[:10]}..., Signature: {msg_signature}, Timestamp: {timestamp}, Nonce: {nonce}, Echostr: {echostr[:20] if echostr else "None"}', flush=True)
     logger.info(f'[WeChat Callback] Token: {token[:10]}..., Signature: {msg_signature}')
 
     if not token:
@@ -577,16 +576,13 @@ def wechat_callback():
             return 'success'
         if crypto:
             is_valid = crypto.verify_signature(msg_signature, timestamp, nonce, echostr)
-            print(f'[WeChat Callback] Signature valid: {is_valid}', flush=True)
             logger.info(f'[WeChat Callback] Signature valid: {is_valid}')
             if is_valid:
                 try:
                     decrypted, _ = crypto.decrypt_message(echostr)
-                    print(f'[WeChat Callback] Decrypted echostr: {decrypted}', flush=True)
                     logger.info(f'[WeChat Callback] Decrypted echostr')
                     return decrypted
                 except Exception as e:
-                    print(f'[WeChat Callback] Decrypt error: {e}', flush=True)
                     logger.error(f'[WeChat Callback] Decrypt error: {e}')
                     return echostr
         return '签名验证失败', 403
@@ -597,10 +593,8 @@ def wechat_callback():
             root = ET.fromstring(request.data)
             encrypt_elem = root.find('Encrypt')
             encrypt_content = encrypt_elem.text if encrypt_elem is not None else ''
-            print(f'[WeChat Callback] Encrypt content: {encrypt_content[:30]}...', flush=True)
             logger.info(f'[WeChat Callback] Encrypt content received')
             if not crypto.verify_signature(msg_signature, timestamp, nonce, encrypt_content):
-                print(f'[WeChat Callback] POST signature verification failed', flush=True)
                 logger.warning('[WeChat Callback] POST signature verification failed')
                 return '签名验证失败', 403
             if encrypt_elem is not None:
@@ -794,11 +788,9 @@ def wechat_callback():
                     reply = result
 
             reply = wechat_work.truncate_reply(reply)
-            print(f'[WeChat Reply] To: {from_user}, From: {to_user}, Content: {reply[:50]}', flush=True)
             logger.info(f'[WeChat Reply] To: {from_user}, Content: {reply[:50]}')
             if crypto:
                 reply_xml = wechat_work.build_reply_xml(from_user, to_user, reply, crypto)
-                print(f'[WeChat Reply] XML: {reply_xml[:200]}', flush=True)
                 logger.debug(f'[WeChat Reply] XML generated')
                 return reply_xml, 200, {'Content-Type': 'application/xml'}
             else:
@@ -808,7 +800,6 @@ def wechat_callback():
         elif msg_type == 'event':
             event = msg.get('Event', '')
             event_key = msg.get('EventKey', '')
-            print(f'[WeChat Event] Type: {event}, Key: {event_key}', flush=True)
             logger.info(f'[WeChat Event] Type: {event}, Key: {event_key}')
 
             if event == 'click':
@@ -918,7 +909,6 @@ def wechat_test():
     if not content:
         return jsonify({'success': False, 'message': '请输入测试消息'})
     
-    print(f'[WeChat Test] Received: {content}', flush=True)
     logger.info(f'[WeChat Test] Received: {content}')
     result = wechat_work.handle_text_message(content)
     

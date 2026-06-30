@@ -15,7 +15,7 @@
                         <option value="WARNING">WARNING</option>
                         <option value="ERROR">ERROR</option>
                     </select>
-                    <input type="text" id="logKeyword" class="form-control form-control-sm" placeholder="关键词搜索..." style="width:180px;">
+                    <input type="text" id="logKeyword" class="form-control form-control-sm" placeholder="关键词搜索..." style="width:180px;" value="">
                     <select id="logLimit" class="form-select form-select-sm" style="width:auto;">
                         <option value="100">100条</option>
                         <option value="200" selected>200条</option>
@@ -116,20 +116,16 @@ document.addEventListener('DOMContentLoaded', function() {
     async function fetchLogs() {
         try {
             var url = buildApiUrl();
-            console.log('[logs] 请求:', url);
-            logConnStatus.textContent = '请求中...';
             var resp = await fetch(url, { cache: 'no-store' });
             var result = await resp.json();
-            console.log('[logs] 返回:', result);
             if (!result.success) {
                 logConnStatus.textContent = 'API错误: ' + (result.message || '未知');
                 return;
             }
             renderLogs(result.lines || []);
-            logConnStatus.textContent = '已连接 · ' + new Date().toLocaleTimeString() + ' · 返回' + (result.lines ? result.lines.length : 0) + '条';
+            logConnStatus.textContent = '已连接 · ' + new Date().toLocaleTimeString();
         } catch (e) {
             logConnStatus.textContent = '请求失败: ' + e.message;
-            console.error('[logs] fetchLogs error:', e);
         }
     }
 

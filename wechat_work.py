@@ -115,7 +115,6 @@ class WeChatCrypto:
             params.append(echostr)
         params.sort()
         hash_str = hashlib.sha1(''.join(params).encode('utf-8')).hexdigest()
-        print(f'[WeChat Verify] Params: {params}, Hash: {hash_str}, Expected: {signature}', flush=True)
         return hash_str == signature
 
     def decrypt_message(self, encrypted_msg):

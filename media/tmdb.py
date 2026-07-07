@@ -32,6 +32,11 @@ def set_tmdb_api_key(api_key):
     def _update(cfg):
         cfg['tmdb_api_key'] = api_key
     cloud115.update_config(_update)
+    # 清除所有缓存，避免旧的错误结果（如"未配置API Key"）被重复返回
+    with _CACHE_LOCK:
+        _SEARCH_CACHE.clear()
+        _DETAIL_CACHE.clear()
+        _IDENTIFY_CACHE.clear()
 
 
 def search_multi(query, year=None, language='zh-CN'):
@@ -218,8 +223,11 @@ def identify_media(name, year=None):
             return None, cached[1]
 
     result, err = _identify_media_impl(name, year)
-    with _CACHE_LOCK:
-        _IDENTIFY_CACHE[cache_key] = (result, err)
+    # 只缓存成功结果和"未找到匹配"，不缓存配置错误（如"未配置API Key"），
+    # 避免配置修正后仍返回旧错误
+    if result is not None or (err and '未配置' not in err and '搜索失败' not in err):
+        with _CACHE_LOCK:
+            _IDENTIFY_CACHE[cache_key] = (result, err)
     return result, err
 
 

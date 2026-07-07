@@ -336,12 +336,12 @@ function renderScannedFiles() {
     html += '</div>';
     listEl.innerHTML = html;
 
-    // 初始化识别结果数组
+    // 初始化识别结果数组，设置默认分类方便手动整理
     identifiedResults = scannedFiles.map(f => ({
         ...f,
         tmdb: null,
-        primary: '',
-        secondary: '',
+        primary: '电影',
+        secondary: '华语电影',
         identified: false,
     }));
     renderIdentifiedResults();
@@ -454,14 +454,14 @@ function renderIdentifiedResults() {
             html += `<tr>
                 <td><input type="checkbox" class="file-checkbox" data-index="${i}"></td>
                 <td title="${item.name}">${item.name.length > 40 ? item.name.substring(0, 40) + '...' : item.name}</td>
-                <td class="text-muted">未识别</td>
+                <td class="text-muted">未识别 ${item.primary ? '<span class="badge bg-info text-dark ms-1">已分类</span>' : ''}</td>
                 <td>
                     <select class="form-select form-select-sm" onchange="changePrimary(${i}, this.value)" style="width:auto;display:inline-block;">
-                        <option value="电影">电影</option>
-                        <option value="电视剧">电视剧</option>
+                        <option value="电影" ${item.primary === '电影' ? 'selected' : ''}>电影</option>
+                        <option value="电视剧" ${item.primary === '电视剧' ? 'selected' : ''}>电视剧</option>
                     </select>
                     <select class="form-select form-select-sm ms-1" onchange="changeSecondary(${i}, this.value)" style="width:auto;display:inline-block;" id="secondary-${i}">
-                        ${categories['电影'].map(c => `<option value="${c}">${c}</option>`).join('')}
+                        ${(categories[item.primary] || categories['电影']).map(c => `<option value="${c}" ${c === item.secondary ? 'selected' : ''}>${c}</option>`).join('')}
                     </select>
                 </td>
                 <td><button class="btn btn-outline-primary btn-sm" onclick="identifySingle(${i})"><i class="bi bi-magic"></i></button>
@@ -524,10 +524,20 @@ function changePrimary(index, primary) {
             `<option value="${s}" ${s === identifiedResults[index].secondary ? 'selected' : ''}>${s}</option>`
         ).join('');
     }
+    // 手动选择分类后自动勾选该行，方便整理
+    autoCheckRow(index);
 }
 
 function changeSecondary(index, secondary) {
     identifiedResults[index].secondary = secondary;
+    autoCheckRow(index);
+}
+
+function autoCheckRow(index) {
+    const cb = document.querySelector(`.file-checkbox[data-index="${index}"]`);
+    if (cb && identifiedResults[index].primary && identifiedResults[index].secondary) {
+        cb.checked = true;
+    }
 }
 
 function toggleSelectAll() {
@@ -543,10 +553,11 @@ async function organizeAll() {
     }
 
     const fileList = [];
+    let skipped = 0;
     checked.forEach(cb => {
         const index = parseInt(cb.dataset.index);
         const item = identifiedResults[index];
-        if (item && item.identified) {
+        if (item && item.primary && item.secondary) {
             fileList.push({
                 fid: item.fid,
                 name: item.name,
@@ -554,11 +565,13 @@ async function organizeAll() {
                 secondary: item.secondary,
                 parent_id: item.parent_id || '',
             });
+        } else {
+            skipped++;
         }
     });
 
     if (fileList.length === 0) {
-        showToast('没有已识别的文件', 'danger');
+        showToast('没有可整理的文件，请先选择分类', 'danger');
         return;
     }
 
@@ -572,12 +585,19 @@ async function organizeAll() {
             body: JSON.stringify({files: fileList, root_cid: rootCid, source_cid: sourceCid})
         });
         const result = await resp.json();
-        showToast(result.message, result.success ? 'success' : 'danger');
         if (result.success && result.results) {
-            if (result.results.failed.length > 0) {
+            const succCount = result.results.success.length;
+            const failCount = result.results.failed.length;
+            let msg = `整理完成: ${succCount} 成功`;
+            if (failCount > 0) msg += `, ${failCount} 失败`;
+            if (skipped > 0) msg += `, ${skipped} 个未分类被跳过`;
+            showToast(msg, failCount > 0 ? 'warning' : 'success');
+            if (failCount > 0) {
                 const failMsg = result.results.failed.map(f => `${f.name}: ${f.reason}`).join('\n');
-                showToast(`失败: ${failMsg}`, 'danger');
+                showToast(`失败详情: ${failMsg}`, 'danger');
             }
+        } else {
+            showToast(result.message || '整理失败', 'danger');
         }
     } catch (e) {
         showToast('整理失败', 'danger');

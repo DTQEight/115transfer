@@ -71,6 +71,10 @@ def decrypt(ciphertext: str) -> str:
     except Exception:
         return ciphertext
 
+import cloud115
+import wechat_work
+import douban
+
 # 日志配置
 LOG_DIR: str = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
 os.makedirs(LOG_DIR, exist_ok=True)

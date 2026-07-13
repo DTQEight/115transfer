@@ -3,7 +3,60 @@ import json
 import os
 import time
 import threading
-from crypto_utils import encrypt, decrypt
+import base64
+from Crypto.Cipher import AES
+from Crypto.Protocol.KDF import scrypt
+from Crypto.Random import get_random_bytes
+
+_KEY_SIZE = 32
+_NONCE_SIZE = 12
+_SALT_SIZE = 16
+_ENCRYPTION_KEY = None
+
+def _get_encryption_key():
+    global _ENCRYPTION_KEY
+    if _ENCRYPTION_KEY is None:
+        env_key = os.environ.get('ENCRYPTION_KEY')
+        if not env_key:
+            _ENCRYPTION_KEY = os.environ.get('FLASK_SECRET_KEY', '')[:_KEY_SIZE]
+            if len(_ENCRYPTION_KEY) < _KEY_SIZE:
+                _ENCRYPTION_KEY = _ENCRYPTION_KEY.ljust(_KEY_SIZE, '0')
+        else:
+            _ENCRYPTION_KEY = env_key[:_KEY_SIZE].ljust(_KEY_SIZE, '0')
+    return _ENCRYPTION_KEY
+
+def encrypt(plaintext):
+    if not plaintext:
+        return ''
+    key = _get_encryption_key()
+    salt = get_random_bytes(_SALT_SIZE)
+    nonce = get_random_bytes(_NONCE_SIZE)
+    derived_key = scrypt(key, salt, _KEY_SIZE, N=2**14, r=8, p=1)
+    cipher = AES.new(derived_key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode('utf-8'))
+    encoded = base64.b64encode(salt + nonce + tag + ciphertext).decode('ascii')
+    return f'ENC[{encoded}]'
+
+def decrypt(ciphertext):
+    if not ciphertext:
+        return ''
+    if ciphertext.startswith('ENC[') and ciphertext.endswith(']'):
+        encoded = ciphertext[4:-1]
+    else:
+        return ciphertext
+    try:
+        decoded = base64.b64decode(encoded)
+        salt = decoded[:_SALT_SIZE]
+        nonce = decoded[_SALT_SIZE:_SALT_SIZE + _NONCE_SIZE]
+        tag = decoded[_SALT_SIZE + _NONCE_SIZE:_SALT_SIZE + _NONCE_SIZE + 16]
+        data = decoded[_SALT_SIZE + _NONCE_SIZE + 16:]
+        key = _get_encryption_key()
+        derived_key = scrypt(key, salt, _KEY_SIZE, N=2**14, r=8, p=1)
+        cipher = AES.new(derived_key, AES.MODE_GCM, nonce=nonce)
+        plaintext = cipher.decrypt_and_verify(data, tag)
+        return plaintext.decode('utf-8')
+    except Exception:
+        return ciphertext
 
 CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'cloud115_config.json')
 

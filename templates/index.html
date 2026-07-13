@@ -42,6 +42,85 @@
             </div>
         </form>
 
+        <!-- 统计仪表盘 -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-graph-up me-2"></i>统计仪表盘</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadDashboard()" title="刷新">
+                    <i class="bi bi-arrow-clockwise"></i>
+                </button>
+            </div>
+            <div class="card-body">
+                <div class="row g-3 mb-3">
+                    <div class="col-6 col-md-3">
+                        <div class="border rounded-3 p-2 text-center h-100">
+                            <div class="text-muted small">电影总数</div>
+                            <div class="fs-4 fw-bold text-primary">{{ stats.total }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="border rounded-3 p-2 text-center h-100">
+                            <div class="text-muted small">页码数</div>
+                            <div class="fs-4 fw-bold text-info">{{ stats.pages }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="border rounded-3 p-2 text-center h-100">
+                            <div class="text-muted small">已填磁链</div>
+                            <div class="fs-4 fw-bold text-success">{{ stats.filled }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="border rounded-3 p-2 text-center h-100">
+                            <div class="text-muted small">空磁链</div>
+                            <div class="fs-4 fw-bold text-warning">{{ stats.empty }}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="text-muted small">磁链完整度</span>
+                        <span class="fw-bold small">{{ stats.complete_rate }}%</span>
+                    </div>
+                    <div class="progress" style="height: 6px;">
+                        <div class="progress-bar bg-success" role="progressbar" style="width: {{ stats.complete_rate }}%"></div>
+                    </div>
+                </div>
+                <div class="row g-3 mb-3">
+                    <div class="col-6 col-md-3">
+                        <div class="border rounded-3 p-2 text-center h-100">
+                            <div class="text-muted small">今日转存成功</div>
+                            <div class="fs-5 fw-bold text-success" id="todaySuccess">-</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="border rounded-3 p-2 text-center h-100">
+                            <div class="text-muted small">今日转存失败</div>
+                            <div class="fs-5 fw-bold text-danger" id="todayFail">-</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="border rounded-3 p-2 text-center h-100">
+                            <div class="text-muted small">累计成功</div>
+                            <div class="fs-5 fw-bold text-primary" id="totalSuccess">-</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="border rounded-3 p-2 text-center h-100">
+                            <div class="text-muted small">累计失败</div>
+                            <div class="fs-5 fw-bold text-warning" id="totalFail">-</div>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <div class="text-muted small mb-1"><i class="bi bi-clock-history me-1"></i>最近转存记录</div>
+                    <div id="recentHistory" class="small" style="max-height: 200px; overflow-y: auto;">
+                        <p class="text-muted text-center">加载中...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="card mb-4">
             <div class="card-header">
                 <i class="bi bi-plus-circle me-2"></i>添加新电影
@@ -238,6 +317,58 @@
 {% endblock %}
 
 {% block extra_script %}
+        // 加载统计仪表盘（转存统计+最近记录）
+        async function loadDashboard() {
+            try {
+                var resp = await apiFetch('/history/statistics');
+                if (resp.ok) {
+                    var result = await resp.json();
+                    if (result.success && result.statistics) {
+                        var s = result.statistics;
+                        document.getElementById('todaySuccess').textContent = s.today_success || 0;
+                        document.getElementById('todayFail').textContent = s.today_fail || 0;
+                        document.getElementById('totalSuccess').textContent = s.total_success || 0;
+                        document.getElementById('totalFail').textContent = s.total_fail || 0;
+                    }
+                }
+            } catch (e) {
+                console.error('加载统计失败:', e);
+            }
+            try {
+                var resp2 = await apiFetch('/history/recent?limit=8');
+                var historyEl = document.getElementById('recentHistory');
+                if (resp2.ok) {
+                    var result2 = await resp2.json();
+                    if (result2.success && result2.records && result2.records.length > 0) {
+                        var html = '<ul class="list-unstyled mb-0">';
+                        result2.records.forEach(function(r) {
+                            var time = r.time || '';
+                            var shortTime = time.substring(5, 16).replace('T', ' ');
+                            var icon = r.success ? '<i class="bi bi-check-circle text-success"></i>' : '<i class="bi bi-x-circle text-danger"></i>';
+                            var name = escapeHtml(r.movie_name || r.magnet || '');
+                            if (name.length > 30) name = name.substring(0, 30) + '...';
+                            var sourceBadge = '';
+                            if (r.source === 'wechat') sourceBadge = '<span class="badge bg-secondary">微信</span> ';
+                            else if (r.source === 'baidu') sourceBadge = '<span class="badge bg-info text-dark">论坛</span> ';
+                            else if (r.source === 'batch') sourceBadge = '<span class="badge bg-primary">批量</span> ';
+                            html += '<li class="d-flex align-items-center gap-2 py-1 border-bottom">' +
+                                '<span>' + icon + '</span>' +
+                                '<span class="text-muted" style="min-width:80px;">' + escapeHtml(shortTime) + '</span>' +
+                                '<span class="flex-grow-1 text-truncate">' + sourceBadge + name + '</span>' +
+                                '</li>';
+                        });
+                        html += '</ul>';
+                        historyEl.innerHTML = html;
+                    } else {
+                        historyEl.innerHTML = '<p class="text-muted text-center mb-0">暂无转存记录</p>';
+                    }
+                }
+            } catch (e) {
+                console.error('加载历史失败:', e);
+            }
+        }
+        loadDashboard();
+
         // 内联保存磁力链接
         async function saveMagnetInline(input) {
             var id = input.dataset.id;

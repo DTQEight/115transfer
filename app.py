@@ -21,6 +21,7 @@ from crypto_utils import encrypt, decrypt
 import cloud115
 import wechat_work
 import douban
+import transfer_history
 
 # 日志配置
 LOG_DIR: str = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
@@ -367,7 +368,8 @@ def index() -> str:
             df = load_movies()
 
         if df.empty:
-            return render_template('index.html', movies=[], current_page=0, all_page_nums=[], version=VERSION)
+            return render_template('index.html', movies=[], current_page=0, all_page_nums=[], version=VERSION,
+                                  stats={'total': 0, 'pages': 0, 'filled': 0, 'empty': 0, 'complete_rate': 0})
 
         all_page_nums = sorted(df['页码'].unique())
 
@@ -380,15 +382,37 @@ def index() -> str:
         page_df = df[df['页码'] == page_num]
         movies = build_movie_list(page_df)
 
+        # 计算统计数据
+        total = len(df)
+        page_count = len(all_page_nums)
+        filled = 0
+        empty = 0
+        for _, row in df.iterrows():
+            m = row['磁力链接']
+            if pd.isna(m) or str(m).strip() == '':
+                empty += 1
+            else:
+                filled += 1
+        complete_rate = round(filled / total * 100, 1) if total > 0 else 0
+        stats = {
+            'total': total,
+            'pages': page_count,
+            'filled': filled,
+            'empty': empty,
+            'complete_rate': complete_rate,
+        }
+
         return render_template('index.html',
                               movies=movies,
                               current_page=page_num,
                               all_page_nums=all_page_nums,
-                              version=VERSION)
+                              version=VERSION,
+                              stats=stats)
     except Exception as e:
         logger.error(f'[首页] 加载数据失败: {e}', exc_info=True)
         # 返回500状态码，便于前端识别错误，而不是返回200的"成功"页面
         return render_template('index.html', movies=[], current_page=0, all_page_nums=[], version=VERSION,
+                              stats={'total': 0, 'pages': 0, 'filled': 0, 'empty': 0, 'complete_rate': 0},
                               error='加载数据失败，请检查日志'), 500
 
 @app.route('/search')
@@ -637,6 +661,15 @@ def cloud115_transfer(movie_id, page):
             logger.info(f'[转存] 成功: {movie_name} (ID:{movie_id}, 页:{page})')
         else:
             logger.warning(f'[转存] 失败: {movie_name} - {msg}')
+        # 记录转存历史
+        try:
+            transfer_history.add_record(
+                movie_id=movie_id, page=page, movie_name=str(movie_name),
+                magnet=str(magnet), success=success,
+                message=msg + dir_info, source='single'
+            )
+        except Exception as hist_err:
+            logger.error(f'[转存历史] 记录失败: {hist_err}')
         return jsonify({'success': success, 'message': msg + dir_info})
     except Exception as e:
         logger.error(f'[转存] 异常: {str(e)}')
@@ -692,10 +725,16 @@ def cloud115_batch_transfer():
 
         page_df = df[df['页码'] == page_num]
         magnets = []
+        movie_map = {}  # magnet -> {movie_id, movie_name}
         for _, row in page_df.iterrows():
             magnet = row['磁力链接']
             if not pd.isna(magnet) and str(magnet).strip() != '':
-                magnets.append(str(magnet))
+                m = str(magnet)
+                magnets.append(m)
+                movie_map[m] = {
+                    'movie_id': row['序号'],
+                    'movie_name': str(row['电影名']) if not pd.isna(row['电影名']) else '',
+                }
 
         if not magnets:
             return jsonify({'success': False, 'message': '当前页没有有效的磁力链接'})
@@ -705,6 +744,11 @@ def cloud115_batch_transfer():
         fail_count = len(results) - success_count
         dir_info = f'（保存到: 第{page_num}页）' if save_path else ''
         logger.info(f'[批量转存] 页码:{page_num}, 成功:{success_count}, 失败:{fail_count}')
+        # 记录转存历史
+        try:
+            transfer_history.add_batch_records(results, page=page_num, movie_map=movie_map, source='batch')
+        except Exception as hist_err:
+            logger.error(f'[转存历史] 批量记录失败: {hist_err}')
         return jsonify({
             'success': True,
             'message': f'批量转存完成: 成功 {success_count}, 失败 {fail_count}{dir_info}',
@@ -889,6 +933,14 @@ def wechat_callback():
                     reply = f'转存结果: {msg_text}'
                     if not success:
                         wechat_work.send_wechat_message(f'[115Transfer] 转存失败: {msg_text}\n磁力链接: {content[:50]}...')
+                    # 记录转存历史
+                    try:
+                        transfer_history.add_record(
+                            movie_id='', page='', movie_name='', magnet=content,
+                            success=success, message=msg_text, source='wechat'
+                        )
+                    except Exception:
+                        pass
             elif content.lower() in ['帮助', 'help', '?']:
                 if state:
                     if state['action'] == 'batch_transfer':
@@ -941,6 +993,11 @@ def wechat_callback():
                             reply = f'批量转存完成{dir_info}\n页码: {page_num}\n成功: {success_count}\n失败: {fail_count}'
                             if fail_count > 0:
                                 wechat_work.send_wechat_message(f'[115Transfer] 批量转存部分失败\n页码: {page_num}\n成功: {success_count}\n失败: {fail_count}')
+                            # 记录转存历史
+                            try:
+                                transfer_history.add_batch_records(results, page=page_num, movie_map=None, source='wechat')
+                            except Exception:
+                                pass
                     with user_states_lock:
                         user_states.pop(from_user, None)
                 else:
@@ -1632,6 +1689,14 @@ def baidu_save():
             result = baidu_forum.get_magnet_from_thread(tid)
             magnet = result['magnet']
         success, msg = cloud115.add_offline_task(magnet)
+        # 记录转存历史
+        try:
+            transfer_history.add_record(
+                movie_id='', page='', movie_name='', magnet=magnet,
+                success=success, message=msg, source='baidu'
+            )
+        except Exception:
+            pass
         return jsonify({'success': success, 'message': msg, 'magnet': magnet})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -1834,6 +1899,33 @@ def douban_sync():
     except Exception as e:
         logger.error(f'[豆瓣] 同步异常: {e}')
         return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
+
+
+# ===== 转存历史 =====
+
+@app.route('/history/recent')
+def history_recent():
+    """获取最近转存记录"""
+    try:
+        limit = request.args.get('limit', 10, type=int)
+        if limit < 1 or limit > 100:
+            limit = 10
+        records = transfer_history.get_recent(limit=limit)
+        return jsonify({'success': True, 'records': records})
+    except Exception as e:
+        logger.error(f'[转存历史] 查询失败: {e}')
+        return jsonify({'success': False, 'message': str(e), 'records': []})
+
+
+@app.route('/history/statistics')
+def history_statistics():
+    """获取转存统计数据"""
+    try:
+        stats = transfer_history.get_statistics()
+        return jsonify({'success': True, 'statistics': stats})
+    except Exception as e:
+        logger.error(f'[转存历史] 统计失败: {e}')
+        return jsonify({'success': False, 'message': str(e), 'statistics': {}})
 
 
 # ===== 日志查看 =====

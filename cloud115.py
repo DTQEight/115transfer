@@ -3,64 +3,19 @@ import json
 import os
 import time
 import threading
-import base64
-from Crypto.Cipher import AES
-from Crypto.Protocol.KDF import scrypt
-from Crypto.Random import get_random_bytes
+from typing import Optional, List, Tuple, Any
 
-_KEY_SIZE = 32
-_NONCE_SIZE = 12
-_SALT_SIZE = 16
-_ENCRYPTION_KEY = None
-
-def _get_encryption_key():
-    global _ENCRYPTION_KEY
-    if _ENCRYPTION_KEY is None:
-        env_key = os.environ.get('ENCRYPTION_KEY')
-        if not env_key:
-            _ENCRYPTION_KEY = os.environ.get('FLASK_SECRET_KEY', '')[:_KEY_SIZE]
-            if len(_ENCRYPTION_KEY) < _KEY_SIZE:
-                _ENCRYPTION_KEY = _ENCRYPTION_KEY.ljust(_KEY_SIZE, '0')
-        else:
-            _ENCRYPTION_KEY = env_key[:_KEY_SIZE].ljust(_KEY_SIZE, '0')
-    return _ENCRYPTION_KEY
-
-def encrypt(plaintext):
-    if not plaintext:
-        return ''
-    key = _get_encryption_key()
-    salt = get_random_bytes(_SALT_SIZE)
-    nonce = get_random_bytes(_NONCE_SIZE)
-    derived_key = scrypt(key, salt, _KEY_SIZE, N=2**14, r=8, p=1)
-    cipher = AES.new(derived_key, AES.MODE_GCM, nonce=nonce)
-    ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode('utf-8'))
-    encoded = base64.b64encode(salt + nonce + tag + ciphertext).decode('ascii')
-    return f'ENC[{encoded}]'
-
-def decrypt(ciphertext):
-    if not ciphertext:
-        return ''
-    if ciphertext.startswith('ENC[') and ciphertext.endswith(']'):
-        encoded = ciphertext[4:-1]
-    else:
-        return ciphertext
-    try:
-        decoded = base64.b64decode(encoded)
-        salt = decoded[:_SALT_SIZE]
-        nonce = decoded[_SALT_SIZE:_SALT_SIZE + _NONCE_SIZE]
-        tag = decoded[_SALT_SIZE + _NONCE_SIZE:_SALT_SIZE + _NONCE_SIZE + 16]
-        data = decoded[_SALT_SIZE + _NONCE_SIZE + 16:]
-        key = _get_encryption_key()
-        derived_key = scrypt(key, salt, _KEY_SIZE, N=2**14, r=8, p=1)
-        cipher = AES.new(derived_key, AES.MODE_GCM, nonce=nonce)
-        plaintext = cipher.decrypt_and_verify(data, tag)
-        return plaintext.decode('utf-8')
-    except Exception:
-        return ciphertext
+# 加密工具统一入口
+from crypto_utils import encrypt, decrypt
 
 CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'cloud115_config.json')
 
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+# Cookie 缓存：避免每次API调用都读配置文件解密Cookie
+_cookie_cache: Optional[str] = None
+_cookie_cache_ts: float = 0
+_COOKIE_CACHE_TTL: int = 30  # 30秒缓存
 
 # 配置文件读写锁：cloud115_config.json 同时被 cloud115、media.tmdb、media.organizer 等模块访问，
 # 必须用同一把锁保护，避免 load→modify→save 事务期间被其他线程覆盖
@@ -121,8 +76,23 @@ def _request_with_retry(method, url, max_retries=3, **kwargs):
 
 
 def get_cookie_string():
+    """获取Cookie字符串，带缓存避免每次请求都读配置文件"""
+    global _cookie_cache, _cookie_cache_ts
+    now = time.time()
+    if _cookie_cache is not None and (now - _cookie_cache_ts < _COOKIE_CACHE_TTL):
+        return _cookie_cache
     config = load_config()
-    return decrypt(config.get('cookie', ''))
+    cookie = decrypt(config.get('cookie', ''))
+    _cookie_cache = cookie
+    _cookie_cache_ts = now
+    return cookie
+
+
+def invalidate_cookie_cache():
+    """配置变更后调用，清除Cookie缓存"""
+    global _cookie_cache, _cookie_cache_ts
+    _cookie_cache = None
+    _cookie_cache_ts = 0
 
 
 def _get_headers():
@@ -185,8 +155,7 @@ def add_offline_task(magnet_url, save_path_id=None):
         result = resp.json()
 
         if result.get('state') is True or result.get('state') == 1:
-            task_id = result.get('result', [{}])[0].get('info_hash', '') if isinstance(result.get('result'), list) else ''
-            return True, f'离线任务添加成功'
+            return True, '离线任务添加成功'
         else:
             error_msg = result.get('error_msg') or result.get('error') or result.get('msg') or '未知错误'
             return False, f'添加失败: {error_msg}'
@@ -286,6 +255,7 @@ def set_default_save_path(path_id, path_name=None):
 
 
 def create_dir(parent_cid, dir_name):
+    """创建目录，返回 (success, message_or_new_cid)"""
     cookie = get_cookie_string()
     if not cookie:
         return False, '未配置115 Cookie'
@@ -300,7 +270,7 @@ def create_dir(parent_cid, dir_name):
         result = resp.json()
         if result.get('errno') == 0 or result.get('state') is True:
             cid = result.get('cid', result.get('file_id', ''))
-            return True, f'目录创建成功'
+            return True, str(cid) if cid else '目录创建成功'
         return False, f'创建失败: {result.get("error", "未知错误")}'
     except Exception as e:
         return False, f'创建失败: {str(e)}'
@@ -370,6 +340,8 @@ def move_files(file_ids, target_cid):
     cookie = get_cookie_string()
     if not cookie:
         return False, '未配置115 Cookie'
+    if not file_ids:
+        return False, '文件ID列表为空'
 
     try:
         url = 'https://webapi.115.com/files/move'
@@ -377,7 +349,7 @@ def move_files(file_ids, target_cid):
         for i, fid in enumerate(file_ids):
             data[f'fid[{i}]'] = fid
         resp = _request_with_retry('POST', url, max_retries=3, headers=_get_headers(), data=data, timeout=30)
-        if not resp:
+        if resp is None:
             return False, '请求失败'
         result = resp.json()
         if result.get('errno') == 0 or result.get('state') is True:
@@ -387,10 +359,18 @@ def move_files(file_ids, target_cid):
         return False, f'移动失败: {str(e)}'
 
 
-def get_video_files_recursive(cid, max_depth=5, current_depth=0, folder_name=''):
-    """递归获取目录下所有视频文件"""
+def get_video_files_recursive(cid, max_depth=5, current_depth=0, folder_name='', _visited=None):
+    """递归获取目录下所有视频文件
+
+    使用 _visited 集合检测循环引用，避免因符号链接或目录结构异常导致无限递归
+    """
     if current_depth >= max_depth:
         return []
+    if _visited is None:
+        _visited = set()
+    if cid in _visited:
+        return []
+    _visited.add(cid)
 
     video_files = []
     success, msg, items = list_files(cid, show_dir=1)
@@ -399,7 +379,10 @@ def get_video_files_recursive(cid, max_depth=5, current_depth=0, folder_name='')
 
     for item in items:
         if item['type'] == 'dir':
-            video_files.extend(get_video_files_recursive(item['cid'], max_depth, current_depth + 1, folder_name=item['name']))
+            video_files.extend(get_video_files_recursive(
+                item['cid'], max_depth, current_depth + 1,
+                folder_name=item['name'], _visited=_visited
+            ))
         elif item['type'] == 'file' and is_video_file(item['name']):
             item['folder_name'] = folder_name
             video_files.append(item)

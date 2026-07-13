@@ -418,7 +418,7 @@
                             const size = t.size ? (t.size / 1024 / 1024).toFixed(1) + 'MB' : '-';
                             const percent = t.percent != null ? t.percent + '%' : '-';
                             const status = t.status == 2 ? '完成' : t.status == 1 ? '下载中' : '等待中';
-                            html += `<tr><td>${name.substring(0,40)}</td><td>${size}</td><td>${percent}</td><td>${status}</td></tr>`;
+                            html += `<tr><td>${escapeHtml(name.substring(0,40))}</td><td>${escapeHtml(size)}</td><td>${escapeHtml(percent)}</td><td>${escapeHtml(status)}</td></tr>`;
                         });
                         html += '</tbody></table>';
                     } else {
@@ -740,15 +740,5 @@
             } catch (e) {
                 console.error('保存失败', e);
             }
-        }
-
-        function escapeHtml(str) {
-            if (!str) return '';
-            return String(str)
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;');
         }
 {% endblock %}

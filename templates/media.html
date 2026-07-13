@@ -326,10 +326,12 @@ function renderScannedFiles() {
     }
     let html = '<div class="list-group">';
     scannedFiles.forEach((f, i) => {
+        const safeName = escapeHtml(f.name);
+        const displayName = f.name.length > 50 ? escapeHtml(f.name.substring(0, 50) + '...') : safeName;
         html += `<div class="list-group-item py-2">
             <div class="d-flex justify-content-between align-items-center">
-                <span class="small" title="${f.name}">${f.name.length > 50 ? f.name.substring(0, 50) + '...' : f.name}</span>
-                <span class="badge bg-secondary">${f.year || '-'}</span>
+                <span class="small" title="${safeName}">${displayName}</span>
+                <span class="badge bg-secondary">${escapeHtml(f.year) || '-'}</span>
             </div>
         </div>`;
     });
@@ -450,10 +452,12 @@ function renderIdentifiedResults() {
 
     let html = '';
     identifiedResults.forEach((item, i) => {
+        const safeItemName = escapeHtml(item.name);
+        const displayName = item.name.length > 40 ? escapeHtml(item.name.substring(0, 40) + '...') : safeItemName;
         if (!item.identified) {
             html += `<tr>
                 <td><input type="checkbox" class="file-checkbox" data-index="${i}"></td>
-                <td title="${item.name}">${item.name.length > 40 ? item.name.substring(0, 40) + '...' : item.name}</td>
+                <td title="${safeItemName}">${displayName}</td>
                 <td class="text-muted">未识别 ${item.primary ? '<span class="badge bg-info text-dark ms-1">已分类</span>' : ''}</td>
                 <td>
                     <select class="form-select form-select-sm" onchange="changePrimary(${i}, this.value)" style="width:auto;display:inline-block;">
@@ -479,14 +483,14 @@ function renderIdentifiedResults() {
             ).join('');
             html += `<tr>
                 <td><input type="checkbox" class="file-checkbox" data-index="${i}" checked></td>
-                <td title="${item.name}">${item.name.length > 40 ? item.name.substring(0, 40) + '...' : item.name}</td>
+                <td title="${safeItemName}">${displayName}</td>
                 <td>
                     <div class="d-flex align-items-center">
                         ${posterUrl ? `<img src="${posterUrl}" class="rounded me-2" style="height: 40px;">` : ''}
                         <div>
-                            <span class="fw-bold">${tmdb.title}</span>
-                            <span class="text-muted small ms-1">(${tmdb.year || '?'})</span>
-                            <br><span class="text-muted small">${tmdb.genres ? tmdb.genres.join(' / ') : ''}</span>
+                            <span class="fw-bold">${escapeHtml(tmdb.title)}</span>
+                            <span class="text-muted small ms-1">(${escapeHtml(tmdb.year) || '?'})</span>
+                            <br><span class="text-muted small">${tmdb.genres ? tmdb.genres.map(g => escapeHtml(g)).join(' / ') : ''}</span>
                         </div>
                     </div>
                 </td>
@@ -641,11 +645,11 @@ async function manualSearch() {
                 <div class="d-flex align-items-center">
                     ${posterUrl ? `<img src="${posterUrl}" class="rounded me-3" style="height: 60px;">` : ''}
                     <div>
-                        <span class="fw-bold">${r.title}</span>
-                        <span class="text-muted ms-1">(${r.year || '?'})</span>
+                        <span class="fw-bold">${escapeHtml(r.title)}</span>
+                        <span class="text-muted ms-1">(${escapeHtml(r.year) || '?'})</span>
                         <span class="badge bg-secondary ms-2">${typeLabel}</span>
-                        <br><span class="text-muted small">${r.genres ? r.genres.join(' / ') : ''}</span>
-                        ${r.original_title !== r.title ? `<br><span class="text-muted small">${r.original_title}</span>` : ''}
+                        <br><span class="text-muted small">${r.genres ? r.genres.map(g => escapeHtml(g)).join(' / ') : ''}</span>
+                        ${r.original_title !== r.title ? `<br><span class="text-muted small">${escapeHtml(r.original_title)}</span>` : ''}
                     </div>
                 </div>
             </button>`;

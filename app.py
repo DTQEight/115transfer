@@ -12,64 +12,11 @@ import hashlib
 import logging
 import time
 import queue
-import base64
 from typing import List, Dict, Any, Optional, Tuple, Callable, Union
 from logging.handlers import RotatingFileHandler
-from Crypto.Cipher import AES
-from Crypto.Protocol.KDF import scrypt
-from Crypto.Random import get_random_bytes
 
-_KEY_SIZE: int = 32
-_NONCE_SIZE: int = 12
-_SALT_SIZE: int = 16
-_ENCRYPTION_KEY: Optional[str] = None
-
-def _get_encryption_key() -> str:
-    global _ENCRYPTION_KEY
-    if _ENCRYPTION_KEY is None:
-        env_key: Optional[str] = os.environ.get('ENCRYPTION_KEY')
-        if not env_key:
-            _ENCRYPTION_KEY = os.environ.get('FLASK_SECRET_KEY', '')[:_KEY_SIZE]
-            if len(_ENCRYPTION_KEY) < _KEY_SIZE:
-                _ENCRYPTION_KEY = _ENCRYPTION_KEY.ljust(_KEY_SIZE, '0')
-        else:
-            _ENCRYPTION_KEY = env_key[:_KEY_SIZE].ljust(_KEY_SIZE, '0')
-    return _ENCRYPTION_KEY
-
-def encrypt(plaintext: str) -> str:
-    if not plaintext:
-        return ''
-    key: str = _get_encryption_key()
-    salt: bytes = get_random_bytes(_SALT_SIZE)
-    nonce: bytes = get_random_bytes(_NONCE_SIZE)
-    derived_key: bytes = scrypt(key, salt, _KEY_SIZE, N=2**14, r=8, p=1)
-    cipher = AES.new(derived_key, AES.MODE_GCM, nonce=nonce)
-    ciphertext: bytes
-    tag: bytes
-    ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode('utf-8'))
-    encoded: str = base64.b64encode(salt + nonce + tag + ciphertext).decode('ascii')
-    return f'ENC[{encoded}]'
-
-def decrypt(ciphertext: str) -> str:
-    if not ciphertext:
-        return ''
-    if ciphertext.startswith('ENC[') and ciphertext.endswith(']'):
-        encoded: str = ciphertext[4:-1]
-    else:
-        return ciphertext
-    try:
-        decoded: bytes = base64.b64decode(encoded)
-        salt: bytes = decoded[:_SALT_SIZE]
-        nonce: bytes = decoded[_SALT_SIZE:_SALT_SIZE + _NONCE_SIZE]
-        tag: bytes = decoded[_SALT_SIZE + _NONCE_SIZE:_SALT_SIZE + _NONCE_SIZE + 16]
-        data: bytes = decoded[_SALT_SIZE + _NONCE_SIZE + 16:]
-        key: str = _get_encryption_key()
-        derived_key: bytes = scrypt(key, salt, _KEY_SIZE, N=2**14, r=8, p=1)
-        cipher = AES.new(derived_key, AES.MODE_GCM, nonce=nonce)
-        plaintext: bytes = cipher.decrypt_and_verify(data, tag)
-        return plaintext.decode('utf-8')
-    except Exception:
-        return ciphertext
+# 加密工具统一入口：避免在多个模块重复实现加密逻辑
+from crypto_utils import encrypt, decrypt
 
 import cloud115
 import wechat_work
@@ -131,6 +78,14 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY') or secrets.token_hex(32)
 app.permanent_session_lifetime = timedelta(days=7)
 
+# Session cookie 安全标志：HTTPS 环境下启用 Secure，Always HttpOnly + SameSite=Lax
+_is_https: bool = os.environ.get('HTTPS_ENABLED', '').lower() == 'true' or os.environ.get('FORCE_HTTPS', '').lower() == 'true'
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SECURE=_is_https,
+)
+
 # ==================== CORS 配置 ====================
 allowed_origins: str = os.environ.get('ALLOWED_ORIGINS', '').strip()
 if allowed_origins:
@@ -150,10 +105,14 @@ _movie_cache: Dict[str, Any] = {'hash': None, 'data': None}
 
 # ==================== 登录 & CSRF 配置 ====================
 
-# 登录密码：优先从环境变量读取；未设置则使用默认密码（首次启动会在日志中提示修改）
+# 登录密码：必须从环境变量设置，未设置时使用默认值并记录警告
 APP_PASSWORD: str = os.environ.get('APP_PASSWORD') or 'admin123'
 # 是否强制要求设置密码（生产环境建议设为 True）
 STRICT_PASSWORD: bool = bool(os.environ.get('APP_PASSWORD'))
+if not STRICT_PASSWORD:
+    logger.warning('[安全] 未设置 APP_PASSWORD 环境变量，使用默认密码 admin123，生产环境请务必修改！')
+
+# 加密密钥安全检查由 crypto_utils._get_key() 负责，首次调用时记录警告
 
 # 公开接口白名单（无需登录、无需 CSRF 验证）
 PUBLIC_PATHS: List[str] = [
@@ -230,26 +189,92 @@ def _inject_csrf_token() -> Dict[str, Callable[[], str]]:
     return {'csrf_token': _get_csrf_token}
 
 
+# ==================== 登录限速 ====================
+# 简单的内存限速：每个IP在5分钟窗口内最多5次失败，成功登录不计数
+_login_attempts: Dict[str, List[float]] = {}
+_login_attempts_lock: threading.Lock = threading.Lock()
+_LOGIN_WINDOW: int = 300  # 5分钟
+_LOGIN_MAX_FAILS: int = 5
+
+
+def _check_login_rate_limit(client_ip: str) -> Tuple[bool, int]:
+    """检查登录限速，返回 (是否允许, 剩余尝试次数)"""
+    now: float = time.time()
+    with _login_attempts_lock:
+        attempts = _login_attempts.get(client_ip, [])
+        # 清理窗口外的记录
+        attempts = [t for t in attempts if now - t < _LOGIN_WINDOW]
+        if len(attempts) >= _LOGIN_MAX_FAILS:
+            remaining_lock: int = int(_LOGIN_WINDOW - (now - attempts[0]))
+            _login_attempts[client_ip] = attempts
+            return False, max(remaining_lock, 0)
+        _login_attempts[client_ip] = attempts
+        return True, _LOGIN_MAX_FAILS - len(attempts)
+
+
+def _record_login_failure(client_ip: str) -> None:
+    """记录一次登录失败"""
+    now: float = time.time()
+    with _login_attempts_lock:
+        attempts = _login_attempts.get(client_ip, [])
+        attempts = [t for t in attempts if now - t < _LOGIN_WINDOW]
+        attempts.append(now)
+        _login_attempts[client_ip] = attempts
+
+
+def _clear_login_attempts(client_ip: str) -> None:
+    """登录成功后清除该IP的失败记录"""
+    with _login_attempts_lock:
+        _login_attempts.pop(client_ip, None)
+
+
+def _get_client_ip() -> str:
+    """获取客户端真实IP（支持反向代理）"""
+    xff = request.headers.get('X-Forwarded-For', '')
+    if xff:
+        return xff.split(',')[0].strip()
+    return request.remote_addr or 'unknown'
+
+
+# 版本号
+VERSION: str = "1.0.0"
+try:
+    _version_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'VERSION')
+    with open(_version_path, 'r') as f:
+        VERSION = f.read().strip()
+except Exception:
+    pass
+
+
 # ==================== 登录路由 ====================
 
 @app.route('/login', methods=['GET', 'POST'])
 def login() -> Union[str, Response]:
     error: Optional[str] = None
     if request.method == 'POST':
+        client_ip: str = _get_client_ip()
+        allowed, remaining = _check_login_rate_limit(client_ip)
+        if not allowed:
+            error = f'登录尝试过多，请 {remaining} 秒后重试'
+            logger.warning(f'[登录] IP {client_ip} 触发限速')
+            return render_template('login.html', error=error, version=VERSION,
+                                  strict_password=STRICT_PASSWORD), 429
         password: str = request.form.get('password', '')
         if password == APP_PASSWORD:
+            _clear_login_attempts(client_ip)
             session.clear()  # 清除旧 session 防止固定会话攻击
             session['logged_in'] = True
             session.permanent = True
             _get_csrf_token()  # 立即生成 CSRF token
-            logger.info('[登录] 用户登录成功')
+            logger.info(f'[登录] 用户登录成功 IP={client_ip}')
             next_url: str = request.args.get('next') or url_for('index')
             # 防止开放重定向：只允许相对路径，阻止 //evil.com
             if not next_url.startswith('/') or next_url.startswith('//'):
                 next_url = url_for('index')
             return redirect(next_url)
+        _record_login_failure(client_ip)
         error = '密码错误'
-        logger.warning('[登录] 密码错误')
+        logger.warning(f'[登录] 密码错误 IP={client_ip} 剩余尝试={remaining - 1}')
     return render_template('login.html', error=error, version=VERSION,
                           strict_password=STRICT_PASSWORD)
 
@@ -264,24 +289,16 @@ def logout() -> Response:
 def health() -> Response:
     return jsonify({'status': 'ok', 'version': VERSION})
 
-# 版本号
-VERSION: str = "1.0.0"
-try:
-    _version_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'VERSION')
-    with open(_version_path, 'r') as f:
-        VERSION = f.read().strip()
-except Exception:
-    pass
-
 def load_movies() -> pd.DataFrame:
     if not os.path.exists(EXCEL_FILE):
         df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间'])
         df.to_excel(EXCEL_FILE, index=False)
         return df
 
-    with open(EXCEL_FILE, 'rb') as f:
-        current_hash = hashlib.md5(f.read()).hexdigest()
-    if _movie_cache['hash'] == current_hash and _movie_cache['data'] is not None:
+    # 使用文件 mtime+size 作为缓存键，避免读取整个文件计算哈希
+    stat = os.stat(EXCEL_FILE)
+    current_sig = f'{stat.st_mtime}:{stat.st_size}'
+    if _movie_cache['hash'] == current_sig and _movie_cache['data'] is not None:
         return _movie_cache['data'].copy()
 
     df = pd.read_excel(EXCEL_FILE)
@@ -292,7 +309,7 @@ def load_movies() -> pd.DataFrame:
         except (ValueError, TypeError):
             # 序号列有非数字行，过滤掉
             df = df[pd.to_numeric(df['序号'], errors='coerce').notna()].reset_index(drop=True)
-    _movie_cache['hash'] = current_hash
+    _movie_cache['hash'] = current_sig
     _movie_cache['data'] = df
     return df.copy()
 
@@ -344,52 +361,57 @@ def index() -> str:
         page_num = int(page_num)
     except ValueError:
         page_num = 1
-    
+
     try:
         with data_lock:
             df = load_movies()
-        
+
         if df.empty:
             return render_template('index.html', movies=[], current_page=0, all_page_nums=[], version=VERSION)
-        
+
         all_page_nums = sorted(df['页码'].unique())
-        
+
         if page_num not in all_page_nums:
             if all_page_nums:
                 page_num = all_page_nums[0]
             else:
                 page_num = 0
-        
+
         page_df = df[df['页码'] == page_num]
         movies = build_movie_list(page_df)
-        
-        return render_template('index.html', 
-                              movies=movies, 
-                              current_page=page_num, 
+
+        return render_template('index.html',
+                              movies=movies,
+                              current_page=page_num,
                               all_page_nums=all_page_nums,
                               version=VERSION)
     except Exception as e:
+        logger.error(f'[首页] 加载数据失败: {e}', exc_info=True)
+        # 返回500状态码，便于前端识别错误，而不是返回200的"成功"页面
         return render_template('index.html', movies=[], current_page=0, all_page_nums=[], version=VERSION,
-                              error=f'加载数据失败: {str(e)}')
+                              error='加载数据失败，请检查日志'), 500
 
 @app.route('/search')
 def search():
     keyword = request.args.get('keyword', '')
-    
+
     try:
         with data_lock:
             df = load_movies()
-        
+
         if not keyword or df.empty:
             return redirect(url_for('index'))
-        
+
         mask = df['电影名'].str.lower().str.contains(keyword.lower(), na=False, regex=False)
         result_df = df[mask]
         movies = build_movie_list(result_df)
-        
+
         return render_template('search.html', movies=movies, keyword=keyword, version=VERSION)
     except Exception as e:
-        return redirect(url_for('index'))
+        logger.error(f'[搜索] 失败 keyword={keyword}: {e}', exc_info=True)
+        # 显示错误信息而非静默重定向，便于用户排查
+        return render_template('search.html', movies=[], keyword=keyword, version=VERSION,
+                              error=f'搜索失败，请重试'), 500
 
 @app.route('/add', methods=['POST'])
 def add_movie():
@@ -551,11 +573,18 @@ def cloud115_get_config():
     try:
         config = cloud115.load_config()
         cookie = config.get('cookie', '')
-        masked = cookie[:20] + '...' + cookie[-10:] if len(cookie) > 30 else cookie
+        # Cookie 掩码：始终只显示前后各4位，防止短Cookie泄露明文
+        if cookie:
+            if len(cookie) > 16:
+                masked = cookie[:4] + '****' + cookie[-4:]
+            else:
+                masked = '****'
+        else:
+            masked = ''
         return jsonify({'success': True, 'cookie_masked': masked, 'has_cookie': bool(cookie)})
     except Exception as e:
         logger.error(f'[115] 加载配置失败: {e}')
-        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
+        return jsonify({'success': False, 'message': '加载配置失败'}), 500
 
 
 @app.route('/cloud115/config', methods=['POST'])
@@ -568,10 +597,11 @@ def cloud115_set_config():
         def _update(cfg):
             cfg['cookie'] = encrypt(cookie)
         cloud115.update_config(_update)
+        cloud115.invalidate_cookie_cache()
         return jsonify({'success': True, 'message': 'Cookie保存成功'})
     except Exception as e:
         logger.error(f'[115] 保存配置失败: {e}')
-        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
+        return jsonify({'success': False, 'message': '保存配置失败'}), 500
 
 
 @app.route('/cloud115/verify', methods=['POST'])
@@ -922,14 +952,20 @@ def wechat_callback():
                     with user_states_lock:
                         user_states.pop(from_user, None)
                 elif content == '新建':
-                    state['action'] = 'create_dir_name'
+                    with user_states_lock:
+                        if from_user in user_states:
+                            user_states[from_user]['action'] = 'create_dir_name'
                     reply = f'在 {state["path"]} 下创建目录\n请输入新目录名:'
                 elif content == '返回':
                     if len(state.get('stack', [])) > 1:
-                        state['stack'].pop()
-                        parent = state['stack'][-1]
-                        state['cid'] = parent['cid']
-                        state['path'] = parent['path']
+                        with user_states_lock:
+                            cur = user_states.get(from_user)
+                            if cur and cur.get('action') == 'browse_dir':
+                                cur['stack'].pop()
+                                parent = cur['stack'][-1]
+                                cur['cid'] = parent['cid']
+                                cur['path'] = parent['path']
+                                state = cur
                         success, msg_text, dirs = cloud115.get_dir_list(state['cid'])
                         if success and dirs:
                             reply = f'目录: {state["path"]}\n\n'
@@ -945,9 +981,13 @@ def wechat_callback():
                     success, msg_text, dirs = cloud115.get_dir_list(state['cid'])
                     if success and 0 <= idx < len(dirs):
                         d = dirs[idx]
-                        state['cid'] = d['cid']
-                        state['path'] = state['path'] + ' / ' + d['name']
-                        state['stack'].append({'cid': d['cid'], 'path': state['path']})
+                        with user_states_lock:
+                            cur = user_states.get(from_user)
+                            if cur and cur.get('action') == 'browse_dir':
+                                cur['cid'] = d['cid']
+                                cur['path'] = cur['path'] + ' / ' + d['name']
+                                cur['stack'].append({'cid': d['cid'], 'path': cur['path']})
+                                state = cur
                         success2, msg2, subdirs = cloud115.get_dir_list(d['cid'])
                         if success2 and subdirs:
                             reply = f'目录: {state["path"]}\n\n'
@@ -1101,6 +1141,13 @@ def wechat_callback():
 @app.route('/wechat/proxy', methods=['POST'])
 def wechat_proxy():
     try:
+        # 安全检查：要求共享密钥验证，防止未授权添加电影
+        proxy_token = os.environ.get('WECHAT_PROXY_TOKEN', '')
+        if proxy_token:
+            provided = request.headers.get('X-Proxy-Token') or request.form.get('proxy_token') or request.args.get('proxy_token', '')
+            if provided != proxy_token:
+                return jsonify({'success': False, 'message': '未授权访问'}), 403
+
         content_type = request.content_type or ''
 
         if 'json' in content_type:
@@ -1502,7 +1549,7 @@ def baidu_config():
         return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
-@app.route('/baidu/test')
+@app.route('/baidu/test', methods=['POST'])
 def baidu_test():
     try:
         s = baidu_forum._get_session()
@@ -1710,6 +1757,11 @@ def douban_movie_info():
         if not subject_url:
             return jsonify({'success': False, 'message': '缺少电影URL'})
 
+        # SSRF 防护：校验 URL 必须是豆瓣电影 subject 页面
+        import re as _re
+        if not _re.match(r'^https://movie\.douban\.com/subject/\d+/?', subject_url):
+            return jsonify({'success': False, 'message': 'URL格式不合法，仅支持豆瓣电影页面'})
+
         name, err = douban.fetch_movie_chinese_name(subject_url)
         if err:
             return jsonify({'success': False, 'message': err})
@@ -1846,6 +1898,10 @@ def logs_stream():
         with _log_subscribers_lock:
             _log_subscribers.append(q)
 
+        # SSE 连接最大时长 30 分钟，超时后客户端会自动重连
+        max_duration = 30 * 60
+        start_time = time.time()
+
         try:
             # 0. 立即发送一个 SSE 注释，让浏览器立刻触发 onopen
             yield ': connected\n\n'
@@ -1874,6 +1930,10 @@ def logs_stream():
 
             # 3. 持续推送新日志
             while True:
+                # 超过最大连接时长，主动断开让客户端重连
+                if time.time() - start_time > max_duration:
+                    yield ': reconnect\n\n'
+                    break
                 try:
                     msg = q.get(timeout=15)
                     # 应用筛选
@@ -1906,12 +1966,17 @@ def logs_clear():
     """清空日志文件"""
     try:
         if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, 'w', encoding='utf-8') as f:
-                pass
+            # 先刷新并关闭 RotatingFileHandler 的文件句柄，避免句柄继续写入旧缓冲
+            for h in list(logger.handlers):
+                if isinstance(h, RotatingFileHandler):
+                    h.flush()
+                    # 轮转：将当前文件移到 .1，并创建新的空文件
+                    h.doRollover()
             logger.info('[日志] 日志已清空')
         return jsonify({'success': True, 'message': '日志已清空'})
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
+        logger.error(f'[日志] 清空失败: {e}')
+        return jsonify({'success': False, 'message': '清空日志失败'}), 500
 
 
 if __name__ == '__main__':

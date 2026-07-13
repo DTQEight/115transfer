@@ -6,60 +6,10 @@ import os
 import time
 import threading
 import html as html_module
-import base64
-from Crypto.Cipher import AES
-from Crypto.Protocol.KDF import scrypt
-from Crypto.Random import get_random_bytes
+import logging
 
-_KEY_SIZE = 32
-_NONCE_SIZE = 12
-_SALT_SIZE = 16
-_ENCRYPTION_KEY = None
-
-def _get_encryption_key():
-    global _ENCRYPTION_KEY
-    if _ENCRYPTION_KEY is None:
-        env_key = os.environ.get('ENCRYPTION_KEY')
-        if not env_key:
-            _ENCRYPTION_KEY = os.environ.get('FLASK_SECRET_KEY', '')[:_KEY_SIZE]
-            if len(_ENCRYPTION_KEY) < _KEY_SIZE:
-                _ENCRYPTION_KEY = _ENCRYPTION_KEY.ljust(_KEY_SIZE, '0')
-        else:
-            _ENCRYPTION_KEY = env_key[:_KEY_SIZE].ljust(_KEY_SIZE, '0')
-    return _ENCRYPTION_KEY
-
-def encrypt(plaintext):
-    if not plaintext:
-        return ''
-    key = _get_encryption_key()
-    salt = get_random_bytes(_SALT_SIZE)
-    nonce = get_random_bytes(_NONCE_SIZE)
-    derived_key = scrypt(key, salt, _KEY_SIZE, N=2**14, r=8, p=1)
-    cipher = AES.new(derived_key, AES.MODE_GCM, nonce=nonce)
-    ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode('utf-8'))
-    encoded = base64.b64encode(salt + nonce + tag + ciphertext).decode('ascii')
-    return f'ENC[{encoded}]'
-
-def decrypt(ciphertext):
-    if not ciphertext:
-        return ''
-    if ciphertext.startswith('ENC[') and ciphertext.endswith(']'):
-        encoded = ciphertext[4:-1]
-    else:
-        return ciphertext
-    try:
-        decoded = base64.b64decode(encoded)
-        salt = decoded[:_SALT_SIZE]
-        nonce = decoded[_SALT_SIZE:_SALT_SIZE + _NONCE_SIZE]
-        tag = decoded[_SALT_SIZE + _NONCE_SIZE:_SALT_SIZE + _NONCE_SIZE + 16]
-        data = decoded[_SALT_SIZE + _NONCE_SIZE + 16:]
-        key = _get_encryption_key()
-        derived_key = scrypt(key, salt, _KEY_SIZE, N=2**14, r=8, p=1)
-        cipher = AES.new(derived_key, AES.MODE_GCM, nonce=nonce)
-        plaintext = cipher.decrypt_and_verify(data, tag)
-        return plaintext.decode('utf-8')
-    except Exception:
-        return ciphertext
+# 加密工具统一入口
+from crypto_utils import encrypt, decrypt
 
 CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'douban_config.json')
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -73,8 +23,8 @@ def _load_unlocked():
         try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except Exception:
-            pass
+        except (json.JSONDecodeError, IOError) as e:
+            logging.getLogger('douban').warning(f'[豆瓣] 配置文件读取失败: {e}，使用空配置')
     return {}
 
 
@@ -184,6 +134,7 @@ def fetch_watched_movies(user_id, start=0, count=15):
                 movies.append({'title': title, 'url': movie_url, 'year': '', 'rating': ''})
         # 从 <li class="intro"> 补充年份信息
         # 每个 item 的结构: <div class="item comment-item">...<li class="intro">日期 / 演员 / ...</li>...</div>
+        # 注意：intros 和 movies 的数量可能不一致，仅按 movies 的索引安全补充
         intros = re.findall(r'<li class="intro">([^<]+)</li>', html)
         for i, intro in enumerate(intros):
             if i < len(movies):
@@ -207,6 +158,10 @@ def fetch_movie_chinese_name(subject_url):
     """访问电影subject页面获取中文名
     返回: (chinese_name, error_msg)
     """
+    # SSRF 防护：校验 URL 必须是豆瓣电影 subject 页面
+    if not re.match(r'^https://movie\.douban\.com/subject/\d+/?', subject_url or ''):
+        return '', 'URL格式不合法，仅支持豆瓣电影页面'
+
     config = load_config()
     cookie = decrypt(config.get('cookie', ''))
     if not cookie:
@@ -235,8 +190,11 @@ def fetch_movie_chinese_name(subject_url):
         return '', f'获取失败: {str(e)}'
 
 
-def fetch_all_watched_movies(user_id):
-    """获取用户所有看过的电影"""
+def fetch_all_watched_movies(user_id, max_pages=200):
+    """获取用户所有看过的电影
+
+    max_pages: 最大分页数，防止因解析异常导致无限循环
+    """
     config = load_config()
     cookie = decrypt(config.get('cookie', ''))
     if not cookie:
@@ -246,8 +204,9 @@ def fetch_all_watched_movies(user_id):
     start = 0
     per_page = 15
     total = None
+    pages = 0
 
-    while True:
+    while pages < max_pages:
         movies, count, err = fetch_watched_movies(user_id, start, per_page)
         if err:
             if all_movies:
@@ -258,8 +217,14 @@ def fetch_all_watched_movies(user_id):
             total = count
 
         all_movies.extend(movies)
+        pages += 1
 
+        # 终止条件：已获取达到total、本页为空、或本页不足一页
         if len(all_movies) >= total or len(movies) < per_page:
+            break
+
+        # 额外保护：如果本页没有新电影（去重后），也终止
+        if not movies:
             break
 
         start += per_page

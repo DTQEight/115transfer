@@ -10,63 +10,17 @@ import os
 import threading
 import requests
 from Crypto.Cipher import AES
-from Crypto.Protocol.KDF import scrypt
-from Crypto.Random import get_random_bytes
 
-_KEY_SIZE = 32
-_NONCE_SIZE = 12
-_SALT_SIZE = 16
-_ENCRYPTION_KEY = None
-
-def _get_encryption_key():
-    global _ENCRYPTION_KEY
-    if _ENCRYPTION_KEY is None:
-        env_key = os.environ.get('ENCRYPTION_KEY')
-        if not env_key:
-            _ENCRYPTION_KEY = os.environ.get('FLASK_SECRET_KEY', '')[:_KEY_SIZE]
-            if len(_ENCRYPTION_KEY) < _KEY_SIZE:
-                _ENCRYPTION_KEY = _ENCRYPTION_KEY.ljust(_KEY_SIZE, '0')
-        else:
-            _ENCRYPTION_KEY = env_key[:_KEY_SIZE].ljust(_KEY_SIZE, '0')
-    return _ENCRYPTION_KEY
-
-def encrypt(plaintext):
-    if not plaintext:
-        return ''
-    key = _get_encryption_key()
-    salt = get_random_bytes(_SALT_SIZE)
-    nonce = get_random_bytes(_NONCE_SIZE)
-    derived_key = scrypt(key, salt, _KEY_SIZE, N=2**14, r=8, p=1)
-    cipher = AES.new(derived_key, AES.MODE_GCM, nonce=nonce)
-    ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode('utf-8'))
-    encoded = base64.b64encode(salt + nonce + tag + ciphertext).decode('ascii')
-    return f'ENC[{encoded}]'
-
-def decrypt(ciphertext):
-    if not ciphertext:
-        return ''
-    if ciphertext.startswith('ENC[') and ciphertext.endswith(']'):
-        encoded = ciphertext[4:-1]
-    else:
-        return ciphertext
-    try:
-        decoded = base64.b64decode(encoded)
-        salt = decoded[:_SALT_SIZE]
-        nonce = decoded[_SALT_SIZE:_SALT_SIZE + _NONCE_SIZE]
-        tag = decoded[_SALT_SIZE + _NONCE_SIZE:_SALT_SIZE + _NONCE_SIZE + 16]
-        data = decoded[_SALT_SIZE + _NONCE_SIZE + 16:]
-        key = _get_encryption_key()
-        derived_key = scrypt(key, salt, _KEY_SIZE, N=2**14, r=8, p=1)
-        cipher = AES.new(derived_key, AES.MODE_GCM, nonce=nonce)
-        plaintext = cipher.decrypt_and_verify(data, tag)
-        return plaintext.decode('utf-8')
-    except Exception:
-        return ciphertext
+# 加密工具统一入口
+from crypto_utils import encrypt, decrypt
 
 CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'wechat_work_config.json')
 
 # 配置文件读写锁：保护 load→modify→save 事务原子性
 _config_lock = threading.Lock()
+
+# access_token 刷新锁：防止并发刷新token
+_token_lock = threading.Lock()
 
 
 def _load_unlocked():
@@ -101,6 +55,7 @@ def update_config(mutator):
 
 
 def get_access_token():
+    """获取access_token，带双重检查锁避免并发刷新"""
     config = load_config()
     corpid = config.get('corpid', '')
     corpsecret = decrypt(config.get('corpsecret', ''))
@@ -111,21 +66,29 @@ def get_access_token():
     if cached_token.get('token') and cached_token.get('expires', 0) > time.time():
         return cached_token['token'], 'ok'
 
-    try:
-        url = f'https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid={corpid}&corpsecret={corpsecret}'
-        resp = requests.get(url, timeout=10)
-        data = resp.json()
-        if data.get('errcode') == 0:
-            token = data['access_token']
-            expires = time.time() + data.get('expires_in', 7200) - 300
+    # 加锁防止并发刷新token
+    with _token_lock:
+        # 双重检查：拿到锁后再次检查缓存，避免重复请求
+        config = load_config()
+        cached_token = config.get('access_token', {})
+        if cached_token.get('token') and cached_token.get('expires', 0) > time.time():
+            return cached_token['token'], 'ok'
 
-            def _update(cfg):
-                cfg['access_token'] = {'token': token, 'expires': expires}
-            update_config(_update)
-            return token, 'ok'
-        return None, data.get('errmsg', '获取token失败')
-    except Exception as e:
-        return None, str(e)
+        try:
+            url = f'https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid={corpid}&corpsecret={corpsecret}'
+            resp = requests.get(url, timeout=10)
+            data = resp.json()
+            if data.get('errcode') == 0:
+                token = data['access_token']
+                expires = time.time() + data.get('expires_in', 7200) - 300
+
+                def _update(cfg):
+                    cfg['access_token'] = {'token': token, 'expires': expires}
+                update_config(_update)
+                return token, 'ok'
+            return None, data.get('errmsg', '获取token失败')
+        except Exception as e:
+            return None, str(e)
 
 
 def send_wechat_message(content, to_user='@all'):
@@ -138,12 +101,18 @@ def send_wechat_message(content, to_user='@all'):
     if not agentid:
         return False, '未配置AgentId'
 
+    # agentid 必须为整数
+    try:
+        agentid_int = int(agentid)
+    except (ValueError, TypeError):
+        return False, 'AgentId 配置无效，必须为整数'
+
     try:
         url = f'https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}'
         data = {
             'touser': to_user,
             'msgtype': 'text',
-            'agentid': int(agentid),
+            'agentid': agentid_int,
             'text': {'content': content}
         }
         resp = requests.post(url, json=data, timeout=10)
@@ -159,14 +128,30 @@ class WeChatCrypto:
     def __init__(self, token, encoding_aes_key, corp_id):
         self.token = token
         self.corp_id = corp_id
+        # encoding_aes_key 必须为43位 Base64 字符串，解码后32字节
+        if not encoding_aes_key or len(encoding_aes_key) != 43:
+            raise ValueError('encoding_aes_key 长度必须为43位')
         self.key = base64.b64decode(encoding_aes_key + '=')
 
     def _decrypt(self, encrypted):
         iv = self.key[:16]
         cipher = AES.new(self.key, AES.MODE_CBC, iv)
         decrypted = cipher.decrypt(base64.b64decode(encrypted))
-        decrypted = decrypted[:-decrypted[-1]]
+        # PKCS7 去填充：校验 pad_len 范围，防止越界
+        if not decrypted:
+            raise ValueError('解密结果为空')
+        pad_len = decrypted[-1]
+        if pad_len < 1 or pad_len > 32 or pad_len > len(decrypted):
+            raise ValueError(f'PKCS7 填充长度非法: {pad_len}')
+        # 校验所有填充字节一致
+        if decrypted[-pad_len:] != bytes([pad_len] * pad_len):
+            raise ValueError('PKCS7 填充字节不一致')
+        decrypted = decrypted[:-pad_len]
+        if len(decrypted) < 20:
+            raise ValueError('解密内容过短')
         content_len = struct.unpack('>I', decrypted[16:20])[0]
+        if content_len < 0 or 20 + content_len > len(decrypted):
+            raise ValueError('内容长度字段非法')
         content = decrypted[20:20 + content_len].decode('utf-8')
         from_id = decrypted[20 + content_len:].decode('utf-8')
         return content, from_id
@@ -201,27 +186,43 @@ class WeChatCrypto:
 
 
 def parse_message(xml_content):
+    """解析微信消息 XML，处理 child.text 为 None 的情况"""
     import xml.etree.ElementTree as ET
     try:
+        if isinstance(xml_content, bytes):
+            xml_content = xml_content.decode('utf-8', errors='replace')
         root = ET.fromstring(xml_content)
         msg = {}
         for child in root:
-            msg[child.tag] = child.text
+            # child.text 可能为 None（空标签如 <Content></Content>）
+            msg[child.tag] = child.text or ''
         return msg
     except Exception:
         return None
+
+
+def _xml_escape_cdata(text):
+    """转义 CDATA 内容中的 ]]> 防止 CDATA 注入"""
+    if not text:
+        return ''
+    return str(text).replace(']]>', ']]]]><![CDATA[>')
 
 
 def build_reply_xml(to_user, from_user, content, crypto=None):
     timestamp = str(int(time.time()))
     nonce = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
 
+    # 转义 CDATA 中的内容，防止注入
+    to_user_esc = _xml_escape_cdata(to_user)
+    from_user_esc = _xml_escape_cdata(from_user)
+    content_esc = _xml_escape_cdata(content)
+
     reply_msg = f"""<xml>
-<ToUserName><![CDATA[{to_user}]]></ToUserName>
-<FromUserName><![CDATA[{from_user}]]></FromUserName>
+<ToUserName><![CDATA[{to_user_esc}]]></ToUserName>
+<FromUserName><![CDATA[{from_user_esc}]]></FromUserName>
 <CreateTime>{timestamp}</CreateTime>
 <MsgType><![CDATA[text]]></MsgType>
-<Content><![CDATA[{content}]]></Content>
+<Content><![CDATA[{content_esc}]]></Content>
 </xml>"""
 
     if crypto:
@@ -289,7 +290,8 @@ def handle_text_message(content):
     import re
     content = content.strip()
 
-    magnet_match = re.search(r'(magnet:\?[^\s,，。！？.!?]+)', content, re.IGNORECASE)
+    # 磁力链接匹配：排除空白和常见标点，但不排除点号（磁力链接中可能包含点号）
+    magnet_match = re.search(r'(magnet:\?[^\s,，。！？!?]+)', content, re.IGNORECASE)
     if magnet_match:
         magnet = magnet_match.group(1)
         before_magnet = content[:magnet_match.start()].strip()

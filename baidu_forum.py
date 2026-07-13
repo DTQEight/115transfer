@@ -156,12 +156,21 @@ def _reset_session():
 
 
 def _is_logged_in(s):
-    """检查是否已登录"""
+    """检查是否已登录：通过页面特征判断，多重条件避免误判"""
     try:
         r = s.get(BASE + 'forum.php', timeout=10)
         r.encoding = 'gbk'
-        # 已登录页面会显示用户名或退出链接，未登录会跳转登录页
-        return 'action=logout' in r.text or 'mod=logging' not in r.url
+        # 已登录页面包含退出链接或用户控制面板
+        # 未登录页面会重定向到登录页（URL包含mod=logging）
+        if 'mod=logging' in r.url:
+            return False
+        # 退出链接是已登录的强信号
+        if 'action=logout' in r.text:
+            return True
+        # 用户面板链接也是已登录信号
+        if 'home.php?mod=space' in r.text and '登录' not in r.text[:500]:
+            return True
+        return False
     except Exception:
         return False
 
@@ -203,7 +212,12 @@ def search(keyword, page=1):
         {'results': [...], 'page': N, 'total_pages': N, 'total_count': N, 'searchid': '...'}
     """
     s = _get_session()
-    kw_encoded = urllib.parse.quote(keyword, encoding='gbk')
+    # GBK 编码可能对某些字符（如emoji、特殊Unicode）失败，需捕获异常
+    try:
+        kw_encoded = urllib.parse.quote(keyword, encoding='gbk')
+    except UnicodeEncodeError:
+        # GBK无法编码的字符用替换字符代替
+        kw_encoded = urllib.parse.quote(keyword.encode('gbk', errors='replace').decode('gbk', errors='replace'), encoding='gbk')
 
     # 第1页需要先获取searchid
     if page == 1:
@@ -413,8 +427,16 @@ def _extract_trackers(content):
 
 
 def _strip_html(html_text):
-    """去除HTML标签，保留纯文本"""
-    text = re.sub(r'<[^>]+>', '', html_text)
+    """去除HTML标签，保留纯文本
+
+    先移除 script/style 内容避免其中的代码被当作文本保留
+    """
+    # 移除 script 和 style 标签及其内容
+    text = re.sub(r'<script[^>]*>[\s\S]*?</script>', '', html_text, flags=re.IGNORECASE)
+    text = re.sub(r'<style[^>]*>[\s\S]*?</style>', '', text, flags=re.IGNORECASE)
+    # 去除所有 HTML 标签
+    text = re.sub(r'<[^>]+>', '', text)
+    # HTML 实体解码
     text = re.sub(r'&amp;', '&', text)
     text = re.sub(r'&nbsp;', ' ', text)
     text = re.sub(r'&lt;', '<', text)
@@ -429,8 +451,21 @@ def get_magnet_from_thread(tid):
     Returns:
         {'tid': ..., 'magnet': ..., 'name': ..., 'info_hash': ..., 'filename': ...}
     """
+    # 首次尝试用全局session
     s = _get_session()
-    return _get_magnet_from_thread_with_session(s, tid)
+    try:
+        return _get_magnet_from_thread_with_session(s, tid)
+    except Exception as first_err:
+        # 如果失败且可能是登录态失效，重置session重试一次
+        err_msg = str(first_err).lower()
+        if '登录' in err_msg or 'login' in err_msg or 'logout' in err_msg or '403' in err_msg:
+            _reset_session()
+            try:
+                s = _get_session()
+                return _get_magnet_from_thread_with_session(s, tid)
+            except Exception:
+                pass  # 重试也失败，抛出原始错误
+        raise
 
 
 def _get_magnet_from_thread_with_session(s, tid):
@@ -508,14 +543,18 @@ def batch_get_magnets(tids, max_workers=6):
     if not tids:
         return results
 
-    import copy
     base_session = _get_session()  # 已登录的全局 session
+
+    # 深拷贝 cookies 和 headers，确保线程间不共享可变状态
+    base_cookies = base_session.cookies.copy()
+    base_headers = dict(base_session.headers)
 
     def _worker(tid):
         try:
-            # 每个线程拷贝一份 session（共享连接池配置和登录 cookies，但 requests.Session 非线程安全）
-            local_session = copy.copy(base_session)
-            local_session.cookies = base_session.cookies.copy()
+            # 每个线程创建独立 session，复用连接池配置但独立 cookies
+            local_session = _build_session()
+            local_session.cookies = base_cookies.copy()
+            local_session.headers.update(base_headers)
             r = _get_magnet_from_thread_with_session(local_session, tid)
             return ('ok', tid, r)
         except Exception as e:

@@ -73,7 +73,7 @@
 function showResult(elId, html, type) {
     var el = document.getElementById(elId);
     var cls = type === 'danger' ? 'alert-danger' : (type === 'success' ? 'alert-success' : 'alert-info');
-    el.innerHTML = '<div class="alert ' + cls + ' mb-0">' + html + '</div>';
+    el.innerHTML = '<div class="alert ' + cls + ' mb-0">' + escapeHtml(html) + '</div>';
 }
 
 async function saveForumConfig() {
@@ -105,7 +105,7 @@ async function saveForumConfig() {
 async function testForumLogin() {
     showResult('configResult', '<i class="bi bi-arrow-repeat me-1"></i>测试中...', 'info');
     try {
-        var resp = await apiFetch('/baidu/test');
+        var resp = await apiFetch('/baidu/test', { method: 'POST' });
         var result = await resp.json();
         if (result.success) {
             showResult('configResult', result.message, 'success');
@@ -214,7 +214,7 @@ async function searchMovies(page) {
         });
         var result = await resp.json();
         if (!result.success) {
-            el.innerHTML = '<div class="alert alert-danger">' + (result.message || '搜索失败') + '</div>';
+            el.innerHTML = '<div class="alert alert-danger">' + escapeHtml(result.message || '搜索失败') + '</div>';
             return;
         }
         if (!result.results || result.results.length === 0) {
@@ -239,22 +239,24 @@ async function searchMovies(page) {
             var meta = (r.forum || '') + ' · ' + (r.replies || '0') + '回复 · ' + (r.views || '0') + '查看';
             if (r.date) meta += ' · ' + r.date;
             if (r.author) meta += ' · ' + escapeHtml(r.author);
-            html += '<div class="list-group-item list-group-item-action search-item" data-format="' + fmt + '">' +
+            var tid = parseInt(r.tid, 10);
+            if (isNaN(tid)) return;
+            html += '<div class="list-group-item list-group-item-action search-item" data-format="' + escapeHtml(fmt) + '">' +
                 '<div class="d-flex justify-content-between align-items-start">' +
                     '<div class="me-2 flex-grow-1">' +
-                        '<h6 class="mb-1"><span class="badge bg-' + badgeColor + ' me-1">' + fmt + '</span>' + title + '</h6>' +
+                        '<h6 class="mb-1"><span class="badge bg-' + badgeColor + ' me-1">' + escapeHtml(fmt) + '</span>' + title + '</h6>' +
                         '<small class="text-muted">' + escapeHtml(meta) + '</small>' +
                     '</div>' +
                     '<div class="d-flex gap-1 flex-shrink-0">' +
-                        '<button class="btn btn-sm btn-outline-primary" onclick="getMagnet(' + r.tid + ', this)" title="获取磁力链接">' +
+                        '<button class="btn btn-sm btn-outline-primary" onclick="getMagnet(' + tid + ', this)" title="获取磁力链接">' +
                             '<i class="bi bi-magnet"></i>' +
                         '</button>' +
-                        '<button class="btn btn-sm btn-outline-success" onclick="saveTo115(' + r.tid + ', this)" title="添加到115离线下载">' +
+                        '<button class="btn btn-sm btn-outline-success" onclick="saveTo115(' + tid + ', this)" title="添加到115离线下载">' +
                             '<i class="bi bi-cloud-plus"></i>' +
                         '</button>' +
                     '</div>' +
                 '</div>' +
-                '<div class="mt-2" id="magnet-' + r.tid + '"></div>' +
+                '<div class="mt-2" id="magnet-' + tid + '"></div>' +
             '</div>';
         });
         html += '</div>';
@@ -447,16 +449,6 @@ function fallbackCopy(text) {
         showToast('复制失败，请手动复制', 'danger');
     }
     document.body.removeChild(ta);
-}
-
-function escapeHtml(str) {
-    if (!str) return '';
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
 }
 </script>
 {% endblock %}

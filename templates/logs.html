@@ -73,6 +73,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     var logCount = 0;
     var eventSource = null;
+    var sseRetryDelay = 1000;  // 初始重连延迟1秒
+    var sseMaxRetryDelay = 30000;  // 最大重连延迟30秒
 
     function getLineStyle(line) {
         if (line.indexOf('[ERROR]') >= 0) return 'color:#dc3545;background:rgba(220,53,69,0.06);';
@@ -161,6 +163,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
             eventSource.onopen = function() {
                 logConnStatus.textContent = 'SSE连接 · ' + new Date().toLocaleTimeString();
+                // 连接成功后重置重连延迟
+                sseRetryDelay = 1000;
             };
 
             eventSource.onmessage = function(event) {
@@ -170,9 +174,12 @@ document.addEventListener('DOMContentLoaded', function() {
             };
 
             eventSource.onerror = function(error) {
-                logConnStatus.textContent = '连接断开，重连中...';
+                logConnStatus.textContent = '连接断开，' + Math.round(sseRetryDelay / 1000) + '秒后重连...';
                 eventSource.close();
-                setTimeout(startSSE, 3000);
+                // 指数退避：每次失败翻倍延迟，最大30秒
+                var currentDelay = sseRetryDelay;
+                sseRetryDelay = Math.min(sseRetryDelay * 2, sseMaxRetryDelay);
+                setTimeout(startSSE, currentDelay);
             };
         } catch (e) {
             logConnStatus.textContent = 'SSE不支持，降级为轮询';

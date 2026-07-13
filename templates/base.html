@@ -603,16 +603,30 @@
             const toastEl = document.createElement('div');
             toastEl.className = `toast align-items-center text-white ${bgClass[type] || 'bg-info'} border-0`;
             toastEl.setAttribute('role', 'alert');
+            // 使用 textContent 避免 XSS，图标用 innerHTML 单独设置
             toastEl.innerHTML = `
                 <div class="d-flex">
-                    <div class="toast-body"><i class="bi bi-${icons[type] || 'info-circle-fill'} me-2"></i>${message}</div>
+                    <div class="toast-body"><i class="bi bi-${icons[type] || 'info-circle-fill'} me-2"></i><span class="toast-msg"></span></div>
                     <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
                 </div>
             `;
+            // message 用 textContent 设置，防止 XSS
+            toastEl.querySelector('.toast-msg').textContent = message;
             document.getElementById('toastContainer').appendChild(toastEl);
             const toast = new bootstrap.Toast(toastEl, { delay: 3000 });
             toast.show();
             toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+        }
+
+        // 全局 HTML 转义函数，供所有模板使用
+        function escapeHtml(str) {
+            if (str === null || str === undefined) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         function showLoading() {

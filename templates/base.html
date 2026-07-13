@@ -135,7 +135,7 @@
         .loading-overlay {
             display: none;
             position: fixed;
-            top: 0, left: 0;
+            top: 0; left: 0;
             width: 100%;
             height: 100%;
             background: rgba(0, 0, 0, 0.5);
@@ -349,9 +349,9 @@
                 <button id="themeToggle" class="theme-toggle" title="切换主题">
                     <i class="bi bi-moon"></i>
                 </button>
-                <a href="/logout" class="btn btn-settings" title="登出">
+                <button type="button" class="btn btn-settings" title="登出" onclick="doLogout()">
                     <i class="bi bi-box-arrow-right me-1"></i>登出
-                </a>
+                </button>
             </div>
         </div>
     </nav>
@@ -568,30 +568,38 @@
                 window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
                 throw new Error('未登录');
             }
-            // 403 CSRF 失败
-            if (resp.status === 403) {
-                const result = await resp.json();
-                throw new Error(result.message || 'CSRF验证失败');
-            }
-            // 500 服务器错误：检查是否返回了 HTML
+            // 403/4xx/5xx 错误：统一处理
             if (resp.status >= 400) {
                 const text = await resp.text();
                 if (text.startsWith('<')) {
                     throw new Error('服务器错误(' + resp.status + ')，请查看日志');
                 }
+                let msg = '请求失败(' + resp.status + ')';
                 try {
                     const result = JSON.parse(text);
-                    throw new Error(result.message || '请求失败(' + resp.status + ')');
-                } catch (parseErr) {
-                    throw new Error('请求失败(' + resp.status + ')');
-                }
+                    if (result.message) msg = result.message;
+                } catch (e) {}
+                throw new Error(msg);
             }
             return resp;
         }
 
+        async function doLogout() {
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/logout';
+            const csrf = document.createElement('input');
+            csrf.type = 'hidden';
+            csrf.name = 'csrf_token';
+            csrf.value = CSRF_TOKEN;
+            form.appendChild(csrf);
+            document.body.appendChild(form);
+            form.submit();
+        }
+
         function showToast(message, type = 'success') {
-            const icons = { success: 'check-circle-fill', danger: 'exclamation-triangle-fill', info: 'info-circle-fill' };
-            const bgClass = { success: 'bg-success', danger: 'bg-danger', info: 'bg-info' };
+            const icons = { success: 'check-circle-fill', danger: 'exclamation-triangle-fill', info: 'info-circle-fill', warning: 'exclamation-triangle-fill' };
+            const bgClass = { success: 'bg-success', danger: 'bg-danger', info: 'bg-info', warning: 'bg-warning' };
             const toastEl = document.createElement('div');
             toastEl.className = `toast align-items-center text-white ${bgClass[type] || 'bg-info'} border-0`;
             toastEl.setAttribute('role', 'alert');
@@ -637,13 +645,18 @@
         async function deleteMovie(id, page) {
             if (confirm('确定要删除这部电影吗？')) {
                 showLoading();
-                const url = page ? `/delete/${id}?page=${page}` : `/delete/${id}`;
-                const response = await apiFetch(url, { method: 'POST' });
-                hideLoading();
-                const result = await response.json();
-                showToast(result.message, result.success ? 'success' : 'danger');
-                if (result.success) {
-                    location.reload();
+                try {
+                    const url = page ? `/delete/${id}?page=${page}` : `/delete/${id}`;
+                    const response = await apiFetch(url, { method: 'POST' });
+                    const result = await response.json();
+                    showToast(result.message, result.success ? 'success' : 'danger');
+                    if (result.success) {
+                        location.reload();
+                    }
+                } catch (e) {
+                    showToast(e.message, 'danger');
+                } finally {
+                    hideLoading();
                 }
             }
         }
@@ -674,31 +687,38 @@
             const magnet = document.getElementById('editMagnet').value;
 
             showLoading();
-
-            const response = await apiFetch(`/update/${id}`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                body: `page=${page}&name=${encodeURIComponent(name)}&magnet=${encodeURIComponent(magnet)}`
-            });
-
-            hideLoading();
-            const result = await response.json();
-            showToast(result.message, result.success ? 'success' : 'danger');
-            if (result.success) {
-                location.reload();
+            try {
+                const response = await apiFetch(`/update/${id}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `page=${page}&name=${encodeURIComponent(name)}&magnet=${encodeURIComponent(magnet)}`
+                });
+                const result = await response.json();
+                showToast(result.message, result.success ? 'success' : 'danger');
+                if (result.success) {
+                    location.reload();
+                }
+            } catch (e) {
+                showToast(e.message, 'danger');
+            } finally {
+                hideLoading();
             }
         }
 
         async function copyMagnet(id, page) {
             showLoading();
-            const response = await apiFetch(`/copy_magnet/${id}/${page}`);
-            hideLoading();
-            const result = await response.json();
-
-            if (result.success) {
-                copyToClipboard(result.magnet);
-            } else {
-                showToast('磁力链接为空，无法复制', 'danger');
+            try {
+                const response = await apiFetch(`/copy_magnet/${id}/${page}`);
+                const result = await response.json();
+                if (result.success) {
+                    copyToClipboard(result.magnet);
+                } else {
+                    showToast('磁力链接为空，无法复制', 'danger');
+                }
+            } catch (e) {
+                showToast(e.message, 'danger');
+            } finally {
+                hideLoading();
             }
         }
         

@@ -118,6 +118,7 @@ sh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', dat
 logger.addHandler(sh)
 
 user_states: Dict[str, Dict[str, Any]] = {}
+user_states_lock: threading.Lock = threading.Lock()
 
 def get_beijing_time() -> datetime:
     """获取北京时间"""
@@ -186,7 +187,7 @@ def _check_csrf() -> Optional[Tuple[Response, int]]:
     if any(request.path.startswith(p) for p in CSRF_EXEMPT_PATHS):
         return None
     # 登录接口放行（用户还未登录，没有 csrf_token）
-    if request.path in ('/login', '/logout'):
+    if request.path == '/login':
         return None
 
     token: Optional[str] = request.form.get('csrf_token') or request.headers.get('X-CSRFToken')
@@ -243,8 +244,8 @@ def login() -> Union[str, Response]:
             _get_csrf_token()  # 立即生成 CSRF token
             logger.info('[登录] 用户登录成功')
             next_url: str = request.args.get('next') or url_for('index')
-            # 防止开放重定向
-            if not next_url.startswith('/'):
+            # 防止开放重定向：只允许相对路径，阻止 //evil.com
+            if not next_url.startswith('/') or next_url.startswith('//'):
                 next_url = url_for('index')
             return redirect(next_url)
         error = '密码错误'
@@ -253,7 +254,7 @@ def login() -> Union[str, Response]:
                           strict_password=STRICT_PASSWORD)
 
 
-@app.route('/logout', methods=['GET', 'POST'])
+@app.route('/logout', methods=['POST'])
 def logout() -> Response:
     session.clear()
     return redirect(url_for('login'))
@@ -266,7 +267,8 @@ def health() -> Response:
 # 版本号
 VERSION: str = "1.0.0"
 try:
-    with open('VERSION', 'r') as f:
+    _version_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'VERSION')
+    with open(_version_path, 'r') as f:
         VERSION = f.read().strip()
 except Exception:
     pass
@@ -546,28 +548,40 @@ def copy_magnet(movie_id, page):
 
 @app.route('/cloud115/config', methods=['GET'])
 def cloud115_get_config():
-    config = cloud115.load_config()
-    cookie = config.get('cookie', '')
-    masked = cookie[:20] + '...' + cookie[-10:] if len(cookie) > 30 else cookie
-    return jsonify({'success': True, 'cookie_masked': masked, 'has_cookie': bool(cookie)})
+    try:
+        config = cloud115.load_config()
+        cookie = config.get('cookie', '')
+        masked = cookie[:20] + '...' + cookie[-10:] if len(cookie) > 30 else cookie
+        return jsonify({'success': True, 'cookie_masked': masked, 'has_cookie': bool(cookie)})
+    except Exception as e:
+        logger.error(f'[115] 加载配置失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/cloud115/config', methods=['POST'])
 def cloud115_set_config():
-    cookie = request.form.get('cookie', '').strip()
-    if not cookie:
-        return jsonify({'success': False, 'message': 'Cookie不能为空'})
+    try:
+        cookie = request.form.get('cookie', '').strip()
+        if not cookie:
+            return jsonify({'success': False, 'message': 'Cookie不能为空'})
 
-    def _update(cfg):
-        cfg['cookie'] = encrypt(cookie)
-    cloud115.update_config(_update)
-    return jsonify({'success': True, 'message': 'Cookie保存成功'})
+        def _update(cfg):
+            cfg['cookie'] = encrypt(cookie)
+        cloud115.update_config(_update)
+        return jsonify({'success': True, 'message': 'Cookie保存成功'})
+    except Exception as e:
+        logger.error(f'[115] 保存配置失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/cloud115/verify', methods=['POST'])
 def cloud115_verify():
-    success, msg = cloud115.verify_cookie()
-    return jsonify({'success': success, 'message': msg})
+    try:
+        success, msg = cloud115.verify_cookie()
+        return jsonify({'success': success, 'message': msg})
+    except Exception as e:
+        logger.error(f'[115] 验证Cookie失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/cloud115/transfer/<int:movie_id>/<int:page>', methods=['POST'])
@@ -672,79 +686,103 @@ def cloud115_batch_transfer():
 
 @app.route('/cloud115/tasks', methods=['GET'])
 def cloud115_tasks():
-    page = request.args.get('page', 1)
     try:
-        page = int(page)
-    except (ValueError, TypeError):
-        page = 1
-    success, msg, tasks = cloud115.get_task_list(page)
-    return jsonify({'success': success, 'message': msg, 'tasks': tasks})
+        page = request.args.get('page', 1)
+        try:
+            page = int(page)
+        except (ValueError, TypeError):
+            page = 1
+        success, msg, tasks = cloud115.get_task_list(page)
+        return jsonify({'success': success, 'message': msg, 'tasks': tasks})
+    except Exception as e:
+        logger.error(f'[115] 获取任务列表失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/cloud115/dirs', methods=['GET'])
 def cloud115_dirs():
-    cid = request.args.get('cid', '0')
-    success, msg, dirs = cloud115.get_dir_list(cid)
-    return jsonify({'success': success, 'message': msg, 'dirs': dirs})
+    try:
+        cid = request.args.get('cid', '0')
+        success, msg, dirs = cloud115.get_dir_list(cid)
+        return jsonify({'success': success, 'message': msg, 'dirs': dirs})
+    except Exception as e:
+        logger.error(f'[115] 获取目录列表失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/cloud115/save_path', methods=['GET'])
 def cloud115_get_save_path():
-    path_id, path_name = cloud115.get_default_save_path()
-    return jsonify({'success': True, 'path_id': path_id, 'path_name': path_name})
+    try:
+        path_id, path_name = cloud115.get_default_save_path()
+        return jsonify({'success': True, 'path_id': path_id, 'path_name': path_name})
+    except Exception as e:
+        logger.error(f'[115] 获取保存路径失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/cloud115/save_path', methods=['POST'])
 def cloud115_set_save_path():
-    path_id = request.form.get('path_id', '').strip() or '0'
-    path_name = request.form.get('path_name', '').strip() or None
-    cloud115.set_default_save_path(path_id, path_name)
-    return jsonify({'success': True, 'message': '默认保存目录已更新'})
+    try:
+        path_id = request.form.get('path_id', '').strip() or '0'
+        path_name = request.form.get('path_name', '').strip() or None
+        cloud115.set_default_save_path(path_id, path_name)
+        return jsonify({'success': True, 'message': '默认保存目录已更新'})
+    except Exception as e:
+        logger.error(f'[115] 设置保存路径失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/wechat/config', methods=['GET'])
 def wechat_get_config():
-    config = wechat_work.load_config()
-    return jsonify({
-        'success': True,
-        'corpid': config.get('corpid', ''),
-        'agentid': config.get('agentid', ''),
-        'token': config.get('token', ''),
-        'encoding_aes_key': config.get('encoding_aes_key', ''),
-        'callback_url': config.get('callback_url', ''),
-        'proxy_url': config.get('proxy_url', ''),
-        'configured': bool(config.get('corpid') and config.get('corpsecret'))
-    })
+    try:
+        config = wechat_work.load_config()
+        return jsonify({
+            'success': True,
+            'corpid': config.get('corpid', ''),
+            'agentid': config.get('agentid', ''),
+            'token': config.get('token', ''),
+            'encoding_aes_key': config.get('encoding_aes_key', ''),
+            'callback_url': config.get('callback_url', ''),
+            'proxy_url': config.get('proxy_url', ''),
+            'configured': bool(config.get('corpid') and config.get('corpsecret'))
+        })
+    except Exception as e:
+        logger.error(f'[微信] 加载配置失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/wechat/config', methods=['POST'])
 def wechat_set_config():
-    corpid = request.form.get('corpid', '').strip()
-    corpsecret = request.form.get('corpsecret', '').strip()
-    agentid = request.form.get('agentid', '').strip()
-    token = request.form.get('token', '').strip()
-    encoding_aes_key = request.form.get('encoding_aes_key', '').strip()
-    callback_url = request.form.get('callback_url', '').strip()
-    proxy_url = request.form.get('proxy_url', '').strip()
-    if not corpid or not corpsecret:
-        return jsonify({'success': False, 'message': '企业ID和应用Secret不能为空'})
+    try:
+        corpid = request.form.get('corpid', '').strip()
+        corpsecret = request.form.get('corpsecret', '').strip()
+        agentid = request.form.get('agentid', '').strip()
+        token = request.form.get('token', '').strip()
+        encoding_aes_key = request.form.get('encoding_aes_key', '').strip()
+        callback_url = request.form.get('callback_url', '').strip()
+        proxy_url = request.form.get('proxy_url', '').strip()
+        if not corpid or not corpsecret:
+            return jsonify({'success': False, 'message': '企业ID和应用Secret不能为空'})
 
-    def _update(cfg):
-        cfg['corpid'] = corpid
-        cfg['corpsecret'] = encrypt(corpsecret)
-        if agentid:
-            cfg['agentid'] = agentid
-        if token:
-            cfg['token'] = token
-        if encoding_aes_key:
-            cfg['encoding_aes_key'] = encoding_aes_key
-        if callback_url:
-            cfg['callback_url'] = callback_url
-        if proxy_url:
-            cfg['proxy_url'] = proxy_url
-        cfg.pop('access_token', None)
-    wechat_work.update_config(_update)
-    return jsonify({'success': True, 'message': '企业微信配置保存成功'})
+        def _update(cfg):
+            cfg['corpid'] = corpid
+            cfg['corpsecret'] = encrypt(corpsecret)
+            if agentid:
+                cfg['agentid'] = agentid
+            if token:
+                cfg['token'] = token
+            if encoding_aes_key:
+                cfg['encoding_aes_key'] = encoding_aes_key
+            if callback_url:
+                cfg['callback_url'] = callback_url
+            if proxy_url:
+                cfg['proxy_url'] = proxy_url
+            cfg.pop('access_token', None)
+        wechat_work.update_config(_update)
+        return jsonify({'success': True, 'message': '企业微信配置保存成功'})
+    except Exception as e:
+        logger.error(f'[微信] 保存配置失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/wechat/callback', methods=['GET', 'POST'])
@@ -809,7 +847,7 @@ def wechat_callback():
 
         if msg_type == 'text':
             content = msg.get('Content', '').strip()
-            state = user_states.get(from_user)
+            state = user_states.get(from_user)  # 读取操作，Dict 读取在 CPython 中线程安全（GIL）
 
             if content.lower().startswith('magnet:'):
                 cookie = cloud115.get_cookie_string()
@@ -843,7 +881,8 @@ def wechat_callback():
                              '目录 - 管理115网盘目录')
             elif content == '取消':
                 if state:
-                    del user_states[from_user]
+                    with user_states_lock:
+                        user_states.pop(from_user, None)
                     reply = '已取消操作'
                 else:
                     reply = '没有正在进行的操作'
@@ -872,14 +911,16 @@ def wechat_callback():
                             reply = f'批量转存完成{dir_info}\n页码: {page_num}\n成功: {success_count}\n失败: {fail_count}'
                             if fail_count > 0:
                                 wechat_work.send_wechat_message(f'[115Transfer] 批量转存部分失败\n页码: {page_num}\n成功: {success_count}\n失败: {fail_count}')
-                    del user_states[from_user]
+                    with user_states_lock:
+                        user_states.pop(from_user, None)
                 else:
                     reply = '请输入页码数字'
             elif state and state['action'] == 'browse_dir':
                 if content == '确认':
                     cloud115.set_default_save_path(state['cid'], state['path'])
                     reply = f'已设置转存目录: {state["path"]}'
-                    del user_states[from_user]
+                    with user_states_lock:
+                        user_states.pop(from_user, None)
                 elif content == '新建':
                     state['action'] = 'create_dir_name'
                     reply = f'在 {state["path"]} 下创建目录\n请输入新目录名:'
@@ -926,7 +967,8 @@ def wechat_callback():
                     reply = f'目录创建成功: {state["path"]} / {dir_name}'
                 else:
                     reply = f'创建失败: {msg_text}'
-                del user_states[from_user]
+                with user_states_lock:
+                    user_states.pop(from_user, None)
             elif content.startswith('搜索') or content.startswith('search'):
                 keyword = content[2:].strip() if content.startswith('搜索') else content[6:].strip()
                 if not keyword:
@@ -1000,7 +1042,8 @@ def wechat_callback():
             logger.info(f'[WeChat Event] Type: {event}, Key: {event_key}')
 
             if event == 'click':
-                user_states.pop(from_user, None)
+                with user_states_lock:
+                    user_states.pop(from_user, None)
                 if event_key == 'view_movies':
                     with data_lock:
                         df = load_movies()
@@ -1022,9 +1065,11 @@ def wechat_callback():
                         reply = '批量转存 - 请选择页码:\n\n'
                         reply += ' | '.join([str(p) for p in page_list])
                         reply += '\n\n回复页码，该页所有磁力链接将转存到115网盘'
-                        user_states[from_user] = {'action': 'batch_transfer'}
+                        with user_states_lock:
+                            user_states[from_user] = {'action': 'batch_transfer'}
                 elif event_key == '115_dir':
-                    user_states[from_user] = {'action': 'browse_dir', 'cid': '0', 'path': '根目录', 'stack': [{'cid': '0', 'path': '根目录'}]}
+                    with user_states_lock:
+                        user_states[from_user] = {'action': 'browse_dir', 'cid': '0', 'path': '根目录', 'stack': [{'cid': '0', 'path': '根目录'}]}
                     success, msg_text, dirs = cloud115.get_dir_list('0')
                     if success and dirs:
                         reply = '115网盘目录:\n\n'
@@ -1134,12 +1179,16 @@ def wechat_test():
 
 @app.route('/wechat/menu', methods=['POST'])
 def wechat_menu():
-    config = wechat_work.load_config()
-    agentid = config.get('agentid', '')
-    if not agentid:
-        return jsonify({'success': False, 'message': '未配置AgentId'})
-    success, msg = wechat_work.create_menu(agentid)
-    return jsonify({'success': success, 'message': msg})
+    try:
+        config = wechat_work.load_config()
+        agentid = config.get('agentid', '')
+        if not agentid:
+            return jsonify({'success': False, 'message': '未配置AgentId'})
+        success, msg = wechat_work.create_menu(agentid)
+        return jsonify({'success': success, 'message': msg})
+    except Exception as e:
+        logger.error(f'[微信] 创建菜单失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 # ==================== 115网盘整理路由 ====================
@@ -1153,22 +1202,30 @@ from media.organizer import organize_files
 
 @app.route('/media/organize_root', methods=['GET'])
 def media_get_organize_root():
-    cfg = _tmdb_load_config()
-    cid = cfg.get('organize_root_cid', '')
-    name = cfg.get('organize_root_name', '')
-    return jsonify({'success': True, 'cid': cid, 'name': name})
+    try:
+        cfg = _tmdb_load_config()
+        cid = cfg.get('organize_root_cid', '')
+        name = cfg.get('organize_root_name', '')
+        return jsonify({'success': True, 'cid': cid, 'name': name})
+    except Exception as e:
+        logger.error(f'[媒体] 获取整理根目录失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/media/organize_root', methods=['POST'])
 def media_set_organize_root():
-    cid = request.form.get('cid', '').strip()
-    name = request.form.get('name', '').strip()
+    try:
+        cid = request.form.get('cid', '').strip()
+        name = request.form.get('name', '').strip()
 
-    def _update(cfg):
-        cfg['organize_root_cid'] = cid
-        cfg['organize_root_name'] = name
-    cloud115.update_config(_update)
-    return jsonify({'success': True})
+        def _update(cfg):
+            cfg['organize_root_cid'] = cid
+            cfg['organize_root_name'] = name
+        cloud115.update_config(_update)
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f'[媒体] 设置整理根目录失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/media')
@@ -1178,40 +1235,52 @@ def media_page():
 
 @app.route('/media/browse', methods=['GET'])
 def media_browse():
-    cid = request.args.get('cid', '0')
-    success, msg, items = cloud115.list_files(cid, show_dir=1)
-    if success:
-        return jsonify({'success': True, 'items': items})
-    return jsonify({'success': False, 'message': msg})
+    try:
+        cid = request.args.get('cid', '0')
+        success, msg, items = cloud115.list_files(cid, show_dir=1)
+        if success:
+            return jsonify({'success': True, 'items': items})
+        return jsonify({'success': False, 'message': msg})
+    except Exception as e:
+        logger.error(f'[媒体] 浏览目录失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/media/scan', methods=['POST'])
 def media_scan():
-    cid = request.form.get('cid', '0').strip()
-    recursive = request.form.get('recursive', 'true').lower() == 'true'
-    files = scan_115_directory(cid, recursive)
-    return jsonify({'success': True, 'files': files, 'count': len(files)})
+    try:
+        cid = request.form.get('cid', '0').strip()
+        recursive = request.form.get('recursive', 'true').lower() == 'true'
+        files = scan_115_directory(cid, recursive)
+        return jsonify({'success': True, 'files': files, 'count': len(files)})
+    except Exception as e:
+        logger.error(f'[媒体] 扫描目录失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/media/identify', methods=['POST'])
 def media_identify():
-    name = request.form.get('name', '').strip()
-    year = request.form.get('year', '').strip()
-    if not name:
-        return jsonify({'success': False, 'message': '请输入名称'})
-    year_int = int(year) if year.isdigit() else None
-    result, err = identify_media(name, year_int)
-    if err:
-        logger.warning(f'[TMDB] 识别失败: name={name}, year={year_int}, err={err}')
-        return jsonify({'success': False, 'message': err})
-    primary, secondary = classify(result)
-    logger.info(f'[TMDB] 识别成功: name={name} -> {result.get("title")} ({primary}/{secondary})')
-    return jsonify({
-        'success': True,
-        'tmdb': result,
-        'primary': primary,
-        'secondary': secondary,
-    })
+    try:
+        name = request.form.get('name', '').strip()
+        year = request.form.get('year', '').strip()
+        if not name:
+            return jsonify({'success': False, 'message': '请输入名称'})
+        year_int = int(year) if year.isdigit() else None
+        result, err = identify_media(name, year_int)
+        if err:
+            logger.warning(f'[TMDB] 识别失败: name={name}, year={year_int}, err={err}')
+            return jsonify({'success': False, 'message': err})
+        primary, secondary = classify(result)
+        logger.info(f'[TMDB] 识别成功: name={name} -> {result.get("title")} ({primary}/{secondary})')
+        return jsonify({
+            'success': True,
+            'tmdb': result,
+            'primary': primary,
+            'secondary': secondary,
+        })
+    except Exception as e:
+        logger.error(f'[媒体] 识别失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/media/identify_batch', methods=['POST'])
@@ -1257,99 +1326,126 @@ def media_identify_batch():
 @app.route('/media/search', methods=['POST'])
 def media_search():
     """手动搜索TMDB，返回多个结果供选择。支持TMDB ID直接识别。"""
-    query = request.form.get('query', '').strip()
-    year = request.form.get('year', '').strip()
-    if not query:
-        return jsonify({'success': False, 'message': '请输入搜索名称'})
-    year_int = int(year) if year.isdigit() else None
+    try:
+        query = request.form.get('query', '').strip()
+        year = request.form.get('year', '').strip()
+        if not query:
+            return jsonify({'success': False, 'message': '请输入搜索名称'})
+        year_int = int(year) if year.isdigit() else None
 
-    # 如果输入是纯数字，当作TMDB ID直接查询
-    if query.isdigit():
-        from media.tmdb import get_media_by_id
-        result, err = get_media_by_id(int(query))
-        if result:
-            primary, secondary = classify(result)
-            result['primary'] = primary
-            result['secondary'] = secondary
-            return jsonify({'success': True, 'results': [result], 'count': 1})
-        # ID查询失败，继续搜索
-        pass
+        # 如果输入是纯数字，当作TMDB ID直接查询
+        if query.isdigit():
+            from media.tmdb import get_media_by_id
+            result, err = get_media_by_id(int(query))
+            if result:
+                primary, secondary = classify(result)
+                result['primary'] = primary
+                result['secondary'] = secondary
+                return jsonify({'success': True, 'results': [result], 'count': 1})
+            # ID查询失败，继续搜索
+            pass
 
-    from media.tmdb import search_multi
-    results, err = search_multi(query, year=year_int)
-    if err:
-        return jsonify({'success': False, 'message': err})
-    # 取前10个结果，补充详情
-    output = []
-    for r in results[:10]:
-        media_type = r.get('media_type', 'movie')
-        item = {
-            'tmdb_id': r.get('id'),
-            'media_type': media_type,
-            'title': r.get('title') or r.get('name', ''),
-            'original_title': r.get('original_title') or r.get('original_name', ''),
-            'year': (r.get('release_date') or r.get('first_air_date') or '')[:4],
-            'genres': [],
-            'genre_ids': r.get('genre_ids', []),
-            'original_language': r.get('original_language', ''),
-            'production_countries': [],
-            'poster_path': r.get('poster_path', ''),
-            'vote_average': r.get('vote_average', 0),
-        }
-        primary, secondary = classify(item)
-        item['primary'] = primary
-        item['secondary'] = secondary
-        output.append(item)
-    return jsonify({'success': True, 'results': output, 'count': len(output)})
+        from media.tmdb import search_multi
+        results, err = search_multi(query, year=year_int)
+        if err:
+            return jsonify({'success': False, 'message': err})
+        # 取前10个结果，补充详情
+        output = []
+        for r in results[:10]:
+            media_type = r.get('media_type', 'movie')
+            item = {
+                'tmdb_id': r.get('id'),
+                'media_type': media_type,
+                'title': r.get('title') or r.get('name', ''),
+                'original_title': r.get('original_title') or r.get('original_name', ''),
+                'year': (r.get('release_date') or r.get('first_air_date') or '')[:4],
+                'genres': [],
+                'genre_ids': r.get('genre_ids', []),
+                'original_language': r.get('original_language', ''),
+                'production_countries': [],
+                'poster_path': r.get('poster_path', ''),
+                'vote_average': r.get('vote_average', 0),
+            }
+            primary, secondary = classify(item)
+            item['primary'] = primary
+            item['secondary'] = secondary
+            output.append(item)
+        return jsonify({'success': True, 'results': output, 'count': len(output)})
+    except Exception as e:
+        logger.error(f'[媒体] 搜索失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/media/organize', methods=['POST'])
 def media_organize():
-    data = request.get_json(force=True, silent=True) or {}
-    file_list = data.get('files', [])
-    root_cid = data.get('root_cid', '0')
-    source_cid = data.get('source_cid', '0')
-    if not file_list:
-        return jsonify({'success': False, 'message': '没有要整理的文件'})
-    logger.info(f'[整理] 开始整理 {len(file_list)} 个文件, 根目录:{root_cid}')
-    results = organize_files(file_list, root_cid, source_cid)
-    success_count = len(results["success"])
-    fail_count = len(results["failed"])
-    logger.info(f'[整理] 完成: 成功 {success_count}, 失败 {fail_count}')
-    if fail_count > 0:
-        for f in results["failed"][:5]:
-            logger.warning(f'[整理] 失败: {f.get("name", "")} - {f.get("reason", "")}')
-    return jsonify({
-        'success': True,
-        'message': f'整理完成: 成功 {success_count} 个, 失败 {fail_count} 个',
-        'results': results,
-    })
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        file_list = data.get('files', [])
+        root_cid = data.get('root_cid', '0')
+        source_cid = data.get('source_cid', '0')
+        if not file_list:
+            return jsonify({'success': False, 'message': '没有要整理的文件'})
+        logger.info(f'[整理] 开始整理 {len(file_list)} 个文件, 根目录:{root_cid}')
+        results = organize_files(file_list, root_cid, source_cid)
+        success_count = len(results["success"])
+        fail_count = len(results["failed"])
+        logger.info(f'[整理] 完成: 成功 {success_count}, 失败 {fail_count}')
+        if fail_count > 0:
+            for f in results["failed"][:5]:
+                logger.warning(f'[整理] 失败: {f.get("name", "")} - {f.get("reason", "")}')
+        return jsonify({
+            'success': True,
+            'message': f'整理完成: 成功 {success_count} 个, 失败 {fail_count} 个',
+            'results': results,
+        })
+    except Exception as e:
+        logger.error(f'[媒体] 整理失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/media/tmdb_key', methods=['GET'])
 def media_get_tmdb_key():
-    return jsonify({'success': True, 'key': get_tmdb_api_key()})
+    try:
+        return jsonify({'success': True, 'key': get_tmdb_api_key()})
+    except Exception as e:
+        logger.error(f'[媒体] 获取TMDB Key失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/media/tmdb_key', methods=['POST'])
 def media_set_tmdb_key():
-    key = request.form.get('key', '').strip()
-    set_tmdb_api_key(key)
-    return jsonify({'success': True, 'message': 'TMDB API Key 已保存'})
+    try:
+        key = request.form.get('key', '').strip()
+        set_tmdb_api_key(key)
+        return jsonify({'success': True, 'message': 'TMDB API Key 已保存'})
+    except Exception as e:
+        logger.error(f'[媒体] 设置TMDB Key失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/media/categories', methods=['GET'])
 def media_categories():
-    categories = get_all_categories()
-    return jsonify({'success': True, 'categories': categories})
+    try:
+        categories = get_all_categories()
+        return jsonify({'success': True, 'categories': categories})
+    except Exception as e:
+        logger.error(f'[媒体] 获取分类失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/media/tree', methods=['GET'])
 def media_tree():
-    cid = request.args.get('cid', '0')
-    depth = int(request.args.get('depth', '3'))
-    tree = get_directory_tree(cid, depth)
-    return jsonify({'success': True, 'tree': tree})
+    try:
+        cid = request.args.get('cid', '0')
+        try:
+            depth = int(request.args.get('depth', '3'))
+        except ValueError:
+            depth = 3
+        tree = get_directory_tree(cid, depth)
+        return jsonify({'success': True, 'tree': tree})
+    except Exception as e:
+        logger.error(f'[媒体] 获取目录树失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 # ===== 论坛电影搜索 =====
@@ -1365,30 +1461,38 @@ def baidu_page():
 @app.route('/baidu/config', methods=['GET', 'POST'])
 def baidu_config():
     if request.method == 'GET':
-        config = baidu_forum.load_config()
-        # 不返回密码明文，前端只需知道是否已配置
-        return jsonify({
-            'success': True,
-            'config': {
-                'username': config.get('username', ''),
-                'has_password': bool(config.get('password', '')),
-            }
-        })
-    data = request.get_json(force=True, silent=True) or {}
-    username = (data.get('username') or '').strip()
-    password = (data.get('password') or '').strip()
-    if not username:
-        return jsonify({'success': False, 'message': '请输入账号'})
+        try:
+            config = baidu_forum.load_config()
+            # 不返回密码明文，前端只需知道是否已配置
+            return jsonify({
+                'success': True,
+                'config': {
+                    'username': config.get('username', ''),
+                    'has_password': bool(config.get('password', '')),
+                }
+            })
+        except Exception as e:
+            logger.error(f'[百度] 加载配置失败: {e}')
+            return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        username = (data.get('username') or '').strip()
+        password = (data.get('password') or '').strip()
+        if not username:
+            return jsonify({'success': False, 'message': '请输入账号'})
 
-    def _update(cfg):
-        cfg['username'] = username
-        if password:
-            cfg['password'] = password
-            # 账号密码变更后清除旧的cookie缓存
-            cfg.pop('cookies', None)
-            cfg.pop('cookies_ts', None)
-    baidu_forum.update_config(_update)
-    return jsonify({'success': True, 'message': '配置已保存'})
+        def _update(cfg):
+            cfg['username'] = username
+            if password:
+                cfg['password'] = password
+                # 账号密码变更后清除旧的cookie缓存
+                cfg.pop('cookies', None)
+                cfg.pop('cookies_ts', None)
+        baidu_forum.update_config(_update)
+        return jsonify({'success': True, 'message': '配置已保存'})
+    except Exception as e:
+        logger.error(f'[百度] 保存配置失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/baidu/test')
@@ -1520,81 +1624,93 @@ def douban_config():
 
 @app.route('/douban/check', methods=['POST'])
 def douban_check():
-    user_id = request.form.get('user_id', '').strip()
-    if not user_id:
-        config = douban.load_config()
-        user_id = config.get('user_id', '')
-    if not user_id:
-        return jsonify({'success': False, 'message': '请输入豆瓣用户ID'})
-    ok, msg = douban.check_cookie(user_id)
-    return jsonify({'success': ok, 'message': msg})
+    try:
+        user_id = request.form.get('user_id', '').strip()
+        if not user_id:
+            config = douban.load_config()
+            user_id = config.get('user_id', '')
+        if not user_id:
+            return jsonify({'success': False, 'message': '请输入豆瓣用户ID'})
+        ok, msg = douban.check_cookie(user_id)
+        return jsonify({'success': ok, 'message': msg})
+    except Exception as e:
+        logger.error(f'[豆瓣] 检查Cookie失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/douban/fetch', methods=['POST'])
 def douban_fetch():
     """获取豆瓣看过的电影列表（按页）"""
-    user_id = request.form.get('user_id', '').strip()
-    if not user_id:
-        config = douban.load_config()
-        user_id = config.get('user_id', '')
-    if not user_id:
-        return jsonify({'success': False, 'message': '请输入豆瓣用户ID'})
-
-    # 支持按页获取，默认第1页，每页15部
     try:
-        page = int(request.form.get('page', 1))
-        if page < 1:
+        user_id = request.form.get('user_id', '').strip()
+        if not user_id:
+            config = douban.load_config()
+            user_id = config.get('user_id', '')
+        if not user_id:
+            return jsonify({'success': False, 'message': '请输入豆瓣用户ID'})
+
+        # 支持按页获取，默认第1页，每页15部
+        try:
+            page = int(request.form.get('page', 1))
+            if page < 1:
+                page = 1
+        except Exception:
             page = 1
-    except Exception:
-        page = 1
-    per_page = 15
-    start = (page - 1) * per_page
+        per_page = 15
+        start = (page - 1) * per_page
 
-    movies, total, err = douban.fetch_watched_movies(user_id, start, per_page)
-    if err:
-        return jsonify({'success': False, 'message': err})
+        movies, total, err = douban.fetch_watched_movies(user_id, start, per_page)
+        if err:
+            return jsonify({'success': False, 'message': err})
 
-    # 获取已有电影名（用于对比）
-    try:
-        with data_lock:
-            df = load_movies()
-        existing_names = set()
-        if not df.empty:
-            for name in df['电影名'].dropna():
-                existing_names.add(str(name).strip())
-    except Exception:
-        existing_names = set()
+        # 获取已有电影名（用于对比）
+        try:
+            with data_lock:
+                df = load_movies()
+            existing_names = set()
+            if not df.empty:
+                for name in df['电影名'].dropna():
+                    existing_names.add(str(name).strip())
+        except Exception:
+            existing_names = set()
 
-    # 标记哪些是新的
-    for m in movies:
-        m['exists'] = m['title'] in existing_names
+        # 标记哪些是新的
+        for m in movies:
+            m['exists'] = m['title'] in existing_names
 
-    import math
-    total_pages = math.ceil(total / per_page) if total > 0 else 0
+        import math
+        total_pages = math.ceil(total / per_page) if total > 0 else 0
 
-    return jsonify({
-        'success': True,
-        'movies': movies,
-        'total': total,
-        'page': page,
-        'per_page': per_page,
-        'total_pages': total_pages,
-        'new_count': sum(1 for m in movies if not m['exists']),
-    })
+        return jsonify({
+            'success': True,
+            'movies': movies,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'total_pages': total_pages,
+            'new_count': sum(1 for m in movies if not m['exists']),
+        })
+    except Exception as e:
+        logger.error(f'[豆瓣] 获取电影列表失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/douban/movie_info', methods=['POST'])
 def douban_movie_info():
     """获取单个电影的中文名（访问subject页面）"""
-    subject_url = request.form.get('url', '').strip()
-    if not subject_url:
-        return jsonify({'success': False, 'message': '缺少电影URL'})
+    try:
+        subject_url = request.form.get('url', '').strip()
+        if not subject_url:
+            return jsonify({'success': False, 'message': '缺少电影URL'})
 
-    name, err = douban.fetch_movie_chinese_name(subject_url)
-    if err:
-        return jsonify({'success': False, 'message': err})
+        name, err = douban.fetch_movie_chinese_name(subject_url)
+        if err:
+            return jsonify({'success': False, 'message': err})
 
-    return jsonify({'success': True, 'name': name})
+        return jsonify({'success': True, 'name': name})
+    except Exception as e:
+        logger.error(f'[豆瓣] 获取电影信息失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/douban/sync', methods=['POST'])

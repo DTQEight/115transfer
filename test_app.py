@@ -72,8 +72,16 @@ class TestFlaskApp(unittest.TestCase):
         self.assertIn('密码错误'.encode('utf-8'), response.data)
     
     def test_logout(self):
+        # 登录获取 session
         self.app.post('/login', data={'password': 'test_password'})
-        response = self.app.get('/logout')
+        # 获取 CSRF token（通过页面）
+        from app import app as flask_app
+        with flask_app.test_request_context():
+            from flask import session
+            # 在 test client 中设置 session
+        with self.app.session_transaction() as sess:
+            csrf_token = sess.get('csrf_token')
+        response = self.app.post('/logout', data={'csrf_token': csrf_token})
         self.assertEqual(response.status_code, 302)
         self.assertTrue(response.location.endswith('/login'))
     

@@ -49,7 +49,9 @@
         </div>
     </div>
 </div>
+{% endblock %}
 
+{% block extra_script %}
 <script>
 // 页面加载时读取配置
 (async function loadForumConfig() {
@@ -325,8 +327,8 @@ async function batchGetMagnets() {
             el.innerHTML =
                 '<div class="input-group input-group-sm">' +
                     '<input type="text" class="form-control" value="' + escapeHtml(magnet) + '" readonly onclick="this.select()">' +
-                    '<button class="btn btn-outline-secondary" onclick="copyText(\'' + magnet.replace(/'/g, "\\'") + '\')">复制</button>' +
-                    '<button class="btn btn-outline-success" onclick="addMagnetTo115(\'' + magnet.replace(/'/g, "\\'") + '\', ' + m.tid + ')">添加到115</button>' +
+                    '<button class="btn btn-outline-secondary" data-magnet="' + escapeHtml(magnet) + '" onclick="copyText(this.dataset.magnet)">复制</button>' +
+                    '<button class="btn btn-outline-success" data-magnet="' + escapeHtml(magnet) + '" data-tid="' + m.tid + '" onclick="addMagnetTo115(this.dataset.magnet, parseInt(this.dataset.tid))">添加到115</button>' +
                 '</div>' +
                 (name ? '<small class="text-muted mt-1 d-block">' + escapeHtml(name) + '</small>' : '');
         });
@@ -367,8 +369,8 @@ async function getMagnet(tid, btn) {
         el.innerHTML =
             '<div class="input-group input-group-sm">' +
                 '<input type="text" class="form-control" value="' + escapeHtml(magnet) + '" readonly onclick="this.select()">' +
-                '<button class="btn btn-outline-secondary" onclick="copyText(\'' + magnet.replace(/'/g, "\\'") + '\')">复制</button>' +
-                '<button class="btn btn-outline-success" onclick="addMagnetTo115(\'' + magnet.replace(/'/g, "\\'") + '\', ' + tid + ')">添加到115</button>' +
+                '<button class="btn btn-outline-secondary" data-magnet="' + escapeHtml(magnet) + '" onclick="copyText(this.dataset.magnet)">复制</button>' +
+                '<button class="btn btn-outline-success" data-magnet="' + escapeHtml(magnet) + '" data-tid="' + tid + '" onclick="addMagnetTo115(this.dataset.magnet, parseInt(this.dataset.tid))">添加到115</button>' +
             '</div>' +
             (name ? '<small class="text-muted mt-1 d-block">' + escapeHtml(name) + '</small>' : '');
     } catch (e) {

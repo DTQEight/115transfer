@@ -79,6 +79,7 @@ def _load_unlocked():
 
 
 def _save_unlocked(config):
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
@@ -133,6 +134,7 @@ def fetch_watched_movies(user_id, start=0, count=15):
         'start': start,
         'sort': 'time',
         'tags_sort': 'rec',
+        'count': count,
     }
 
     try:

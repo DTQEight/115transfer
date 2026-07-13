@@ -43,7 +43,7 @@
 async function clearLogs() {
     if (!confirm('确定要清空所有日志吗？')) return;
     try {
-        var resp = await fetch('/logs/clear', { method: 'POST' });
+        var resp = await apiFetch('/logs/clear', { method: 'POST' });
         var result = await resp.json();
         if (result.success) {
             var c = document.getElementById('logContainer');

@@ -81,7 +81,7 @@ async function saveConfig() {
     if (cookie) formData.append('cookie', cookie);
     
     try {
-        const resp = await fetch('/douban/config', { method: 'POST', body: formData });
+        const resp = await apiFetch('/douban/config', { method: 'POST', body: formData });
         const result = await resp.json();
         showToast(result.message, result.success ? 'success' : 'danger');
     } catch (e) {
@@ -98,7 +98,7 @@ async function checkCookie() {
     resultDiv.innerHTML = '<div class="spinner-border spinner-border-sm me-2"></div>测试中...';
     
     try {
-        const resp = await fetch('/douban/check', { method: 'POST', body: formData });
+        const resp = await apiFetch('/douban/check', { method: 'POST', body: formData });
         const result = await resp.json();
         resultDiv.innerHTML = `<div class="alert alert-${result.success ? 'success' : 'danger'} py-2 mb-0">${result.message}</div>`;
     } catch (e) {
@@ -121,7 +121,7 @@ async function fetchMovies(page) {
         const formData = new FormData();
         formData.append('page', currentPage);
         
-        const resp = await fetch('/douban/fetch', { method: 'POST', body: formData });
+        const resp = await apiFetch('/douban/fetch', { method: 'POST', body: formData });
         const result = await resp.json();
         
         if (!result.success) {
@@ -270,7 +270,7 @@ async function syncSelected() {
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>同步中...';
     
     try {
-        const resp = await fetch('/douban/sync', {
+        const resp = await apiFetch('/douban/sync', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ movies: selected, page: currentPage }),
@@ -300,7 +300,7 @@ async function syncSelected() {
 // 页面加载时读取配置
 (async function loadDoubanConfig() {
     try {
-        var resp = await fetch('/douban/config');
+        var resp = await apiFetch('/douban/config');
         if (!resp.ok) return;
         var result = await resp.json();
         if (result.success && result.config) {

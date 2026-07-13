@@ -1,9 +1,10 @@
-from flask import Flask, render_template, request, redirect, url_for, jsonify, Response, stream_with_context
+from flask import Flask, render_template, request, redirect, url_for, jsonify, Response, stream_with_context, session
 import pandas as pd
 import os
+import secrets
 import shutil
 import glob as glob_mod
-from datetime import datetime
+from datetime import datetime, timedelta
 import zoneinfo
 import threading
 import hashlib
@@ -63,6 +64,12 @@ def get_beijing_time():
     return datetime.now(zoneinfo.ZoneInfo("Asia/Shanghai"))
 
 app = Flask(__name__)
+
+# Flask secret_key：从环境变量读取，生产环境必须设置强随机值
+# 开发环境下若未设置，会生成临时随机值（每次重启会话失效）
+app.secret_key = os.environ.get('FLASK_SECRET_KEY') or secrets.token_hex(32)
+app.permanent_session_lifetime = timedelta(days=7)
+
 DATA_DIR = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
 os.makedirs(DATA_DIR, exist_ok=True)
 EXCEL_FILE = os.path.join(DATA_DIR, 'movies_data.xlsx')
@@ -70,6 +77,120 @@ BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
 MAX_BACKUPS = 10
 data_lock = threading.Lock()
 _movie_cache = {'hash': None, 'data': None}
+
+# ==================== 登录 & CSRF 配置 ====================
+
+# 登录密码：优先从环境变量读取；未设置则使用默认密码（首次启动会在日志中提示修改）
+APP_PASSWORD = os.environ.get('APP_PASSWORD') or 'admin123'
+# 是否强制要求设置密码（生产环境建议设为 True）
+STRICT_PASSWORD = bool(os.environ.get('APP_PASSWORD'))
+
+# 公开接口白名单（无需登录、无需 CSRF 验证）
+PUBLIC_PATHS = [
+    '/login',
+    '/logout',
+    '/health',
+    '/static/',
+    '/wechat/callback',  # 企业微信回调
+    '/wechat/proxy',     # 代理转发
+]
+
+# 不需要 CSRF 验证的接口（如企业微信回调）
+CSRF_EXEMPT_PATHS = [
+    '/wechat/callback',
+    '/wechat/proxy',
+    '/health',
+]
+
+
+def _get_csrf_token():
+    """获取当前会话的 CSRF token，不存在则生成"""
+    if 'csrf_token' not in session:
+        session['csrf_token'] = secrets.token_urlsafe(32)
+    return session['csrf_token']
+
+
+def _check_csrf():
+    """验证 CSRF token，仅对受保护接口生效"""
+    if request.method != 'POST':
+        return None
+    if any(request.path.startswith(p) for p in CSRF_EXEMPT_PATHS):
+        return None
+    # 登录接口放行（用户还未登录，没有 csrf_token）
+    if request.path in ('/login', '/logout'):
+        return None
+
+    token = request.form.get('csrf_token') or request.headers.get('X-CSRFToken')
+    if not token:
+        return jsonify({'success': False, 'message': '缺少CSRF令牌'}), 403
+    if token != session.get('csrf_token'):
+        return jsonify({'success': False, 'message': 'CSRF令牌无效'}), 403
+    return None
+
+
+def _require_login():
+    """检查登录状态，未登录返回重定向或 401"""
+    if any(request.path.startswith(p) for p in PUBLIC_PATHS):
+        return None
+    if not session.get('logged_in'):
+        # API 请求返回 JSON 401，页面请求重定向
+        if request.path.startswith('/api/') or request.is_json or \
+           request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return jsonify({'success': False, 'message': '请先登录'}), 401
+        return redirect(url_for('login', next=request.path))
+    return None
+
+
+@app.before_request
+def _security_check():
+    """请求前的安全检查：登录验证 + CSRF 验证"""
+    login_resp = _require_login()
+    if login_resp is not None:
+        return login_resp
+    csrf_resp = _check_csrf()
+    if csrf_resp is not None:
+        return csrf_resp
+
+
+@app.context_processor
+def _inject_csrf_token():
+    """向所有模板注入 csrf_token 函数"""
+    return {'csrf_token': _get_csrf_token}
+
+
+# ==================== 登录路由 ====================
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        password = request.form.get('password', '')
+        if password == APP_PASSWORD:
+            session.clear()  # 清除旧 session 防止固定会话攻击
+            session['logged_in'] = True
+            session.permanent = True
+            _get_csrf_token()  # 立即生成 CSRF token
+            logger.info('[登录] 用户登录成功')
+            next_url = request.args.get('next') or url_for('index')
+            # 防止开放重定向
+            if not next_url.startswith('/'):
+                next_url = url_for('index')
+            return redirect(next_url)
+        error = '密码错误'
+        logger.warning('[登录] 密码错误')
+    return render_template('login.html', error=error, version=VERSION,
+                          strict_password=STRICT_PASSWORD)
+
+
+@app.route('/logout', methods=['GET', 'POST'])
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+
+@app.route('/health')
+def health():
+    return jsonify({'status': 'ok', 'version': VERSION})
 
 # 版本号
 VERSION = "1.0.0"

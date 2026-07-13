@@ -349,6 +349,9 @@
                 <button id="themeToggle" class="theme-toggle" title="切换主题">
                     <i class="bi bi-moon"></i>
                 </button>
+                <a href="/logout" class="btn btn-settings" title="登出">
+                    <i class="bi bi-box-arrow-right me-1"></i>登出
+                </a>
             </div>
         </div>
     </nav>
@@ -540,6 +543,33 @@
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
     <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toastContainer"></div>
     <script>
+        // CSRF Token 工具：所有 fetch 请求自动带上
+        const CSRF_TOKEN = '{{ csrf_token() }}';
+
+        // 统一的 fetch 封装：自动注入 CSRF token 和 JSON 错误处理
+        async function apiFetch(url, options = {}) {
+            const method = (options.method || 'GET').toUpperCase();
+            const isForm = method !== 'GET' && method !== 'HEAD';
+
+            const headers = options.headers || {};
+            if (isForm) {
+                headers['X-CSRFToken'] = CSRF_TOKEN;
+                if (!headers['Content-Type'] && typeof options.body === 'string') {
+                    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+                }
+            }
+            options.headers = headers;
+            options.credentials = 'same-origin';
+
+            const resp = await fetch(url, options);
+            // 401 未登录：跳转登录页
+            if (resp.status === 401) {
+                window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+                throw new Error('未登录');
+            }
+            return resp;
+        }
+
         function showToast(message, type = 'success') {
             const icons = { success: 'check-circle-fill', danger: 'exclamation-triangle-fill', info: 'info-circle-fill' };
             const bgClass = { success: 'bg-success', danger: 'bg-danger', info: 'bg-info' };
@@ -589,7 +619,7 @@
             if (confirm('确定要删除这部电影吗？')) {
                 showLoading();
                 const url = page ? `/delete/${id}?page=${page}` : `/delete/${id}`;
-                const response = await fetch(url, { method: 'POST' });
+                const response = await apiFetch(url, { method: 'POST' });
                 hideLoading();
                 const result = await response.json();
                 showToast(result.message, result.success ? 'success' : 'danger');
@@ -623,15 +653,15 @@
             const page = document.getElementById('editPage').value;
             const name = document.getElementById('editName').value;
             const magnet = document.getElementById('editMagnet').value;
-            
+
             showLoading();
-            
-            const response = await fetch(`/update/${id}`, {
+
+            const response = await apiFetch(`/update/${id}`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                 body: `page=${page}&name=${encodeURIComponent(name)}&magnet=${encodeURIComponent(magnet)}`
             });
-            
+
             hideLoading();
             const result = await response.json();
             showToast(result.message, result.success ? 'success' : 'danger');
@@ -642,10 +672,10 @@
 
         async function copyMagnet(id, page) {
             showLoading();
-            const response = await fetch(`/copy_magnet/${id}/${page}`);
+            const response = await apiFetch(`/copy_magnet/${id}/${page}`);
             hideLoading();
             const result = await response.json();
-            
+
             if (result.success) {
                 copyToClipboard(result.magnet);
             } else {
@@ -686,7 +716,7 @@
         async function open115Settings() {
             document.getElementById('cookie115Status').innerHTML = '';
             try {
-                const resp = await fetch('/cloud115/config');
+                const resp = await apiFetch('/cloud115/config');
                 const result = await resp.json();
                 if (result.has_cookie) {
                     document.getElementById('cookie115Status').innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>当前Cookie: ${result.cookie_masked}</span>`;
@@ -695,7 +725,7 @@
                 }
             } catch (e) {}
             try {
-                const pathResp = await fetch('/cloud115/save_path');
+                const pathResp = await apiFetch('/cloud115/save_path');
                 const pathResult = await pathResp.json();
                 document.getElementById('savedDirPath').textContent = pathResult.path_name || '根目录';
             } catch (e) {
@@ -716,7 +746,7 @@
             }
             showLoading();
             try {
-                const resp = await fetch('/cloud115/config', {
+                const resp = await apiFetch('/cloud115/config', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: `cookie=${encodeURIComponent(cookie)}`
@@ -736,7 +766,7 @@
             const statusEl = document.getElementById('cookie115Status');
             statusEl.innerHTML = '<span class="text-info"><i class="bi bi-arrow-repeat me-1"></i>验证中...</span>';
             try {
-                const resp = await fetch('/cloud115/verify', { method: 'POST' });
+                const resp = await apiFetch('/cloud115/verify', { method: 'POST' });
                 const result = await resp.json();
                 if (result.success) {
                     statusEl.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>${result.message}</span>`;
@@ -750,7 +780,7 @@
 
         async function openWechatSettings() {
             try {
-                const resp = await fetch('/wechat/config');
+                const resp = await apiFetch('/wechat/config');
                 const result = await resp.json();
                 if (result.corpid) document.getElementById('wechatCorpid').value = result.corpid;
                 if (result.agentid) document.getElementById('wechatAgentid').value = result.agentid;
@@ -761,7 +791,7 @@
                 const proxyUrl = result.proxy_url || (window.location.origin + '/wechat/proxy');
                 document.getElementById('wechatProxyUrl').value = proxyUrl;
                 document.getElementById('wechatStatus').innerHTML = result.configured ?
-                    '<span class="text-success"><i class="bi bi-check-circle me-1"></i>已配置</span>' : 
+                    '<span class="text-success"><i class="bi bi-check-circle me-1"></i>已配置</span>' :
                     '<span class="text-warning"><i class="bi bi-exclamation-circle me-1"></i>未配置</span>';
             } catch (e) {}
             new bootstrap.Modal(document.getElementById('wechatSettingsModal')).show();
@@ -781,7 +811,7 @@
             }
             showLoading();
             try {
-                const resp = await fetch('/wechat/config', {
+                const resp = await apiFetch('/wechat/config', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: `corpid=${encodeURIComponent(corpid)}&corpsecret=${encodeURIComponent(corpsecret)}&agentid=${encodeURIComponent(agentid)}&token=${encodeURIComponent(token)}&encoding_aes_key=${encodeURIComponent(encoding_aes_key)}&callback_url=${encodeURIComponent(callback_url)}&proxy_url=${encodeURIComponent(proxy_url)}`
@@ -811,7 +841,7 @@
             const statusEl = document.getElementById('wechatMenuStatus');
             statusEl.innerHTML = '<span class="text-info"><i class="bi bi-arrow-repeat me-1"></i>创建中...</span>';
             try {
-                const resp = await fetch('/wechat/menu', { method: 'POST' });
+                const resp = await apiFetch('/wechat/menu', { method: 'POST' });
                 const result = await resp.json();
                 if (result.success) {
                     statusEl.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>创建成功</span>';
@@ -833,9 +863,9 @@
         async function loadDirs(cid) {
             const dirListEl = document.getElementById('dirList');
             dirListEl.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>加载中...</p>';
-            
+
             try {
-                const resp = await fetch(`/cloud115/dirs?cid=${cid}`);
+                const resp = await apiFetch(`/cloud115/dirs?cid=${cid}`);
                 const result = await resp.json();
                 
                 if (result.success && result.dirs.length > 0) {
@@ -878,7 +908,7 @@
             showLoading();
             try {
                 const pathName = dirPathStack.map(d => d.name).join('/');
-                const resp = await fetch('/cloud115/save_path', {
+                const resp = await apiFetch('/cloud115/save_path', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: `path_id=${currentDirId}&path_name=${encodeURIComponent(pathName)}`

@@ -95,7 +95,7 @@
         async function transferTo115(movieId, page) {
             showLoading();
             try {
-                const response = await fetch(`/cloud115/transfer/${movieId}/${page}`, { method: 'POST' });
+                const response = await apiFetch(`/cloud115/transfer/${movieId}/${page}`, { method: 'POST' });
                 const result = await response.json();
                 showToast(result.message, result.success ? 'success' : 'danger');
             } catch (e) {

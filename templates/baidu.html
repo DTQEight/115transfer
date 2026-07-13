@@ -54,7 +54,7 @@
 // 页面加载时读取配置
 (async function loadForumConfig() {
     try {
-        var resp = await fetch('/baidu/config');
+        var resp = await apiFetch('/baidu/config');
         if (!resp.ok) return;
         var result = await resp.json();
         if (result.success && result.config) {
@@ -82,7 +82,7 @@ async function saveForumConfig() {
         return;
     }
     try {
-        var resp = await fetch('/baidu/config', {
+        var resp = await apiFetch('/baidu/config', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({username: username, password: password})
@@ -103,7 +103,7 @@ async function saveForumConfig() {
 async function testForumLogin() {
     showResult('configResult', '<i class="bi bi-arrow-repeat me-1"></i>测试中...', 'info');
     try {
-        var resp = await fetch('/baidu/test');
+        var resp = await apiFetch('/baidu/test');
         var result = await resp.json();
         if (result.success) {
             showResult('configResult', result.message, 'success');
@@ -205,7 +205,7 @@ async function searchMovies(page) {
     var el = document.getElementById('searchResult');
     el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>搜索中...</p>';
     try {
-        var resp = await fetch('/baidu/search', {
+        var resp = await apiFetch('/baidu/search', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: 'keyword=' + encodeURIComponent(searchKeyword) + '&page=' + page
@@ -303,7 +303,7 @@ async function batchGetMagnets() {
         if (el) el.innerHTML = '<small class="text-muted"><i class="bi bi-arrow-repeat me-1"></i>排队中...</small>';
     });
     try {
-        var resp = await fetch('/baidu/batch_magnets', {
+        var resp = await apiFetch('/baidu/batch_magnets', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: 'tids=' + tids.join(',')
@@ -352,7 +352,7 @@ async function getMagnet(tid, btn) {
     el.innerHTML = '<small class="text-muted"><i class="bi bi-arrow-repeat me-1"></i>获取磁力链接中...</small>';
     btn.disabled = true;
     try {
-        var resp = await fetch('/baidu/magnet', {
+        var resp = await apiFetch('/baidu/magnet', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: 'tid=' + tid
@@ -383,7 +383,7 @@ async function saveTo115(tid, btn) {
     var original = btn.innerHTML;
     btn.innerHTML = '<i class="bi bi-arrow-repeat"></i>';
     try {
-        var resp = await fetch('/baidu/save', {
+        var resp = await apiFetch('/baidu/save', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: 'tid=' + tid
@@ -404,7 +404,7 @@ async function saveTo115(tid, btn) {
 
 async function addMagnetTo115(magnet, tid) {
     try {
-        var resp = await fetch('/baidu/save', {
+        var resp = await apiFetch('/baidu/save', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: 'magnet=' + encodeURIComponent(magnet)

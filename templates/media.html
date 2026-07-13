@@ -212,7 +212,7 @@ var manualSearchIndex = -1;
 
 async function loadTmdbKey() {
     try {
-        const resp = await fetch('/media/tmdb_key');
+        const resp = await apiFetch('/media/tmdb_key');
         const result = await resp.json();
         if (result.key) {
             document.getElementById('tmdbKey').value = result.key;
@@ -225,7 +225,7 @@ async function saveTmdbKey() {
     const key = document.getElementById('tmdbKey').value.trim();
     showLoading();
     try {
-        const resp = await fetch('/media/tmdb_key', {
+        const resp = await apiFetch('/media/tmdb_key', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: `key=${encodeURIComponent(key)}`
@@ -257,7 +257,7 @@ async function loadMediaDirs(cid) {
     const listEl = document.getElementById('mediaDirList');
     listEl.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>加载中...</p>';
     try {
-        const resp = await fetch(`/media/browse?cid=${cid}`);
+        const resp = await apiFetch(`/media/browse?cid=${cid}`);
         const result = await resp.json();
         if (result.success) {
             const dirs = result.items.filter(i => i.type === 'dir');
@@ -299,7 +299,7 @@ async function scanCurrentDir() {
     const recursive = document.getElementById('recursiveSwitch').checked;
     showLoading();
     try {
-        const resp = await fetch('/media/scan', {
+        const resp = await apiFetch('/media/scan', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: `cid=${cid}&recursive=${recursive}`
@@ -351,7 +351,7 @@ async function identifySingle(index) {
     const file = scannedFiles[index];
     showLoading();
     try {
-        const resp = await fetch('/media/identify', {
+        const resp = await apiFetch('/media/identify', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: `name=${encodeURIComponent(file.cleaned_name)}&year=${file.year || ''}`
@@ -396,7 +396,7 @@ async function identifyAll() {
         return;
     }
     try {
-        const resp = await fetch('/media/identify_batch', {
+        const resp = await apiFetch('/media/identify_batch', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: 'items=' + encodeURIComponent(JSON.stringify(items))
@@ -579,7 +579,7 @@ async function organizeAll() {
     const sourceCid = mediaDirStack[mediaDirStack.length - 1].id;
     showLoading();
     try {
-        const resp = await fetch('/media/organize', {
+        const resp = await apiFetch('/media/organize', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({files: fileList, root_cid: rootCid, source_cid: sourceCid})
@@ -623,7 +623,7 @@ async function manualSearch() {
     const listEl = document.getElementById('manualSearchResults');
     listEl.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>搜索中...</p>';
     try {
-        const resp = await fetch('/media/search', {
+        const resp = await apiFetch('/media/search', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: `query=${encodeURIComponent(query)}`
@@ -678,7 +678,7 @@ function selectManualResult(resultIndex) {
 // 加载已保存的分类根目录
 async function loadOrganizeRoot() {
     try {
-        const resp = await fetch('/media/organize_root');
+        const resp = await apiFetch('/media/organize_root');
         const result = await resp.json();
         if (result.success && result.cid) {
             document.getElementById('organizeRootCid').value = result.cid;
@@ -701,7 +701,7 @@ async function loadOrganizeDirs(cid) {
     const listEl = document.getElementById('organizeModalDirList');
     listEl.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>加载中...</p>';
     try {
-        const resp = await fetch(`/media/browse?cid=${cid}`);
+        const resp = await apiFetch(`/media/browse?cid=${cid}`);
         const result = await resp.json();
         if (result.success) {
             const dirs = result.items.filter(i => i.type === 'dir');
@@ -754,7 +754,7 @@ function confirmOrganizeDir() {
     document.getElementById('organizeRootName').textContent = name;
     bootstrap.Modal.getInstance(document.getElementById('organizeDirModal')).hide();
     // 保存到后端
-    fetch('/media/organize_root', {
+    apiFetch('/media/organize_root', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: `cid=${encodeURIComponent(cid)}&name=${encodeURIComponent(name)}`

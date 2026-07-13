@@ -253,7 +253,7 @@
             var name = row ? row.querySelector('.fw-medium').textContent.trim() : '';
 
             try {
-                var resp = await fetch('/update/' + id, {
+                var resp = await apiFetch('/update/' + id, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: `page=${page}&name=${encodeURIComponent(name)}&magnet=${encodeURIComponent(magnet)}`
@@ -294,7 +294,7 @@
             
             showLoading();
             
-            const response = await fetch('/add', {
+            const response = await apiFetch('/add', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                 body: `page=${page}&name=${encodeURIComponent(name)}&magnet=${encodeURIComponent(magnet)}`
@@ -354,7 +354,7 @@
                     const rows = tbody.querySelectorAll('tr[data-id]');
                     const order = Array.from(rows).map(r => r.dataset.id).join(',');
                     showLoading();
-                    const response = await fetch('/reorder', {
+                    const response = await apiFetch('/reorder', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                         body: `order=${order}&page=${currentPage}`
@@ -372,7 +372,7 @@
         async function transferTo115(movieId, page) {
             showLoading();
             try {
-                const response = await fetch(`/cloud115/transfer/${movieId}/${page}`, { method: 'POST' });
+                const response = await apiFetch(`/cloud115/transfer/${movieId}/${page}`, { method: 'POST' });
                 const result = await response.json();
                 showToast(result.message, result.success ? 'success' : 'danger');
             } catch (e) {
@@ -391,7 +391,7 @@
             }
             showLoading();
             try {
-                const response = await fetch('/cloud115/batch_transfer', {
+                const response = await apiFetch('/cloud115/batch_transfer', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: `page=${currentPage}`
@@ -407,7 +407,7 @@
         async function open115Tasks() {
             showLoading();
             try {
-                const response = await fetch('/cloud115/tasks');
+                const response = await apiFetch('/cloud115/tasks');
                 const result = await response.json();
                 if (result.success) {
                     let html = '<div style="max-height:400px;overflow-y:auto;">';
@@ -538,7 +538,7 @@
             var el = document.getElementById('magnetSearchResults');
             el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>搜索中...</p>';
             try {
-                var resp = await fetch('/baidu/search', {
+                var resp = await apiFetch('/baidu/search', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: 'keyword=' + encodeURIComponent(query) + '&page=' + (page || 1)
@@ -627,7 +627,7 @@
                 if (el) el.innerHTML = '<small class="text-muted">排队中...</small>';
             });
             try {
-                var resp = await fetch('/baidu/batch_magnets', {
+                var resp = await apiFetch('/baidu/batch_magnets', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: 'tids=' + tids.join(',')
@@ -684,7 +684,7 @@
             }
             btn.disabled = true;
             try {
-                var resp = await fetch('/baidu/magnet', {
+                var resp = await apiFetch('/baidu/magnet', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: 'tid=' + tid
@@ -726,7 +726,7 @@
             var row = input.closest('tr');
             var name = row ? row.querySelector('.fw-medium').textContent.trim() : '';
             try {
-                var resp = await fetch('/update/' + id, {
+                var resp = await apiFetch('/update/' + id, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                     body: 'page=' + page + '&name=' + encodeURIComponent(name) + '&magnet=' + encodeURIComponent(magnet)

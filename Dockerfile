@@ -8,6 +8,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
+COPY crypto_utils.py .
 COPY cloud115.py .
 COPY wechat_work.py .
 COPY douban.py .

@@ -264,8 +264,9 @@ async function loadMediaDirs(cid) {
             if (dirs.length > 0) {
                 let html = '<div class="list-group">';
                 dirs.forEach(dir => {
-                    html += `<button type="button" class="list-group-item list-group-item-action rounded-2 mb-1" onclick="mediaNavigateToDir('${dir.cid}', '${dir.name.replace(/'/g, "\\'")}')">
-                        <i class="bi bi-folder2 me-2 text-warning"></i>${dir.name}
+                    const safeName = escapeHtml(dir.name);
+                    html += `<button type="button" class="list-group-item list-group-item-action rounded-2 mb-1" onclick="mediaNavigateToDir('${dir.cid}', this.dataset.name)" data-name="${safeName}">
+                        <i class="bi bi-folder2 me-2 text-warning"></i>${safeName}
                     </button>`;
                 });
                 html += '</div>';
@@ -712,8 +713,9 @@ async function loadOrganizeDirs(cid) {
             if (dirs.length > 0) {
                 let html = '<div class="list-group">';
                 dirs.forEach(dir => {
-                    html += `<button type="button" class="list-group-item list-group-item-action rounded-2 mb-1" onclick="organizeModalNavigateToDir('${dir.cid}', '${dir.name.replace(/'/g, "\\'")}')">
-                        <i class="bi bi-folder2 me-2 text-warning"></i>${dir.name}
+                    const safeName = escapeHtml(dir.name);
+                    html += `<button type="button" class="list-group-item list-group-item-action rounded-2 mb-1" onclick="organizeModalNavigateToDir('${dir.cid}', this.dataset.name)" data-name="${safeName}">
+                        <i class="bi bi-folder2 me-2 text-warning"></i>${safeName}
                     </button>`;
                 });
                 html += '</div>';

@@ -18,3 +18,10 @@ services:
       - TZ=Asia/Shanghai
       - DATA_DIR=/app/data
       - PYTHONUNBUFFERED=1
+      # 以下为安全相关配置，请务必修改为强随机值
+      - APP_PASSWORD=${APP_PASSWORD:-change_me_please}
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-change_me_to_random_32_byte_hex}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - WECHAT_PROXY_TOKEN=${WECHAT_PROXY_TOKEN:-}
+      - HTTPS_ENABLED=${HTTPS_ENABLED:-false}

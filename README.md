@@ -41,7 +41,13 @@ services:
       - TZ=Asia/Shanghai
       - DATA_DIR=/app/data
       - PYTHONUNBUFFERED=1
+      # 安全相关配置，请务必修改为强随机值
+      - APP_PASSWORD=your_strong_password_here
+      - FLASK_SECRET_KEY=your_random_32_byte_hex_here
+      - ALLOWED_ORIGINS=http://your-nas-ip:3698
 ```
+
+> **安全提示**：`APP_PASSWORD` 和 `FLASK_SECRET_KEY` 必须修改为强随机值。完整环境变量说明见 `.env.example`。
 
 ```bash
 docker-compose up -d

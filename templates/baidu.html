@@ -56,7 +56,10 @@
 (async function loadForumConfig() {
     try {
         var resp = await apiFetch('/baidu/config');
-        if (!resp.ok) return;
+        if (!resp.ok) {
+            showResult('configResult', '加载配置失败（HTTP ' + resp.status + '）', 'danger');
+            return;
+        }
         var result = await resp.json();
         if (result.success && result.config) {
             if (result.config.username) document.getElementById('forumUser').value = result.config.username;

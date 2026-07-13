@@ -1008,8 +1008,10 @@ def media_identify():
     year_int = int(year) if year.isdigit() else None
     result, err = identify_media(name, year_int)
     if err:
+        logger.warning(f'[TMDB] 识别失败: name={name}, year={year_int}, err={err}')
         return jsonify({'success': False, 'message': err})
     primary, secondary = classify(result)
+    logger.info(f'[TMDB] 识别成功: name={name} -> {result.get("title")} ({primary}/{secondary})')
     return jsonify({
         'success': True,
         'tmdb': result,

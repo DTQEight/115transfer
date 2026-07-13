@@ -16,7 +16,7 @@ _load_config = cloud115.load_config
 
 # 全局Session复用TCP连接 + 内存缓存
 _SESSION = requests.Session()
-_SESSION.trust_env = False
+_SESSION.trust_env = True  # 允许使用环境变量中的代理设置（国内访问TMDB通常需要代理）
 _CACHE_LOCK = threading.Lock()
 _SEARCH_CACHE = {}  # (query, year) -> results
 _DETAIL_CACHE = {}  # (media_type, tmdb_id) -> detail
@@ -66,6 +66,9 @@ def search_multi(query, year=None, language='zh-CN'):
             for r in data.get('results', []):
                 if r.get('media_type') in ('movie', 'tv'):
                     all_results.append(r)
+        else:
+            tmdb_err = data.get('status_message') or data.get('errors') or f'HTTP {resp.status_code}'
+            return None, f'TMDB API错误: {tmdb_err}'
 
         # 如果有年份，额外用年份精确搜索
         if year and str(year).isdigit():
@@ -118,7 +121,12 @@ def get_movie_detail(movie_id, language='zh-CN'):
         params = {'api_key': api_key, 'language': language}
         resp = _SESSION.get(url, params=params, timeout=15)
         if resp.status_code != 200:
-            return None, '获取详情失败'
+            try:
+                err_data = resp.json()
+                tmdb_err = err_data.get('status_message') or f'HTTP {resp.status_code}'
+            except Exception:
+                tmdb_err = f'HTTP {resp.status_code}'
+            return None, f'获取详情失败: {tmdb_err}'
         data = resp.json()
         with _CACHE_LOCK:
             _DETAIL_CACHE[cache_key] = data
@@ -143,7 +151,12 @@ def get_tv_detail(tv_id, language='zh-CN'):
         params = {'api_key': api_key, 'language': language}
         resp = _SESSION.get(url, params=params, timeout=15)
         if resp.status_code != 200:
-            return None, '获取详情失败'
+            try:
+                err_data = resp.json()
+                tmdb_err = err_data.get('status_message') or f'HTTP {resp.status_code}'
+            except Exception:
+                tmdb_err = f'HTTP {resp.status_code}'
+            return None, f'获取详情失败: {tmdb_err}'
         data = resp.json()
         with _CACHE_LOCK:
             _DETAIL_CACHE[cache_key] = data

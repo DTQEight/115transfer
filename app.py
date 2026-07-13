@@ -1485,25 +1485,33 @@ def douban_page():
 @app.route('/douban/config', methods=['GET', 'POST'])
 def douban_config():
     if request.method == 'GET':
-        config = douban.load_config()
-        # 不返回 cookie 明文，只返回是否已配置
-        return jsonify({
-            'success': True,
-            'config': {
-                'user_id': config.get('user_id', ''),
-                'has_cookie': bool(config.get('cookie', '')),
-            }
-        })
-    cookie = request.form.get('cookie', '').strip()
-    user_id = request.form.get('user_id', '').strip()
+        try:
+            config = douban.load_config()
+            # 不返回 cookie 明文，只返回是否已配置
+            return jsonify({
+                'success': True,
+                'config': {
+                    'user_id': config.get('user_id', ''),
+                    'has_cookie': bool(config.get('cookie', '')),
+                }
+            })
+        except Exception as e:
+            logger.error(f'[豆瓣] 加载配置失败: {e}')
+            return jsonify({'success': False, 'message': f'加载配置失败: {str(e)}'}), 500
+    try:
+        cookie = request.form.get('cookie', '').strip()
+        user_id = request.form.get('user_id', '').strip()
 
-    def _update(cfg):
-        if cookie:
-            cfg['cookie'] = encrypt(cookie)
-        if user_id:
-            cfg['user_id'] = user_id
-    douban.update_config(_update)
-    return jsonify({'success': True, 'message': '配置已保存'})
+        def _update(cfg):
+            if cookie:
+                cfg['cookie'] = encrypt(cookie)
+            if user_id:
+                cfg['user_id'] = user_id
+        douban.update_config(_update)
+        return jsonify({'success': True, 'message': '配置已保存'})
+    except Exception as e:
+        logger.error(f'[豆瓣] 保存配置失败: {e}')
+        return jsonify({'success': False, 'message': f'保存失败: {str(e)}'}), 500
 
 
 @app.route('/douban/check', methods=['POST'])

@@ -1,7 +1,7 @@
 import os
 import base64
 import logging
-from typing import Optional, Union
+from typing import Optional, Union, Any
 from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import scrypt
 from Crypto.Random import get_random_bytes

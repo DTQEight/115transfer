@@ -568,6 +568,24 @@
                 window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
                 throw new Error('未登录');
             }
+            // 403 CSRF 失败
+            if (resp.status === 403) {
+                const result = await resp.json();
+                throw new Error(result.message || 'CSRF验证失败');
+            }
+            // 500 服务器错误：检查是否返回了 HTML
+            if (resp.status >= 400) {
+                const text = await resp.text();
+                if (text.startsWith('<')) {
+                    throw new Error('服务器错误(' + resp.status + ')，请查看日志');
+                }
+                try {
+                    const result = JSON.parse(text);
+                    throw new Error(result.message || '请求失败(' + resp.status + ')');
+                } catch (parseErr) {
+                    throw new Error('请求失败(' + resp.status + ')');
+                }
+            }
             return resp;
         }
 

@@ -552,6 +552,7 @@
             const isForm = method !== 'GET' && method !== 'HEAD';
 
             const headers = options.headers || {};
+            headers['Accept'] = 'application/json';
             if (isForm) {
                 headers['X-CSRFToken'] = CSRF_TOKEN;
                 if (!headers['Content-Type'] && typeof options.body === 'string') {

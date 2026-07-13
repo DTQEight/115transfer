@@ -198,9 +198,9 @@ def _require_login() -> Optional[Union[Response, Tuple[Response, int]]]:
     if any(request.path.startswith(p) for p in PUBLIC_PATHS):
         return None
     if not session.get('logged_in'):
-        # API 请求返回 JSON 401，页面请求重定向
         if request.path.startswith('/api/') or request.is_json or \
-           request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+           request.headers.get('X-Requested-With') == 'XMLHttpRequest' or \
+           request.headers.get('Accept') == 'application/json':
             return jsonify({'success': False, 'message': '请先登录'}), 401
         return redirect(url_for('login', next=request.path))
     return None

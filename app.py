@@ -1151,30 +1151,33 @@ def wechat_test():
     content = request.form.get('content', '').strip()
     if not content:
         return jsonify({'success': False, 'message': '请输入测试消息'})
-    
-    logger.info(f'[WeChat Test] Received: {content}')
-    result = wechat_work.handle_text_message(content)
-    
-    if isinstance(result, dict):
-        try:
-            with data_lock:
-                df = load_movies()
-                page_df = df[df['页码'] == result['page']]
-                new_id = int(page_df['序号'].max()) + 1 if not page_df.empty else 1
-                new_movie = {
-                    '序号': new_id,
-                    '页码': result['page'],
-                    '电影名': result['name'],
-                    '磁力链接': result['magnet'],
-                    '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
-                }
-                df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
-                save_movies(df)
-            return jsonify({'success': True, 'message': f'添加成功\n页码: {result["page"]}\n电影名: {result["name"]}'})
-        except Exception as e:
-            return jsonify({'success': False, 'message': f'添加失败: {str(e)}'})
-    else:
-        return jsonify({'success': True, 'message': result})
+    try:
+        logger.info(f'[WeChat Test] Received: {content}')
+        result = wechat_work.handle_text_message(content)
+
+        if isinstance(result, dict):
+            try:
+                with data_lock:
+                    df = load_movies()
+                    page_df = df[df['页码'] == result['page']]
+                    new_id = int(page_df['序号'].max()) + 1 if not page_df.empty else 1
+                    new_movie = {
+                        '序号': new_id,
+                        '页码': result['page'],
+                        '电影名': result['name'],
+                        '磁力链接': result['magnet'],
+                        '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
+                    save_movies(df)
+                return jsonify({'success': True, 'message': f'添加成功\n页码: {result["page"]}\n电影名: {result["name"]}'})
+            except Exception as e:
+                return jsonify({'success': False, 'message': f'添加失败: {str(e)}'})
+        else:
+            return jsonify({'success': True, 'message': result})
+    except Exception as e:
+        logger.error(f'[微信] 测试消息处理失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/wechat/menu', methods=['POST'])
@@ -1296,31 +1299,35 @@ def media_identify_batch():
     if not items:
         return jsonify({'success': False, 'message': '无待识别项'})
 
-    results = identify_batch(items, max_workers=5)
-    # 整理结果，附加分类
-    out = []
-    for r in results:
-        if r and r.get('success') and r.get('result'):
-            tmdb = r['result']
-            primary, secondary = classify(tmdb)
-            out.append({
-                'success': True,
-                'tmdb': tmdb,
-                'primary': primary,
-                'secondary': secondary,
-            })
-        else:
-            out.append({
-                'success': False,
-                'error': (r or {}).get('error', '未识别'),
-            })
-    success_count = sum(1 for x in out if x['success'])
-    return jsonify({
-        'success': True,
-        'results': out,
-        'count': len(out),
-        'success_count': success_count,
-    })
+    try:
+        results = identify_batch(items, max_workers=5)
+        # 整理结果，附加分类
+        out = []
+        for r in results:
+            if r and r.get('success') and r.get('result'):
+                tmdb = r['result']
+                primary, secondary = classify(tmdb)
+                out.append({
+                    'success': True,
+                    'tmdb': tmdb,
+                    'primary': primary,
+                    'secondary': secondary,
+                })
+            else:
+                out.append({
+                    'success': False,
+                    'error': (r or {}).get('error', '未识别'),
+                })
+        success_count = sum(1 for x in out if x['success'])
+        return jsonify({
+            'success': True,
+            'results': out,
+            'count': len(out),
+            'success_count': success_count,
+        })
+    except Exception as e:
+        logger.error(f'[媒体] 批量识别失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 @app.route('/media/search', methods=['POST'])
@@ -1716,61 +1723,65 @@ def douban_movie_info():
 @app.route('/douban/sync', methods=['POST'])
 def douban_sync():
     """同步选中的电影到数据库"""
-    data = request.get_json()
-    if not data or 'movies' not in data:
-        return jsonify({'success': False, 'message': '没有要同步的电影'})
-
-    movies = data['movies']
-    douban_page = data.get('page', 1)
-    if not movies:
-        return jsonify({'success': False, 'message': '没有要同步的电影'})
-
     try:
-        with data_lock:
-            df = load_movies()
+        data = request.get_json(silent=True)
+        if not data or 'movies' not in data:
+            return jsonify({'success': False, 'message': '没有要同步的电影'})
 
-            # 豆瓣页码 → 系统页码: 1:1对应
-            page = douban_page
-            added = 0
-            skipped = 0
+        movies = data['movies']
+        douban_page = data.get('page', 1)
+        if not movies:
+            return jsonify({'success': False, 'message': '没有要同步的电影'})
 
-            for m in movies:
-                name = m.get('title', '').strip()
-                if not name:
-                    continue
+        try:
+            with data_lock:
+                df = load_movies()
 
-                # 检查是否已存在
-                if not df.empty and name in df['电影名'].values:
-                    skipped += 1
-                    continue
+                # 豆瓣页码 → 系统页码: 1:1对应
+                page = douban_page
+                added = 0
+                skipped = 0
 
-                new_id = 1
-                if not df.empty:
-                    page_df = df[df['页码'] == page]
-                    if not page_df.empty:
-                        new_id = int(page_df['序号'].max()) + 1
+                for m in movies:
+                    name = m.get('title', '').strip()
+                    if not name:
+                        continue
 
-                new_movie = {
-                    '序号': new_id,
-                    '页码': page,
-                    '电影名': name,
-                    '磁力链接': '',
-                    '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S'),
-                }
-                df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
-                added += 1
+                    # 检查是否已存在
+                    if not df.empty and name in df['电影名'].values:
+                        skipped += 1
+                        continue
 
-            save_movies(df)
+                    new_id = 1
+                    if not df.empty:
+                        page_df = df[df['页码'] == page]
+                        if not page_df.empty:
+                            new_id = int(page_df['序号'].max()) + 1
 
-        return jsonify({
-            'success': True,
-            'message': f'同步完成: 新增{added}部，跳过{skipped}部（已存在），页码{page}',
-            'added': added,
-            'skipped': skipped,
-            'page': page,
-        })
+                    new_movie = {
+                        '序号': new_id,
+                        '页码': page,
+                        '电影名': name,
+                        '磁力链接': '',
+                        '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S'),
+                    }
+                    df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
+                    added += 1
+
+                save_movies(df)
+
+            return jsonify({
+                'success': True,
+                'message': f'同步完成: 新增{added}部，跳过{skipped}部（已存在），页码{page}',
+                'added': added,
+                'skipped': skipped,
+                'page': page,
+            })
+        except Exception as e:
+            return jsonify({'success': False, 'message': f'同步失败: {str(e)}'})
     except Exception as e:
-        return jsonify({'success': False, 'message': f'同步失败: {str(e)}'})
+        logger.error(f'[豆瓣] 同步异常: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
 # ===== 日志查看 =====

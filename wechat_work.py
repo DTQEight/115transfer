@@ -10,6 +10,7 @@ import os
 import threading
 import requests
 from Crypto.Cipher import AES
+from crypto_utils import encrypt, decrypt
 
 CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'wechat_work_config.json')
 
@@ -51,7 +52,7 @@ def update_config(mutator):
 def get_access_token():
     config = load_config()
     corpid = config.get('corpid', '')
-    corpsecret = config.get('corpsecret', '')
+    corpsecret = decrypt(config.get('corpsecret', ''))
     if not corpid or not corpsecret:
         return None, '未配置企业微信'
 

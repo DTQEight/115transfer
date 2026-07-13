@@ -6,6 +6,7 @@ import os
 import time
 import threading
 import html as html_module
+from crypto_utils import encrypt, decrypt
 
 CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'douban_config.json')
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -49,7 +50,7 @@ def update_config(mutator):
 
 def _get_headers():
     config = load_config()
-    cookie = config.get('cookie', '')
+    cookie = decrypt(config.get('cookie', ''))
     return {
         'User-Agent': USER_AGENT,
         'Cookie': cookie,
@@ -69,7 +70,7 @@ def fetch_watched_movies(user_id, start=0, count=15):
     movie_list: [{'title': '电影名', 'year': '2019', 'rating': '', 'url': '...'}, ...]
     """
     config = load_config()
-    cookie = config.get('cookie', '')
+    cookie = decrypt(config.get('cookie', ''))
     if not cookie:
         return [], 0, '未配置豆瓣Cookie'
 
@@ -152,7 +153,7 @@ def fetch_movie_chinese_name(subject_url):
     返回: (chinese_name, error_msg)
     """
     config = load_config()
-    cookie = config.get('cookie', '')
+    cookie = decrypt(config.get('cookie', ''))
     if not cookie:
         return '', '未配置豆瓣Cookie'
 
@@ -182,7 +183,7 @@ def fetch_movie_chinese_name(subject_url):
 def fetch_all_watched_movies(user_id):
     """获取用户所有看过的电影"""
     config = load_config()
-    cookie = config.get('cookie', '')
+    cookie = decrypt(config.get('cookie', ''))
     if not cookie:
         return [], '未配置豆瓣Cookie'
 
@@ -215,7 +216,7 @@ def fetch_all_watched_movies(user_id):
 def check_cookie(user_id):
     """检查豆瓣Cookie是否有效"""
     config = load_config()
-    cookie = config.get('cookie', '')
+    cookie = decrypt(config.get('cookie', ''))
     if not cookie:
         return False, '未配置豆瓣Cookie'
 

@@ -72,7 +72,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     var logCount = 0;
-    var pollTimer = null;
+    var eventSource = null;
 
     function getLineStyle(line) {
         if (line.indexOf('[ERROR]') >= 0) return 'color:#dc3545;background:rgba(220,53,69,0.06);';
@@ -82,7 +82,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function renderLogs(lines) {
-        // 每次清空重新渲染，避免增量漏显
         logContainer.innerHTML = '';
         if (!lines || lines.length === 0) {
             logContainer.innerHTML = '<div style="color:#999;text-align:center;padding:20px;">暂无匹配日志</div>';
@@ -99,8 +98,28 @@ document.addEventListener('DOMContentLoaded', function() {
         logContainer.appendChild(frag);
         logCount = lines.length;
         logCountEl.textContent = lines.length + ' 条';
-        // 自动滚动到底部
         logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    function appendLog(line) {
+        if (!line) return;
+        var div = document.createElement('div');
+        div.style.cssText = 'padding:2px 8px;border-bottom:1px solid #eee;white-space:pre-wrap;word-break:break-all;' + getLineStyle(line);
+        div.textContent = line;
+        logContainer.appendChild(div);
+        logCount++;
+        logCountEl.textContent = logCount + ' 条';
+        logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    function buildStreamUrl() {
+        var level = logLevel.value;
+        var keyword = logKeyword.value.trim();
+        var limit = logLimit.value;
+        var url = '/logs/stream?limit=' + limit;
+        if (level) url += '&level=' + encodeURIComponent(level);
+        if (keyword) url += '&keyword=' + encodeURIComponent(keyword);
+        return url;
     }
 
     function buildApiUrl() {
@@ -113,17 +132,66 @@ document.addEventListener('DOMContentLoaded', function() {
         return url;
     }
 
-    async function fetchLogs() {
+    async function loadInitialLogs() {
         try {
             var url = buildApiUrl();
-            var resp = await fetch(url, { cache: 'no-store' });
+            var resp = await apiFetch(url);
             var result = await resp.json();
             if (!result.success) {
                 logConnStatus.textContent = 'API错误: ' + (result.message || '未知');
                 return;
             }
             renderLogs(result.lines || []);
-            logConnStatus.textContent = '已连接 · ' + new Date().toLocaleTimeString();
+        } catch (e) {
+            console.error('[logs] 加载初始日志失败:', e);
+        }
+    }
+
+    function startSSE() {
+        if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+        }
+
+        loadInitialLogs();
+
+        try {
+            var url = buildStreamUrl();
+            eventSource = new EventSource(url);
+
+            eventSource.onopen = function() {
+                logConnStatus.textContent = 'SSE连接 · ' + new Date().toLocaleTimeString();
+            };
+
+            eventSource.onmessage = function(event) {
+                if (event.data) {
+                    appendLog(event.data);
+                }
+            };
+
+            eventSource.onerror = function(error) {
+                logConnStatus.textContent = '连接断开，重连中...';
+                eventSource.close();
+                setTimeout(startSSE, 3000);
+            };
+        } catch (e) {
+            logConnStatus.textContent = 'SSE不支持，降级为轮询';
+            startPolling();
+        }
+    }
+
+    var pollTimer = null;
+    async function fetchLogs() {
+        try {
+            var url = buildApiUrl();
+            var resp = await apiFetch(url);
+            var result = await resp.json();
+            if (!result.success) {
+                logConnStatus.textContent = 'API错误: ' + (result.message || '未知');
+                return;
+            }
+            renderLogs(result.lines || []);
+            logConnStatus.textContent = '轮询 · ' + new Date().toLocaleTimeString();
         } catch (e) {
             logConnStatus.textContent = '请求失败: ' + e.message;
         }
@@ -132,21 +200,31 @@ document.addEventListener('DOMContentLoaded', function() {
     function startPolling() {
         if (pollTimer) clearInterval(pollTimer);
         fetchLogs();
-        pollTimer = setInterval(fetchLogs, 2000);
+        pollTimer = setInterval(fetchLogs, 3000);
     }
 
-    function restartPolling() {
-        startPolling();
+    function restart() {
+        if (eventSource) {
+            startSSE();
+        } else if (pollTimer) {
+            startPolling();
+        }
     }
 
-    logLevel.addEventListener('change', restartPolling);
-    logLimit.addEventListener('change', restartPolling);
+    logLevel.addEventListener('change', restart);
+    logLimit.addEventListener('change', restart);
     var keywordTimer = null;
     logKeyword.addEventListener('input', function() {
         clearTimeout(keywordTimer);
-        keywordTimer = setTimeout(restartPolling, 500);
+        keywordTimer = setTimeout(restart, 500);
     });
 
-    startPolling();
+    startSSE();
+
+    window.addEventListener('beforeunload', function() {
+        if (eventSource) {
+            eventSource.close();
+        }
+    });
 });
 {% endblock %}

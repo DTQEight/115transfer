@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response, stream_with_context, session
+from flask_cors import CORS
 import pandas as pd
 import os
 import secrets
@@ -11,27 +12,26 @@ import hashlib
 import logging
 import time
 import queue
+from typing import List, Dict, Any, Optional, Tuple, Callable, Union
 from logging.handlers import RotatingFileHandler
-import cloud115
-import wechat_work
-import douban
+from crypto_utils import encrypt, decrypt
 
 # 日志配置
-LOG_DIR = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+LOG_DIR: str = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
 os.makedirs(LOG_DIR, exist_ok=True)
-LOG_FILE = os.path.join(LOG_DIR, 'app.log')
+LOG_FILE: str = os.path.join(LOG_DIR, 'app.log')
 
 logger = logging.getLogger('115transfer')
 logger.setLevel(logging.INFO)
 
 # 实时日志订阅器：维护一个订阅者队列列表，新日志会推送到所有队列
-_log_subscribers = []
-_log_subscribers_lock = threading.Lock()
+_log_subscribers: List[queue.Queue[str]] = []
+_log_subscribers_lock: threading.Lock = threading.Lock()
 
 class _SubscriberLogHandler(logging.Handler):
     """自定义日志处理器：将新日志推送给所有订阅者"""
-    def emit(self, record):
-        msg = self.format(record)
+    def emit(self, record: logging.LogRecord) -> None:
+        msg: str = self.format(record)
         with _log_subscribers_lock:
             for q in _log_subscribers:
                 try:
@@ -39,27 +39,28 @@ class _SubscriberLogHandler(logging.Handler):
                 except queue.Full:
                     pass  # 队列满则丢弃，避免阻塞
 
-# 文件日志（轮转：单个文件最大10MB，保留5个备份）
-fh = RotatingFileHandler(LOG_FILE, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+# 文件日志（轮转：单个文件最大10MB，保留5个备份，JSON格式）
+fh: RotatingFileHandler = RotatingFileHandler(LOG_FILE, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
 fh.setLevel(logging.INFO)
-fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+from pythonjsonlogger import jsonlogger
+fh.setFormatter(jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(message)s'))
 logger.addHandler(fh)
 
 # 控制台日志
-ch = logging.StreamHandler()
+ch: logging.StreamHandler = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 ch.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))
 logger.addHandler(ch)
 
 # 实时推送日志处理器
-sh = _SubscriberLogHandler()
+sh: _SubscriberLogHandler = _SubscriberLogHandler()
 sh.setLevel(logging.INFO)
 sh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
 logger.addHandler(sh)
 
-user_states = {}
+user_states: Dict[str, Dict[str, Any]] = {}
 
-def get_beijing_time():
+def get_beijing_time() -> datetime:
     """获取北京时间"""
     return datetime.now(zoneinfo.ZoneInfo("Asia/Shanghai"))
 
@@ -70,23 +71,32 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY') or secrets.token_hex(32)
 app.permanent_session_lifetime = timedelta(days=7)
 
-DATA_DIR = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+# ==================== CORS 配置 ====================
+allowed_origins: str = os.environ.get('ALLOWED_ORIGINS', '').strip()
+if allowed_origins:
+    origins: List[str] = [o.strip() for o in allowed_origins.split(',') if o.strip()]
+else:
+    origins = ['http://localhost:3698', 'http://127.0.0.1:3698']
+
+CORS(app, origins=origins, supports_credentials=True)
+
+DATA_DIR: str = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
 os.makedirs(DATA_DIR, exist_ok=True)
-EXCEL_FILE = os.path.join(DATA_DIR, 'movies_data.xlsx')
-BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
-MAX_BACKUPS = 10
-data_lock = threading.Lock()
-_movie_cache = {'hash': None, 'data': None}
+EXCEL_FILE: str = os.path.join(DATA_DIR, 'movies_data.xlsx')
+BACKUP_DIR: str = os.path.join(DATA_DIR, 'backups')
+MAX_BACKUPS: int = 10
+data_lock: threading.Lock = threading.Lock()
+_movie_cache: Dict[str, Any] = {'hash': None, 'data': None}
 
 # ==================== 登录 & CSRF 配置 ====================
 
 # 登录密码：优先从环境变量读取；未设置则使用默认密码（首次启动会在日志中提示修改）
-APP_PASSWORD = os.environ.get('APP_PASSWORD') or 'admin123'
+APP_PASSWORD: str = os.environ.get('APP_PASSWORD') or 'admin123'
 # 是否强制要求设置密码（生产环境建议设为 True）
-STRICT_PASSWORD = bool(os.environ.get('APP_PASSWORD'))
+STRICT_PASSWORD: bool = bool(os.environ.get('APP_PASSWORD'))
 
 # 公开接口白名单（无需登录、无需 CSRF 验证）
-PUBLIC_PATHS = [
+PUBLIC_PATHS: List[str] = [
     '/login',
     '/logout',
     '/health',
@@ -96,21 +106,21 @@ PUBLIC_PATHS = [
 ]
 
 # 不需要 CSRF 验证的接口（如企业微信回调）
-CSRF_EXEMPT_PATHS = [
+CSRF_EXEMPT_PATHS: List[str] = [
     '/wechat/callback',
     '/wechat/proxy',
     '/health',
 ]
 
 
-def _get_csrf_token():
+def _get_csrf_token() -> str:
     """获取当前会话的 CSRF token，不存在则生成"""
     if 'csrf_token' not in session:
         session['csrf_token'] = secrets.token_urlsafe(32)
     return session['csrf_token']
 
 
-def _check_csrf():
+def _check_csrf() -> Optional[Tuple[Response, int]]:
     """验证 CSRF token，仅对受保护接口生效"""
     if request.method != 'POST':
         return None
@@ -120,7 +130,7 @@ def _check_csrf():
     if request.path in ('/login', '/logout'):
         return None
 
-    token = request.form.get('csrf_token') or request.headers.get('X-CSRFToken')
+    token: Optional[str] = request.form.get('csrf_token') or request.headers.get('X-CSRFToken')
     if not token:
         return jsonify({'success': False, 'message': '缺少CSRF令牌'}), 403
     if token != session.get('csrf_token'):
@@ -128,7 +138,7 @@ def _check_csrf():
     return None
 
 
-def _require_login():
+def _require_login() -> Optional[Union[Response, Tuple[Response, int]]]:
     """检查登录状态，未登录返回重定向或 401"""
     if any(request.path.startswith(p) for p in PUBLIC_PATHS):
         return None
@@ -142,7 +152,7 @@ def _require_login():
 
 
 @app.before_request
-def _security_check():
+def _security_check() -> Optional[Union[Response, Tuple[Response, int]]]:
     """请求前的安全检查：登录验证 + CSRF 验证"""
     login_resp = _require_login()
     if login_resp is not None:
@@ -153,7 +163,7 @@ def _security_check():
 
 
 @app.context_processor
-def _inject_csrf_token():
+def _inject_csrf_token() -> Dict[str, Callable[[], str]]:
     """向所有模板注入 csrf_token 函数"""
     return {'csrf_token': _get_csrf_token}
 
@@ -161,17 +171,17 @@ def _inject_csrf_token():
 # ==================== 登录路由 ====================
 
 @app.route('/login', methods=['GET', 'POST'])
-def login():
-    error = None
+def login() -> Union[str, Response]:
+    error: Optional[str] = None
     if request.method == 'POST':
-        password = request.form.get('password', '')
+        password: str = request.form.get('password', '')
         if password == APP_PASSWORD:
             session.clear()  # 清除旧 session 防止固定会话攻击
             session['logged_in'] = True
             session.permanent = True
             _get_csrf_token()  # 立即生成 CSRF token
             logger.info('[登录] 用户登录成功')
-            next_url = request.args.get('next') or url_for('index')
+            next_url: str = request.args.get('next') or url_for('index')
             # 防止开放重定向
             if not next_url.startswith('/'):
                 next_url = url_for('index')
@@ -183,24 +193,24 @@ def login():
 
 
 @app.route('/logout', methods=['GET', 'POST'])
-def logout():
+def logout() -> Response:
     session.clear()
     return redirect(url_for('login'))
 
 
 @app.route('/health')
-def health():
+def health() -> Response:
     return jsonify({'status': 'ok', 'version': VERSION})
 
 # 版本号
-VERSION = "1.0.0"
+VERSION: str = "1.0.0"
 try:
     with open('VERSION', 'r') as f:
         VERSION = f.read().strip()
 except Exception:
     pass
 
-def load_movies():
+def load_movies() -> pd.DataFrame:
     if not os.path.exists(EXCEL_FILE):
         df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间'])
         df.to_excel(EXCEL_FILE, index=False)
@@ -223,31 +233,31 @@ def load_movies():
     _movie_cache['data'] = df
     return df.copy()
 
-def backup_movies():
+def backup_movies() -> None:
     if not os.path.exists(EXCEL_FILE):
         return
     os.makedirs(BACKUP_DIR, exist_ok=True)
-    timestamp = get_beijing_time().strftime('%Y%m%d_%H%M%S')
-    backup_file = os.path.join(BACKUP_DIR, f'movies_data_{timestamp}.xlsx')
+    timestamp: str = get_beijing_time().strftime('%Y%m%d_%H%M%S')
+    backup_file: str = os.path.join(BACKUP_DIR, f'movies_data_{timestamp}.xlsx')
     shutil.copy2(EXCEL_FILE, backup_file)
-    backups = sorted(glob_mod.glob(os.path.join(BACKUP_DIR, 'movies_data_*.xlsx')))
+    backups: List[str] = sorted(glob_mod.glob(os.path.join(BACKUP_DIR, 'movies_data_*.xlsx')))
     while len(backups) > MAX_BACKUPS:
         os.remove(backups.pop(0))
 
-def save_movies(df):
+def save_movies(df: pd.DataFrame) -> None:
     backup_movies()
     df.to_excel(EXCEL_FILE, index=False)
     _movie_cache['hash'] = None
     _movie_cache['data'] = None
 
-def build_movie_list(df):
-    movies = []
+def build_movie_list(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    movies: List[Dict[str, Any]] = []
     for _, row in df.iterrows():
         magnet = row['磁力链接']
         if pd.isna(magnet) or str(magnet).strip() == '':
-            magnet_display = '(空)'
+            magnet_display: str = '(空)'
             magnet = ''
-            is_empty = True
+            is_empty: bool = True
         else:
             magnet = str(magnet)
             magnet_display = magnet[:50] + '...' if len(magnet) > 50 else magnet
@@ -265,7 +275,7 @@ def build_movie_list(df):
     return movies
 
 @app.route('/')
-def index():
+def index() -> str:
     page_num = request.args.get('page', 1)
     try:
         page_num = int(page_num)
@@ -488,7 +498,7 @@ def cloud115_set_config():
         return jsonify({'success': False, 'message': 'Cookie不能为空'})
 
     def _update(cfg):
-        cfg['cookie'] = cookie
+        cfg['cookie'] = encrypt(cookie)
     cloud115.update_config(_update)
     return jsonify({'success': True, 'message': 'Cookie保存成功'})
 
@@ -660,7 +670,7 @@ def wechat_set_config():
 
     def _update(cfg):
         cfg['corpid'] = corpid
-        cfg['corpsecret'] = corpsecret
+        cfg['corpsecret'] = encrypt(corpsecret)
         if agentid:
             cfg['agentid'] = agentid
         if token:
@@ -793,10 +803,12 @@ def wechat_callback():
                         if not magnets:
                             reply = f'第 {page_num} 页没有有效的磁力链接'
                         else:
-                            results = cloud115.batch_add_offline_tasks(magnets)
+                            save_path = get_or_create_page_dir(page_num)
+                            results = cloud115.batch_add_offline_tasks(magnets, save_path_id=save_path)
                             success_count = sum(1 for r in results if r['success'])
                             fail_count = len(results) - success_count
-                            reply = f'批量转存完成\n页码: {page_num}\n成功: {success_count}\n失败: {fail_count}'
+                            dir_info = f'（保存到: 第{page_num}页）' if save_path else ''
+                            reply = f'批量转存完成{dir_info}\n页码: {page_num}\n成功: {success_count}\n失败: {fail_count}'
                             if fail_count > 0:
                                 wechat_work.send_wechat_message(f'[115Transfer] 批量转存部分失败\n页码: {page_num}\n成功: {success_count}\n失败: {fail_count}')
                     del user_states[from_user]
@@ -861,7 +873,7 @@ def wechat_callback():
                 else:
                     with data_lock:
                         df = load_movies()
-                    mask = df['电影名'].str.contains(keyword, case=False, na=False)
+                    mask = df['电影名'].str.contains(keyword, case=False, na=False, regex=False)
                     results = df[mask]
                     if results.empty:
                         reply = f'未找到包含"{keyword}"的电影'
@@ -1430,7 +1442,7 @@ def douban_config():
 
     def _update(cfg):
         if cookie:
-            cfg['cookie'] = cookie
+            cfg['cookie'] = encrypt(cookie)
         if user_id:
             cfg['user_id'] = user_id
     douban.update_config(_update)

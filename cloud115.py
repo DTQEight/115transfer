@@ -3,6 +3,7 @@ import json
 import os
 import time
 import threading
+from crypto_utils import encrypt, decrypt
 
 CONFIG_FILE = os.path.join(os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'cloud115_config.json')
 
@@ -68,7 +69,7 @@ def _request_with_retry(method, url, max_retries=3, **kwargs):
 
 def get_cookie_string():
     config = load_config()
-    return config.get('cookie', '')
+    return decrypt(config.get('cookie', ''))
 
 
 def _get_headers():

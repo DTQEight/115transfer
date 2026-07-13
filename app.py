@@ -12,9 +12,64 @@ import hashlib
 import logging
 import time
 import queue
+import base64
 from typing import List, Dict, Any, Optional, Tuple, Callable, Union
 from logging.handlers import RotatingFileHandler
-from crypto_utils import encrypt, decrypt
+from Crypto.Cipher import AES
+from Crypto.Protocol.KDF import scrypt
+from Crypto.Random import get_random_bytes
+
+_KEY_SIZE: int = 32
+_NONCE_SIZE: int = 12
+_SALT_SIZE: int = 16
+_ENCRYPTION_KEY: Optional[str] = None
+
+def _get_encryption_key() -> str:
+    global _ENCRYPTION_KEY
+    if _ENCRYPTION_KEY is None:
+        env_key: Optional[str] = os.environ.get('ENCRYPTION_KEY')
+        if not env_key:
+            _ENCRYPTION_KEY = os.environ.get('FLASK_SECRET_KEY', '')[:_KEY_SIZE]
+            if len(_ENCRYPTION_KEY) < _KEY_SIZE:
+                _ENCRYPTION_KEY = _ENCRYPTION_KEY.ljust(_KEY_SIZE, '0')
+        else:
+            _ENCRYPTION_KEY = env_key[:_KEY_SIZE].ljust(_KEY_SIZE, '0')
+    return _ENCRYPTION_KEY
+
+def encrypt(plaintext: str) -> str:
+    if not plaintext:
+        return ''
+    key: str = _get_encryption_key()
+    salt: bytes = get_random_bytes(_SALT_SIZE)
+    nonce: bytes = get_random_bytes(_NONCE_SIZE)
+    derived_key: bytes = scrypt(key, salt, _KEY_SIZE, N=2**14, r=8, p=1)
+    cipher = AES.new(derived_key, AES.MODE_GCM, nonce=nonce)
+    ciphertext: bytes
+    tag: bytes
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode('utf-8'))
+    encoded: str = base64.b64encode(salt + nonce + tag + ciphertext).decode('ascii')
+    return f'ENC[{encoded}]'
+
+def decrypt(ciphertext: str) -> str:
+    if not ciphertext:
+        return ''
+    if ciphertext.startswith('ENC[') and ciphertext.endswith(']'):
+        encoded: str = ciphertext[4:-1]
+    else:
+        return ciphertext
+    try:
+        decoded: bytes = base64.b64decode(encoded)
+        salt: bytes = decoded[:_SALT_SIZE]
+        nonce: bytes = decoded[_SALT_SIZE:_SALT_SIZE + _NONCE_SIZE]
+        tag: bytes = decoded[_SALT_SIZE + _NONCE_SIZE:_SALT_SIZE + _NONCE_SIZE + 16]
+        data: bytes = decoded[_SALT_SIZE + _NONCE_SIZE + 16:]
+        key: str = _get_encryption_key()
+        derived_key: bytes = scrypt(key, salt, _KEY_SIZE, N=2**14, r=8, p=1)
+        cipher = AES.new(derived_key, AES.MODE_GCM, nonce=nonce)
+        plaintext: bytes = cipher.decrypt_and_verify(data, tag)
+        return plaintext.decode('utf-8')
+    except Exception:
+        return ciphertext
 
 # 日志配置
 LOG_DIR: str = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))

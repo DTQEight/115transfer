@@ -1,11 +1,19 @@
 services:
   115transfer:
-    image: ghcr.io/dtqeight/115transfer:master
+    build: .
     container_name: 115transfer
     ports:
       - "3698:3698"
     volumes:
       - ./data:/app/data
+      - ./app.py:/app/app.py
+      - ./cloud115.py:/app/cloud115.py
+      - ./wechat_work.py:/app/wechat_work.py
+      - ./douban.py:/app/douban.py
+      - ./baidu_forum.py:/app/baidu_forum.py
+      - ./templates:/app/templates
+      - ./media:/app/media
+      - ./VERSION:/app/VERSION
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3698/health"]

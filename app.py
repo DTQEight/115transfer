@@ -52,7 +52,16 @@ class _SubscriberLogHandler(logging.Handler):
 fh: RotatingFileHandler = RotatingFileHandler(LOG_FILE, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
 fh.setLevel(logging.INFO)
 from pythonjsonlogger import jsonlogger
-fh.setFormatter(jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(message)s', ensure_ascii=False))
+# pythonjsonlogger 3.x 参数名为 json_ensure_ascii；旧版为 ensure_ascii。
+# 这里同时兼容：通过自定义 json_serializer 强制中文不转义，所有版本通用。
+import json as _stdjson
+def _zh_json_serializer(obj, default=None, **kwargs):
+    kwargs.pop('ensure_ascii', None)
+    return _stdjson.dumps(obj, default=default, ensure_ascii=False, **kwargs)
+fh.setFormatter(jsonlogger.JsonFormatter(
+    '%(asctime)s %(levelname)s %(message)s',
+    json_serializer=_zh_json_serializer,
+))
 logger.addHandler(fh)
 
 # 控制台日志
@@ -1938,43 +1947,107 @@ def _do_douban_auto_sync():
                 _auto_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
                 return
 
-            logger.info(f'[豆瓣自动同步] 拉取到 {len(movies)} 部电影，开始写入数据库...')
+            logger.info(f'[豆瓣自动同步] 拉取到 {len(movies)} 部电影，开始按豆瓣顺序重建数据库...')
 
-            # 按豆瓣顺序写入：每15条为一页，保持豆瓣原始顺序
+            # 顺序对齐策略：每次同步都按豆瓣顺序重建列表，保证系统顺序与豆瓣完全一致。
+            # - 豆瓣中的电影严格按豆瓣顺序排列（页码 = i//15+1，序号 = i%15+1）
+            # - 已存在电影的磁力链接和保存时间会被保留
+            # - 豆瓣中不存在的电影（用户手动添加的）保留并追加到豆瓣电影之后，页码顺延
             with data_lock:
                 df = load_movies()
                 added = 0
                 skipped = 0
                 per_page = 15
 
+                # 建立现有电影映射：电影名 → {磁力链接, 保存时间}
+                # 用于保留已转存电影的磁力链接等信息
+                existing_map: Dict[str, Dict[str, str]] = {}
+                if not df.empty:
+                    for _, row in df.iterrows():
+                        name = str(row['电影名']) if not pd.isna(row['电影名']) else ''
+                        if not name or name in existing_map:
+                            continue
+                        magnet = str(row['磁力链接']) if not pd.isna(row['磁力链接']) else ''
+                        save_time = str(row['保存时间']) if not pd.isna(row['保存时间']) else ''
+                        existing_map[name] = {'磁力链接': magnet, '保存时间': save_time}
+
+                new_rows: List[Dict[str, Any]] = []
+                seen_names: set = set()  # 防止豆瓣数据重复
+                douban_names: set = set()
+
+                # 第一部分：豆瓣中的电影，严格按豆瓣顺序排列
                 for i, m in enumerate(movies):
                     name = m.get('title', '').strip()
-                    if not name:
+                    if not name or name in seen_names:
                         continue
-                    # 去重：按电影名全表查重
-                    if not df.empty and name in df['电影名'].values:
-                        skipped += 1
-                        continue
-                    # 页码分配：每15条一页，从第1页开始
+                    seen_names.add(name)
+                    douban_names.add(name)
+
                     page = (i // per_page) + 1
-                    # 序号：该页码内 max+1
-                    new_id = 1
-                    if not df.empty:
-                        page_df = df[df['页码'] == page]
-                        if not page_df.empty:
-                            new_id = int(page_df['序号'].max()) + 1
-                    new_movie = {
-                        '序号': new_id,
+                    seq = (i % per_page) + 1  # 页内序号从1开始
+
+                    if name in existing_map:
+                        skipped += 1
+                        magnet = existing_map[name]['磁力链接']
+                        save_time = existing_map[name]['保存时间']
+                    else:
+                        added += 1
+                        magnet = ''
+                        save_time = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+
+                    new_rows.append({
+                        '序号': seq,
                         '页码': page,
                         '电影名': name,
-                        '磁力链接': '',
-                        '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S'),
-                    }
-                    df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
-                    added += 1
+                        '磁力链接': magnet,
+                        '保存时间': save_time,
+                    })
 
-                if added > 0:
-                    save_movies(df)
+                # 第二部分：豆瓣中不存在的电影（用户手动添加的），保留并追加到末尾
+                # 页码从豆瓣最后一页之后的新页开始，保持每页15条
+                douban_count = len(new_rows)
+                if douban_count > 0:
+                    douban_last_page = (douban_count - 1) // per_page + 1
+                else:
+                    douban_last_page = 0
+
+                extra_idx = 0
+                extra_count = 0
+                for name, info in existing_map.items():
+                    if name in douban_names:
+                        continue  # 已在豆瓣列表中
+                    extra_count += 1
+                    # 从豆瓣最后一页之后的新页开始，每页15条
+                    page = douban_last_page + 1 + (extra_idx // per_page)
+                    seq = (extra_idx % per_page) + 1
+                    extra_idx += 1
+                    new_rows.append({
+                        '序号': seq,
+                        '页码': page,
+                        '电影名': name,
+                        '磁力链接': info['磁力链接'],
+                        '保存时间': info['保存时间'],
+                    })
+
+                new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间'])
+
+                # 判断是否需要保存：有新增 或 顺序/页码发生变化
+                need_save = added > 0
+                if not need_save and not df.empty:
+                    if len(df) != len(new_df):
+                        need_save = True
+                    else:
+                        old_order = df[['电影名', '页码', '序号']].reset_index(drop=True)
+                        new_order = new_df[['电影名', '页码', '序号']].reset_index(drop=True)
+                        if not old_order.equals(new_order):
+                            need_save = True
+
+                if need_save:
+                    save_movies(new_df)
+                    logger.info(f'[豆瓣自动同步] 数据库已重建，共{len(new_rows)}部'
+                                f'（豆瓣{douban_count}部 + 手动添加{extra_count}部）')
+                else:
+                    logger.info('[豆瓣自动同步] 顺序已一致，无需更新')
 
             result_msg = f'成功: 新增{added}部，跳过{skipped}部（已存在），共{len(movies)}部'
             logger.info(f'[豆瓣自动同步] {result_msg}')

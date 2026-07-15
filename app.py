@@ -52,7 +52,7 @@ class _SubscriberLogHandler(logging.Handler):
 fh: RotatingFileHandler = RotatingFileHandler(LOG_FILE, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
 fh.setLevel(logging.INFO)
 from pythonjsonlogger import jsonlogger
-fh.setFormatter(jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(message)s'))
+fh.setFormatter(jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(message)s', ensure_ascii=False))
 logger.addHandler(fh)
 
 # 控制台日志

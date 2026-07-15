@@ -22,6 +22,8 @@ import cloud115
 import wechat_work
 import douban
 import transfer_history
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 # 日志配置
 LOG_DIR: str = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
@@ -1901,6 +1903,232 @@ def douban_sync():
         return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
+# ===== 豆瓣自动同步 =====
+
+# 全局调度器实例
+_scheduler: Optional[BackgroundScheduler] = None
+# 同步锁：防止自动同步和手动同步同时执行
+_auto_sync_lock: threading.Lock = threading.Lock()
+# 同步状态
+_auto_sync_status: Dict[str, Any] = {'running': False, 'last_result': '', 'last_time': ''}
+
+
+def _do_douban_auto_sync():
+    """执行豆瓣全量自动同步（由调度器调用）"""
+    if _auto_sync_lock.locked():
+        logger.info('[豆瓣自动同步] 上一次同步仍在执行，跳过')
+        return
+
+    with _auto_sync_lock:
+        _auto_sync_status['running'] = True
+        try:
+            config = douban.load_config()
+            user_id = config.get('user_id', '').strip()
+            if not user_id:
+                logger.warning('[豆瓣自动同步] 未配置豆瓣用户ID，跳过')
+                _auto_sync_status['last_result'] = '未配置用户ID'
+                _auto_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+                return
+
+            logger.info(f'[豆瓣自动同步] 开始全量拉取用户 {user_id} 的观影记录...')
+            movies, err = douban.fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0)
+            if err:
+                logger.error(f'[豆瓣自动同步] 拉取失败: {err}')
+                _auto_sync_status['last_result'] = f'失败: {err}'
+                _auto_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+                return
+
+            logger.info(f'[豆瓣自动同步] 拉取到 {len(movies)} 部电影，开始写入数据库...')
+
+            # 按豆瓣顺序写入：每15条为一页，保持豆瓣原始顺序
+            with data_lock:
+                df = load_movies()
+                added = 0
+                skipped = 0
+                per_page = 15
+
+                for i, m in enumerate(movies):
+                    name = m.get('title', '').strip()
+                    if not name:
+                        continue
+                    # 去重：按电影名全表查重
+                    if not df.empty and name in df['电影名'].values:
+                        skipped += 1
+                        continue
+                    # 页码分配：每15条一页，从第1页开始
+                    page = (i // per_page) + 1
+                    # 序号：该页码内 max+1
+                    new_id = 1
+                    if not df.empty:
+                        page_df = df[df['页码'] == page]
+                        if not page_df.empty:
+                            new_id = int(page_df['序号'].max()) + 1
+                    new_movie = {
+                        '序号': new_id,
+                        '页码': page,
+                        '电影名': name,
+                        '磁力链接': '',
+                        '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S'),
+                    }
+                    df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
+                    added += 1
+
+                if added > 0:
+                    save_movies(df)
+
+            result_msg = f'成功: 新增{added}部，跳过{skipped}部（已存在），共{len(movies)}部'
+            logger.info(f'[豆瓣自动同步] {result_msg}')
+            _auto_sync_status['last_result'] = result_msg
+            _auto_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+
+            # 更新配置中的最后同步时间
+            try:
+                douban.update_config(lambda cfg: cfg.update({
+                    'last_sync_time': _auto_sync_status['last_time'],
+                    'last_sync_result': result_msg,
+                }))
+            except Exception:
+                pass
+
+        except Exception as e:
+            logger.error(f'[豆瓣自动同步] 异常: {e}', exc_info=True)
+            _auto_sync_status['last_result'] = f'异常: {str(e)}'
+            _auto_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+        finally:
+            _auto_sync_status['running'] = False
+
+
+def _parse_cron_expr(cron_expr: str) -> Optional[CronTrigger]:
+    """解析 cron 表达式，返回 CronTrigger 或 None"""
+    if not cron_expr or not cron_expr.strip():
+        return None
+    try:
+        parts = cron_expr.strip().split()
+        if len(parts) != 5:
+            return None
+        return CronTrigger(
+            minute=parts[0], hour=parts[1],
+            day=parts[2], month=parts[3], day_of_week=parts[4],
+        )
+    except Exception:
+        return None
+
+
+def _reschedule_auto_sync():
+    """根据配置重新调度自动同步任务"""
+    global _scheduler
+    if _scheduler is None:
+        return
+
+    # 移除旧任务（如果存在）
+    try:
+        _scheduler.remove_job('douban_auto_sync')
+    except Exception:
+        pass
+
+    config = douban.load_config()
+    enabled = config.get('auto_sync_enabled', False)
+    cron_expr = config.get('auto_sync_cron', '0 3 * * *')
+
+    if not enabled:
+        logger.info('[豆瓣自动同步] 自动同步未启用')
+        return
+
+    trigger = _parse_cron_expr(cron_expr)
+    if trigger is None:
+        logger.warning(f'[豆瓣自动同步] cron表达式无效: {cron_expr}')
+        return
+
+    _scheduler.add_job(
+        _do_douban_auto_sync,
+        trigger=trigger,
+        id='douban_auto_sync',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(f'[豆瓣自动同步] 已启用，调度表达式: {cron_expr}')
+
+
+@app.route('/douban/auto_sync_config', methods=['GET', 'POST'])
+def douban_auto_sync_config():
+    """读取/配置豆瓣自动同步"""
+    if request.method == 'GET':
+        try:
+            config = douban.load_config()
+            return jsonify({
+                'success': True,
+                'config': {
+                    'auto_sync_enabled': config.get('auto_sync_enabled', False),
+                    'auto_sync_cron': config.get('auto_sync_cron', '0 3 * * *'),
+                    'last_sync_time': config.get('last_sync_time', ''),
+                    'last_sync_result': config.get('last_sync_result', ''),
+                    'running': _auto_sync_status['running'],
+                }
+            })
+        except Exception as e:
+            return jsonify({'success': False, 'message': str(e)})
+
+    # POST: 更新配置
+    try:
+        enabled = request.form.get('enabled', '').lower() == 'true'
+        cron_expr = (request.form.get('cron', '')).strip()
+
+        # 验证 cron 表达式
+        if enabled:
+            if not cron_expr:
+                return jsonify({'success': False, 'message': '请填写cron表达式'})
+            trigger = _parse_cron_expr(cron_expr)
+            if trigger is None:
+                return jsonify({'success': False, 'message': 'cron表达式格式错误（应为5段：分 时 日 月 周）'})
+
+        douban.update_config(lambda cfg: cfg.update({
+            'auto_sync_enabled': enabled,
+            'auto_sync_cron': cron_expr,
+        }))
+
+        # 重新调度
+        _reschedule_auto_sync()
+
+        status = '已启用' if enabled else '已关闭'
+        logger.info(f'[豆瓣自动同步] 配置更新: {status}, cron={cron_expr}')
+        return jsonify({'success': True, 'message': f'自动同步{status}'})
+    except Exception as e:
+        logger.error(f'[豆瓣自动同步] 配置失败: {e}')
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/douban/auto_sync_now', methods=['POST'])
+def douban_auto_sync_now():
+    """手动触发一次自动同步"""
+    if _auto_sync_status['running']:
+        return jsonify({'success': False, 'message': '同步正在进行中，请稍候'})
+    # 异步执行，避免请求超时
+    import threading as _threading
+    t = _threading.Thread(target=_do_douban_auto_sync, daemon=True)
+    t.start()
+    return jsonify({'success': True, 'message': '全量同步已启动，请在日志或状态页查看进度'})
+
+
+@app.route('/douban/auto_sync_status')
+def douban_auto_sync_status():
+    """查询自动同步状态"""
+    try:
+        config = douban.load_config()
+        return jsonify({
+            'success': True,
+            'status': {
+                'running': _auto_sync_status['running'],
+                'last_time': _auto_sync_status['last_time'] or config.get('last_sync_time', ''),
+                'last_result': _auto_sync_status['last_result'] or config.get('last_sync_result', ''),
+                'enabled': config.get('auto_sync_enabled', False),
+                'cron': config.get('auto_sync_cron', '0 3 * * *'),
+            }
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
 # ===== 转存历史 =====
 
 @app.route('/history/recent')
@@ -2073,5 +2301,17 @@ def logs_clear():
 
 if __name__ == '__main__':
     debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
+
+    # 初始化豆瓣自动同步调度器
+    # debug 模式下 Werkzeug reloader 会启动两次进程，只在主进程初始化调度器
+    if not debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        try:
+            _scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
+            _scheduler.start()
+            _reschedule_auto_sync()
+            logger.info('[调度器] APScheduler 已启动')
+        except Exception as e:
+            logger.error(f'[调度器] 启动失败: {e}')
+
     # threaded=True: 多线程处理请求，避免 SSE 长连接阻塞其他请求
     app.run(host='0.0.0.0', port=3698, debug=debug, threaded=True)

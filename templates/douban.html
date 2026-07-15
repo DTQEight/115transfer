@@ -35,6 +35,42 @@
             </div>
         </div>
 
+        <!-- 自动同步配置 -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-clock-history me-2"></i>自动同步</span>
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="autoSyncSwitch">
+                    <label class="form-check-label small" for="autoSyncSwitch">启用</label>
+                </div>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">按 cron 表达式定时全量拉取豆瓣观影记录，自动写入数据库（每15部为一页，保持豆瓣顺序）。</p>
+                <div class="mb-3">
+                    <label class="form-label">Cron 表达式</label>
+                    <div class="input-group">
+                        <input type="text" id="autoSyncCron" class="form-control" placeholder="0 3 * * *" value="0 3 * * *">
+                        <button onclick="saveAutoSyncConfig()" class="btn btn-primary">保存</button>
+                    </div>
+                    <div class="form-text">
+                        格式：分 时 日 月 周（标准5段式）。常用：<br>
+                        <code>0 3 * * *</code> = 每天3:00 &nbsp;|&nbsp;
+                        <code>0 */6 * * *</code> = 每6小时 &nbsp;|&nbsp;
+                        <code>0 3 * * 1</code> = 每周一3:00
+                    </div>
+                </div>
+                <div class="d-flex gap-2 mb-3">
+                    <button onclick="triggerAutoSyncNow()" class="btn btn-outline-primary btn-sm" id="syncNowBtn">
+                        <i class="bi bi-play-circle me-1"></i>立即同步一次
+                    </button>
+                    <button onclick="loadAutoSyncStatus()" class="btn btn-outline-secondary btn-sm">
+                        <i class="bi bi-arrow-clockwise me-1"></i>刷新状态
+                    </button>
+                </div>
+                <div id="autoSyncStatus" class="small"></div>
+            </div>
+        </div>
+
         <div class="card mb-4">
             <div class="card-header">
                 <i class="bi bi-cloud-download me-2"></i>同步电影
@@ -66,6 +102,91 @@ var doubanMovies = [];
 var currentPage = 1;
 var totalPages = 0;
 var totalMovies = 0;
+
+// ===== 自动同步相关 =====
+async function loadAutoSyncConfig() {
+    try {
+        var resp = await apiFetch('/douban/auto_sync_config');
+        if (!resp.ok) return;
+        var result = await resp.json();
+        if (result.success && result.config) {
+            document.getElementById('autoSyncSwitch').checked = result.config.auto_sync_enabled || false;
+            if (result.config.auto_sync_cron) {
+                document.getElementById('autoSyncCron').value = result.config.auto_sync_cron;
+            }
+        }
+    } catch (e) {
+        console.error('加载自动同步配置失败:', e);
+    }
+}
+
+async function saveAutoSyncConfig() {
+    var enabled = document.getElementById('autoSyncSwitch').checked;
+    var cron = document.getElementById('autoSyncCron').value.trim();
+    try {
+        var resp = await apiFetch('/douban/auto_sync_config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'enabled=' + enabled + '&cron=' + encodeURIComponent(cron)
+        });
+        var result = await resp.json();
+        showToast(result.message || (result.success ? '保存成功' : '保存失败'), result.success ? 'success' : 'danger');
+    } catch (e) {
+        showToast('保存失败: ' + e.message, 'danger');
+    }
+}
+
+async function triggerAutoSyncNow() {
+    var btn = document.getElementById('syncNowBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>同步中...';
+    try {
+        var resp = await apiFetch('/douban/auto_sync_now', { method: 'POST' });
+        var result = await resp.json();
+        showToast(result.message || '已触发', result.success ? 'success' : 'danger');
+        if (result.success) {
+            // 5秒后开始轮询状态
+            setTimeout(loadAutoSyncStatus, 5000);
+        }
+    } catch (e) {
+        showToast('触发失败: ' + e.message, 'danger');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-circle me-1"></i>立即同步一次';
+    }
+}
+
+async function loadAutoSyncStatus() {
+    var el = document.getElementById('autoSyncStatus');
+    try {
+        var resp = await apiFetch('/douban/auto_sync_status');
+        if (!resp.ok) { el.innerHTML = '<span class="text-muted">状态获取失败</span>'; return; }
+        var result = await resp.json();
+        if (result.success && result.status) {
+            var s = result.status;
+            var html = '';
+            if (s.running) {
+                html += '<div class="alert alert-info py-2 mb-2"><i class="bi bi-arrow-repeat me-1"></i>正在同步中...</div>';
+            }
+            html += '<div class="d-flex flex-column gap-1">';
+            html += '<div><span class="text-muted">启用状态:</span> ' + (s.enabled ? '<span class="badge bg-success">已启用</span>' : '<span class="badge bg-secondary">未启用</span>') + '</div>';
+            if (s.cron) html += '<div><span class="text-muted">Cron:</span> <code>' + escapeHtml(s.cron) + '</code></div>';
+            if (s.last_time) html += '<div><span class="text-muted">上次同步:</span> ' + escapeHtml(s.last_time) + '</div>';
+            if (s.last_result) html += '<div><span class="text-muted">结果:</span> ' + escapeHtml(s.last_result) + '</div>';
+            html += '</div>';
+            el.innerHTML = html;
+            // 如果正在同步，5秒后自动刷新
+            if (s.running) {
+                setTimeout(loadAutoSyncStatus, 5000);
+            }
+        }
+    } catch (e) {
+        el.innerHTML = '<span class="text-danger">状态获取失败: ' + escapeHtml(e.message) + '</span>';
+    }
+}
+
+loadAutoSyncConfig();
+loadAutoSyncStatus();
 
 async function saveConfig() {
     const userId = document.getElementById('userId').value.trim();

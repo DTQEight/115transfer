@@ -244,3 +244,56 @@ def check_cookie(user_id):
     if err:
         return False, err
     return True, f'Cookie有效，本页获取到{len(movies)}部电影，页面报告共{total}部'
+
+
+def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
+    """获取用户所有看过的电影（慢速版，用于自动同步）
+
+    与 fetch_all_watched_movies 相同，但每页间隔加大到 page_delay 秒，
+    避免触发豆瓣限流机制。首次全量拉取时特别重要。
+
+    Args:
+        user_id: 豆瓣用户ID
+        max_pages: 最大分页数
+        page_delay: 每页请求间隔（秒），默认2秒
+
+    Returns:
+        (all_movies, error_msg)
+    """
+    config = load_config()
+    cookie = decrypt(config.get('cookie', ''))
+    if not cookie:
+        return [], '未配置豆瓣Cookie'
+
+    all_movies = []
+    start = 0
+    per_page = 15
+    total = None
+    pages = 0
+
+    while pages < max_pages:
+        movies, count, err = fetch_watched_movies(user_id, start, per_page)
+        if err:
+            if all_movies:
+                logging.getLogger('douban').warning(f'[豆瓣自动同步] 第{pages+1}页出错但已有{len(all_movies)}条，提前返回: {err}')
+                break
+            return [], err
+
+        if total is None:
+            total = count
+
+        all_movies.extend(movies)
+        pages += 1
+
+        if total is not None and len(all_movies) >= total:
+            break
+        if len(movies) < per_page:
+            break
+        if not movies:
+            break
+
+        start += per_page
+        time.sleep(page_delay)  # 慢速间隔，防限流
+
+    return all_movies, None
+

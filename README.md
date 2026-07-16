@@ -1,6 +1,6 @@
 # 🎬 115Transfer - 电影磁力链接管理与115转存工具
 
-一个基于 Flask 的电影磁力链接管理 Web 应用，支持115网盘离线转存和企业微信集成，可以部署在 NAS 上通过浏览器访问。
+一个基于 Flask 的电影磁力链接管理 Web 应用，支持115网盘离线转存、豆瓣观影同步、企业微信集成，可部署在 NAS 上通过浏览器访问。
 
 ## ✨ 功能特点
 
@@ -15,15 +15,37 @@
 - ☁️ 支持115网盘离线转存（单个/批量）
 - 📂 115网盘目录管理（浏览、设置默认转存目录）
 
+### 豆瓣观影同步
+- 🎯 一键拉取豆瓣"看过的电影"列表
+- ⏰ 定时自动全量同步（cron 表达式，应用内调度）
+- 🐢 慢速拉取防限流（每页间隔 2 秒）
+- 🔀 严格保持豆瓣顺序（页码 = 豆瓣页码，序号 = 页内位置）
+- 📊 同步统计仪表盘（总数、页码数、磁链完整度、转存统计、最近记录）
+
+### 百度论坛磁链搜索
+- 🔎 论坛帖子搜索与磁力链接提取
+- 🧵 帖子详情解析
+
+### 媒体识别整理
+- 🎬 TMDB 元数据识别
+- 📁 网盘文件自动分类整理
+
 ### 企业微信端
-- � 通过企业微信发送消息添加电影
+- 💬 通过企业微信发送消息添加电影
 - 📊 点击菜单查看电影列表（按页码浏览）
 - 🔄 选择页码批量转存到115网盘
 - 📁 浏览和设置115网盘转存目录
 - 📂 在115网盘创建新目录
 - 🔗 直接发送磁力链接自动转存到115网盘
 
-## �🐳 Docker 部署
+### 安全特性
+- 🔐 登录密码保护 + 登录限速（5分钟5次）
+- 🛡️ CSRF 令牌防护
+- 🔒 敏感配置（Cookie/Token/API Key）AES-GCM 加密存储
+- 🌐 CORS 白名单
+- 📝 JSON 格式日志 + 实时 SSE 推送
+
+## 🐳 Docker 部署
 
 ### 使用 docker-compose（推荐）
 ```yaml
@@ -44,7 +66,10 @@ services:
       # 安全相关配置，请务必修改为强随机值
       - APP_PASSWORD=your_strong_password_here
       - FLASK_SECRET_KEY=your_random_32_byte_hex_here
+      - ENCRYPTION_KEY=                # 可选，留空则回退到 FLASK_SECRET_KEY
       - ALLOWED_ORIGINS=http://your-nas-ip:3698
+      - WECHAT_PROXY_TOKEN=            # 可选，保护 /wechat/proxy 接口
+      - HTTPS_ENABLED=false            # 启用 HTTPS 时设为 true
 ```
 
 > **安全提示**：`APP_PASSWORD` 和 `FLASK_SECRET_KEY` 必须修改为强随机值。完整环境变量说明见 `.env.example`。
@@ -60,17 +85,32 @@ docker-compose up -d
 
 ```
 ├── app.py                  # Flask 应用主程序
-├── cloud115.py             # 115网盘API模块
-├── wechat_work.py          # 企业微信API模块
+├── crypto_utils.py         # AES-GCM 加密工具（统一入口）
+├── cloud115.py             # 115网盘 API 模块
+├── wechat_work.py          # 企业微信 API 模块
+├── douban.py               # 豆瓣观影同步模块
+├── baidu_forum.py          # 百度论坛搜索模块
+├── transfer_history.py     # 转存历史记录模块
+├── media/                  # 媒体识别整理
+│   ├── scanner.py          #   网盘文件扫描
+│   ├── tmdb.py             #   TMDB 元数据
+│   ├── classifier.py       #   分类器
+│   └── organizer.py        #   整理器
+├── templates/              # HTML 模板
+│   ├── base.html           #   基础模板
+│   ├── login.html          #   登录页
+│   ├── index.html          #   主页（含统计仪表盘）
+│   ├── search.html         #   搜索结果
+│   ├── baidu.html          #   论坛配置与搜索
+│   ├── douban.html         #   豆瓣同步与自动同步配置
+│   ├── media.html          #   媒体识别整理
+│   └── logs.html           #   实时日志
 ├── Dockerfile              # Docker 镜像构建文件
 ├── docker-compose.yml      # Docker Compose 配置
 ├── requirements.txt        # Python 依赖
+├── .env.example            # 环境变量示例
 ├── VERSION                 # 版本号
-├── README.md               # 项目说明
-└── templates/              # HTML 模板
-    ├── base.html           # 基础模板（含企业微信设置）
-    ├── index.html          # 主页面
-    └── search.html         # 搜索结果页面
+└── README.md               # 项目说明
 ```
 
 ## 🔧 技术栈
@@ -78,10 +118,27 @@ docker-compose up -d
 - Python 3.9
 - Flask 2.3.3
 - pandas 2.1.4
+- APScheduler 3.10.4（定时调度）
+- flask-cors 4.0.0（CORS 白名单）
+- python-json-logger 2.0.7（JSON 日志）
+- pycryptodome 3.20.0（企业微信消息加解密 + AES-GCM 配置加密）
 - Bootstrap 5
-- pycryptodome（企业微信消息加解密）
 
-## � 企业微信配置
+## 🔐 环境变量
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `APP_PASSWORD` | 是 | 登录密码，请修改为强密码 |
+| `FLASK_SECRET_KEY` | 是 | Flask 会话密钥（32字节强随机值） |
+| `ALLOWED_ORIGINS` | 是 | CORS 白名单（逗号分隔的源） |
+| `ENCRYPTION_KEY` | 否 | 敏感配置加密密钥，留空则回退到 `FLASK_SECRET_KEY` |
+| `WECHAT_PROXY_TOKEN` | 否 | 保护 `/wechat/proxy` 写入接口 |
+| `HTTPS_ENABLED` | 否 | 启用 HTTPS 时设为 `true`（强制 Secure cookie） |
+| `FLASK_DEBUG` | 否 | 调试模式，默认 `false` |
+| `TZ` | 否 | 时区，默认 `Asia/Shanghai` |
+| `DATA_DIR` | 否 | 数据目录，默认 `/app/data` |
+
+## 💬 企业微信配置
 
 ### 1. 创建企业微信应用
 1. 登录企业微信管理后台
@@ -124,5 +181,10 @@ docker-compose up -d
 ## 📄 数据文件
 
 - 电影数据：`/app/data/movies_data.xlsx`
+- 转存历史：`/app/data/transfer_history.json`（90天自动清理，上限5000条）
 - 115配置：`/app/data/cloud115_config.json`
 - 企业微信配置：`/app/data/wechat_work_config.json`
+- 豆瓣配置：`/app/data/douban_config.json`
+- 论坛配置：`/app/data/baidu_forum_config.json`
+- 应用日志：`/app/data/app.log`（轮转：单文件10MB，保留5个备份）
+- 数据备份：`/app/data/backups/`

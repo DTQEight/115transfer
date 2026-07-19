@@ -10,7 +10,8 @@ import json
 import os
 import threading
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
+from typing import Any, Dict, List, Optional
 
 # 历史记录文件路径（与 Excel 同目录）
 _HISTORY_FILE: Optional[str] = None
@@ -28,13 +29,12 @@ def _get_history_file() -> str:
     return _HISTORY_FILE
 
 
+_BJ_TZ = ZoneInfo("Asia/Shanghai")
+
+
 def _now_iso() -> str:
-    """当前北京时间 ISO 格式字符串"""
-    try:
-        from app import get_beijing_time
-        return get_beijing_time().isoformat()
-    except Exception:
-        return datetime.now().isoformat()
+    """当前北京时间 ISO 格式字符串（带时区）"""
+    return datetime.now(_BJ_TZ).isoformat()
 
 
 def _load() -> List[Dict[str, Any]]:
@@ -66,7 +66,7 @@ def _cleanup(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """清理过期记录（90天前 或 超过最大数量）"""
     if not records:
         return records
-    cutoff = datetime.now() - timedelta(days=_RETENTION_DAYS)
+    cutoff = datetime.now(_BJ_TZ) - timedelta(days=_RETENTION_DAYS)
     kept: List[Dict[str, Any]] = []
     for r in records:
         ts = r.get('time', '')
@@ -172,7 +172,7 @@ def get_statistics() -> Dict[str, Any]:
     with _history_lock:
         records = _load()
 
-    today_str = datetime.now().strftime('%Y-%m-%d')
+    today_str = datetime.now(_BJ_TZ).strftime('%Y-%m-%d')
     today_success = 0
     today_fail = 0
     total_success = 0

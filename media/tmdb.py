@@ -5,7 +5,7 @@ import json
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
+
 
 TMDB_BASE_URL = 'https://api.themoviedb.org/3'
 
@@ -213,7 +213,7 @@ def _format_tv_result(detail):
         'genres': [g.get('name', '') for g in detail.get('genres', [])],
         'genre_ids': [g.get('id') for g in detail.get('genres', [])],
         'original_language': detail.get('original_language', ''),
-        'production_countries': [c.get('iso_3166_1', '') for c in detail.get('origin_country', [])],
+        'production_countries': list(detail.get('origin_country', [])),
         'overview': detail.get('overview', ''),
         'poster_path': detail.get('poster_path', ''),
         'vote_average': detail.get('vote_average', 0),

@@ -8,7 +8,6 @@ import glob as glob_mod
 from datetime import datetime, timedelta
 import zoneinfo
 import threading
-import hashlib
 import logging
 import time
 import queue
@@ -16,7 +15,7 @@ from typing import List, Dict, Any, Optional, Tuple, Callable, Union
 from logging.handlers import RotatingFileHandler
 
 # 加密工具统一入口：避免在多个模块重复实现加密逻辑
-from crypto_utils import encrypt, decrypt
+from crypto_utils import encrypt
 
 import cloud115
 import wechat_work
@@ -272,7 +271,7 @@ def login() -> Union[str, Response]:
             return render_template('login.html', error=error, version=VERSION,
                                   strict_password=STRICT_PASSWORD), 429
         password: str = request.form.get('password', '')
-        if password == APP_PASSWORD:
+        if secrets.compare_digest(password, APP_PASSWORD):
             _clear_login_attempts(client_ip)
             session.clear()  # 清除旧 session 防止固定会话攻击
             session['logged_in'] = True
@@ -1213,7 +1212,7 @@ def wechat_proxy():
         proxy_token = os.environ.get('WECHAT_PROXY_TOKEN', '')
         if proxy_token:
             provided = request.headers.get('X-Proxy-Token') or request.form.get('proxy_token') or request.args.get('proxy_token', '')
-            if provided != proxy_token:
+            if not secrets.compare_digest(provided, proxy_token):
                 return jsonify({'success': False, 'message': '未授权访问'}), 403
 
         content_type = request.content_type or ''
@@ -1924,11 +1923,12 @@ _auto_sync_status: Dict[str, Any] = {'running': False, 'last_result': '', 'last_
 
 def _do_douban_auto_sync():
     """执行豆瓣全量自动同步（由调度器调用）"""
-    if _auto_sync_lock.locked():
+    # 原子地检查并获取锁，避免 TOCTOU 竞态条件
+    if not _auto_sync_lock.acquire(blocking=False):
         logger.info('[豆瓣自动同步] 上一次同步仍在执行，跳过')
         return
 
-    with _auto_sync_lock:
+    try:
         _auto_sync_status['running'] = True
         try:
             config = douban.load_config()
@@ -2069,6 +2069,8 @@ def _do_douban_auto_sync():
             _auto_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
         finally:
             _auto_sync_status['running'] = False
+    finally:
+        _auto_sync_lock.release()
 
 
 def _parse_cron_expr(cron_expr: str) -> Optional[CronTrigger]:

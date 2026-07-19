@@ -63,11 +63,6 @@ def _get_headers():
     }
 
 
-def _has_chinese(text):
-    """判断字符串是否包含中文字符"""
-    return bool(re.search(r'[\u4e00-\u9fa5]', text or ''))
-
-
 def fetch_watched_movies(user_id, start=0, count=15):
     """获取用户看过的电影列表（单页）
     返回: (movie_list, total_count, error_msg)

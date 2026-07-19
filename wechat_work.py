@@ -1,7 +1,6 @@
 import hashlib
 import base64
 import struct
-import socket
 import time
 import random
 import string
@@ -150,7 +149,7 @@ class WeChatCrypto:
         if len(decrypted) < 20:
             raise ValueError('解密内容过短')
         content_len = struct.unpack('>I', decrypted[16:20])[0]
-        if content_len < 0 or 20 + content_len > len(decrypted):
+        if 20 + content_len > len(decrypted):
             raise ValueError('内容长度字段非法')
         content = decrypted[20:20 + content_len].decode('utf-8')
         from_id = decrypted[20 + content_len:].decode('utf-8')

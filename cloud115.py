@@ -3,7 +3,7 @@ import json
 import os
 import time
 import threading
-from typing import Optional, List, Tuple, Any
+from typing import Optional
 
 # 加密工具统一入口
 from crypto_utils import encrypt, decrypt
@@ -198,7 +198,8 @@ def batch_add_offline_tasks(magnet_urls, save_path_id=None):
     results = []
     for magnet in magnet_urls:
         success, msg = add_offline_task(magnet, save_path_id)
-        results.append({'magnet': magnet[:50] + '...', 'success': success, 'message': msg})
+        # magnet 保留完整值供调用方匹配电影，display_magnet 用于展示
+        results.append({'magnet': magnet, 'display_magnet': magnet[:50] + '...', 'success': success, 'message': msg})
         if success:
             time.sleep(1)
     return results
@@ -349,8 +350,6 @@ def move_files(file_ids, target_cid):
         for i, fid in enumerate(file_ids):
             data[f'fid[{i}]'] = fid
         resp = _request_with_retry('POST', url, max_retries=3, headers=_get_headers(), data=data, timeout=30)
-        if resp is None:
-            return False, '请求失败'
         result = resp.json()
         if result.get('errno') == 0 or result.get('state') is True:
             return True, '移动成功'

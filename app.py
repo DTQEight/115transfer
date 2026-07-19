@@ -1400,6 +1400,57 @@ def media_identify():
         return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
 
 
+@app.route('/movies/posters', methods=['POST'])
+def movies_posters():
+    """批量获取电影海报 URL（用于封面墙视图）
+
+    请求参数:
+        names: JSON 字符串，电影名列表 ['电影名1', '电影名2', ...]
+
+    返回:
+        {
+            'success': True,
+            'posters': {'电影名1': {'url': '...', 'year': '2019'}, ...}
+        }
+    """
+    import json as _json
+    from media.tmdb import identify_media, get_tmdb_api_key
+
+    # 未配置 TMDB API Key 时直接返回空，避免无效查询
+    if not get_tmdb_api_key():
+        return jsonify({'success': False, 'message': '未配置TMDB API Key', 'posters': {}})
+
+    names_json = request.form.get('names', '[]')
+    try:
+        names: List[str] = _json.loads(names_json)
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'message': 'names 参数格式错误'}), 400
+
+    if not isinstance(names, list) or len(names) == 0:
+        return jsonify({'success': True, 'posters': {}})
+
+    # 限制单次查询数量，避免请求过多
+    if len(names) > 50:
+        names = names[:50]
+
+    posters: Dict[str, Dict[str, str]] = {}
+    try:
+        for name in names:
+            if not name or not isinstance(name, str):
+                continue
+            result, err = identify_media(name)
+            if result and result.get('poster_path'):
+                posters[name] = {
+                    'url': f"https://image.tmdb.org/t/p/w300{result['poster_path']}",
+                    'year': result.get('year', ''),
+                    'rating': str(result.get('vote_average', '')) if result.get('vote_average') else '',
+                }
+        return jsonify({'success': True, 'posters': posters})
+    except Exception as e:
+        logger.error(f'[电影海报] 批量获取失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
+
+
 @app.route('/media/identify_batch', methods=['POST'])
 def media_identify_batch():
     """批量识别媒体（并发）"""

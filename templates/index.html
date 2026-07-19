@@ -23,6 +23,90 @@
         display: none;
     }
 }
+
+/* 封面墙视图样式 */
+.poster-card {
+    position: relative;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--bs-body-bg, #fff);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.poster-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 6px 16px rgba(0,0,0,0.25);
+}
+.poster-card .poster-img {
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    object-fit: cover;
+    background: #f0f0f0;
+    display: block;
+}
+.poster-card .poster-placeholder {
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: #fff;
+    font-size: 0.85rem;
+    text-align: center;
+    padding: 8px;
+    word-break: break-all;
+}
+.poster-card .poster-info {
+    padding: 6px 8px;
+    background: var(--bs-body-bg, #fff);
+}
+.poster-card .poster-title {
+    font-size: 0.8rem;
+    font-weight: 500;
+    margin-bottom: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--bs-body-color, #333);
+}
+.poster-card .poster-meta {
+    font-size: 0.7rem;
+    color: #6c757d;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.poster-card .poster-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: rgba(0,0,0,0.6);
+    color: #fff;
+    font-size: 0.65rem;
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+.poster-card .poster-badge.empty {
+    background: rgba(255,193,7,0.9);
+    color: #000;
+}
+.poster-card .poster-badge.filled {
+    background: rgba(40,167,69,0.9);
+    color: #fff;
+}
+.poster-card .poster-rating {
+    position: absolute;
+    bottom: 50px;
+    left: 6px;
+    background: rgba(0,0,0,0.7);
+    color: #ffc107;
+    font-size: 0.7rem;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-weight: 600;
+}
 {% endblock %}
 
 {% block content %}
@@ -210,12 +294,23 @@
         </div>
 
         <div class="card">
-            <div class="card-header">
-                <i class="bi bi-collection-play me-2"></i>电影列表
-                <span class="text-muted small ms-2">(双击磁力链接复制)</span>
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <span>
+                    <i class="bi bi-collection-play me-2"></i>电影列表
+                    <span class="text-muted small ms-2" id="listHint">(双击磁力链接复制)</span>
+                </span>
+                <div class="btn-group btn-group-sm" role="group">
+                    <button type="button" class="btn btn-outline-secondary active" id="viewListBtn" onclick="switchView('list')" title="列表视图">
+                        <i class="bi bi-list-ul"></i>
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" id="viewWallBtn" onclick="switchView('wall')" title="封面墙视图">
+                        <i class="bi bi-grid-3x3-gap"></i>
+                    </button>
+                </div>
             </div>
             <div class="card-body p-0">
-                <div class="table-responsive">
+                <!-- 列表视图 -->
+                <div id="listView" class="table-responsive">
                     <table class="table table-hover mb-0">
                         <thead>
                             <tr>
@@ -288,6 +383,14 @@
                         </tbody>
                     </table>
                 </div>
+                <!-- 封面墙视图 -->
+                <div id="wallView" class="p-3" style="display:none;">
+                    <div id="posterWall" class="row row-cols-2 row-cols-sm-3 row-cols-md-4 row-cols-lg-5 row-cols-xl-6 g-3">
+                        <div class="col-12 text-center text-muted py-5">
+                            <div class="spinner-border spinner-border-sm me-2"></div>加载中...
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -317,6 +420,149 @@
 {% endblock %}
 
 {% block extra_script %}
+        // ==================== 封面墙视图 ====================
+        var _posterCache = {};  // 电影名 -> 海报信息
+        var _wallLoaded = false;  // 封面墙是否已加载过
+
+        // 切换视图
+        function switchView(view) {
+            var listView = document.getElementById('listView');
+            var wallView = document.getElementById('wallView');
+            var listBtn = document.getElementById('viewListBtn');
+            var wallBtn = document.getElementById('viewWallBtn');
+            var hint = document.getElementById('listHint');
+
+            if (view === 'wall') {
+                if (listView) listView.style.display = 'none';
+                if (wallView) wallView.style.display = 'block';
+                if (listBtn) listBtn.classList.remove('active');
+                if (wallBtn) wallBtn.classList.add('active');
+                if (hint) hint.textContent = '(点击海报转存/复制磁链)';
+                if (!_wallLoaded) {
+                    loadPosterWall();
+                    _wallLoaded = true;
+                }
+            } else {
+                if (listView) listView.style.display = 'block';
+                if (wallView) wallView.style.display = 'none';
+                if (listBtn) listBtn.classList.add('active');
+                if (wallBtn) wallBtn.classList.remove('active');
+                if (hint) hint.textContent = '(双击磁力链接复制)';
+            }
+        }
+
+        // 从当前页面 DOM 收集电影信息
+        function collectMoviesFromDom() {
+            var movies = [];
+            var rows = document.querySelectorAll('.movie-row');
+            rows.forEach(function(row) {
+                var id = row.getAttribute('data-id');
+                var nameEl = row.querySelector('.fw-medium');
+                var magnetInput = row.querySelector('.magnet-input');
+                var name = nameEl ? nameEl.textContent.trim() : '';
+                var magnet = magnetInput ? magnetInput.value : '';
+                var page = magnetInput ? magnetInput.getAttribute('data-page') : '';
+                movies.push({
+                    id: id,
+                    name: name,
+                    page: page,
+                    magnet: magnet,
+                    is_empty: !magnet || magnet.trim() === ''
+                });
+            });
+            return movies;
+        }
+
+        // 加载封面墙
+        async function loadPosterWall() {
+            var container = document.getElementById('posterWall');
+            if (!container) return;
+
+            var movies = collectMoviesFromDom();
+            if (movies.length === 0) {
+                container.innerHTML = '<div class="col-12 text-center text-muted py-5"><i class="bi bi-inbox" style="font-size:2rem;display:block;margin-bottom:0.5rem;"></i>暂无电影数据</div>';
+                return;
+            }
+
+            // 先用本地数据渲染（无海报的显示占位）
+            renderPosterWall(movies, {});
+
+            // 批量获取海报
+            var names = movies.map(function(m) { return m.name; }).filter(function(n) { return n && !_posterCache[n]; });
+            if (names.length === 0) {
+                renderPosterWall(movies, _posterCache);
+                return;
+            }
+
+            try {
+                var resp = await apiFetch('/movies/posters', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'names=' + encodeURIComponent(JSON.stringify(names))
+                });
+                var result = await resp.json();
+                if (result.success && result.posters) {
+                    // 合并到缓存
+                    for (var k in result.posters) {
+                        _posterCache[k] = result.posters[k];
+                    }
+                    renderPosterWall(movies, _posterCache);
+                } else if (!result.success && result.message && result.message.indexOf('TMDB') >= 0) {
+                    // 未配置 TMDB，显示提示
+                    var banner = document.createElement('div');
+                    banner.className = 'col-12 alert alert-warning small';
+                    banner.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>未配置TMDB API Key，无法显示海报。请到"媒体识别整理"页面配置。';
+                    container.insertBefore(banner, container.firstChild);
+                }
+            } catch (e) {
+                console.error('[封面墙] 加载海报失败:', e);
+            }
+        }
+
+        // 渲染封面墙
+        function renderPosterWall(movies, posters) {
+            var container = document.getElementById('posterWall');
+            if (!container) return;
+            var html = '';
+            movies.forEach(function(m) {
+                var poster = posters[m.name];
+                var imgHtml = '';
+                if (poster && poster.url) {
+                    imgHtml = '<img class="poster-img" src="' + escapeHtml(poster.url) + '" alt="' + escapeHtml(m.name) + '" loading="lazy" onerror="this.outerHTML=\'<div class=&quot;poster-placeholder&quot;>' + escapeHtml(m.name) + '</div>\'">';
+                    if (poster.rating && poster.rating !== '0' && poster.rating !== '0.0') {
+                        imgHtml += '<span class="poster-rating">★ ' + escapeHtml(poster.rating) + '</span>';
+                    }
+                } else {
+                    imgHtml = '<div class="poster-placeholder">' + escapeHtml(m.name) + '</div>';
+                }
+
+                var badge = '';
+                if (m.is_empty) {
+                    badge = '<span class="poster-badge empty">未填磁链</span>';
+                } else {
+                    badge = '<span class="poster-badge filled">已填磁链</span>';
+                }
+
+                var yearText = (poster && poster.year) ? escapeHtml(poster.year) : '';
+                var action = m.is_empty ? '' : ' onclick="transferTo115(' + m.id + ', ' + m.page + ')" title="点击转存到115"';
+
+                html += '<div class="col">' +
+                    '<div class="poster-card"' + action + '>' +
+                        imgHtml +
+                        badge +
+                        '<div class="poster-info">' +
+                            '<div class="poster-title" title="' + escapeHtml(m.name) + '">' + escapeHtml(m.name) + '</div>' +
+                            '<div class="poster-meta">' +
+                                '<span>第' + escapeHtml(m.page) + '页</span>' +
+                                '<span>' + yearText + '</span>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+            });
+            container.innerHTML = html;
+        }
+
         // 加载统计仪表盘（转存统计+最近记录）
         async function loadDashboard() {
             try {

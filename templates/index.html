@@ -331,7 +331,7 @@
                                 </td>
                                 <td class="text-muted">{{ movie.id }}</td>
                                 <td class="hide-mobile"><span class="badge-page">{{ movie.page }}</span></td>
-                                <td class="fw-medium">{{ movie.name }}</td>
+                                <td class="fw-medium" style="cursor:pointer;" onclick="showMovieDetail({{ movie.id }})" title="点击查看详情">{{ movie.name }}</td>
                                 <td>
                                     <input type="text" class="form-control form-control-sm magnet-input {% if movie.is_empty %}border-warning{% endif %}"
                                            value="{{ movie.magnet }}"
@@ -390,6 +390,19 @@
                             <div class="spinner-border spinner-border-sm me-2"></div>加载中...
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 电影详情侧滑面板 -->
+        <div class="offcanvas offcanvas-end" tabindex="-1" id="movieDetailOffcanvas" style="width: 420px;">
+            <div class="offcanvas-header border-bottom">
+                <h5 class="offcanvas-title"><i class="bi bi-info-circle me-2"></i>电影详情</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
+            </div>
+            <div class="offcanvas-body p-0">
+                <div id="detailContent" class="d-flex justify-content-center align-items-center" style="min-height: 200px;">
+                    <div class="spinner-border spinner-border-sm text-primary me-2"></div>加载中...
                 </div>
             </div>
         </div>
@@ -561,6 +574,146 @@
                 '</div>';
             });
             container.innerHTML = html;
+        }
+
+        // ==================== 电影详情侧滑面板 ====================
+        var _detailOffcanvas = null;
+
+        async function showMovieDetail(movieId) {
+            var content = document.getElementById('detailContent');
+            if (!content) return;
+
+            // 显示加载中
+            content.innerHTML = '<div class="spinner-border spinner-border-sm text-primary me-2"></div>加载中...';
+
+            // 打开侧滑面板
+            if (!_detailOffcanvas) {
+                _detailOffcanvas = new bootstrap.Offcanvas(document.getElementById('movieDetailOffcanvas'));
+            }
+            _detailOffcanvas.show();
+
+            try {
+                var resp = await apiFetch('/movies/detail/' + movieId);
+                var result = await resp.json();
+                if (!result.success) {
+                    content.innerHTML = '<div class="alert alert-danger m-3">' + escapeHtml(result.message || '加载失败') + '</div>';
+                    return;
+                }
+                renderMovieDetail(result);
+            } catch (e) {
+                content.innerHTML = '<div class="alert alert-danger m-3">加载失败: ' + escapeHtml(e.message) + '</div>';
+            }
+        }
+
+        function renderMovieDetail(data) {
+            var content = document.getElementById('detailContent');
+            var m = data.movie || {};
+            var tmdb = data.tmdb || null;
+            var history = data.history || [];
+
+            var html = '';
+
+            // 顶部：海报+基本信息
+            html += '<div class="p-3 border-bottom">';
+            html += '<div class="d-flex gap-3">';
+            // 海报
+            if (tmdb && tmdb.url) {
+                html += '<img src="' + escapeHtml(tmdb.url) + '" style="width:90px;height:135px;object-fit:cover;border-radius:4px;" alt="海报" onerror="this.style.display=\'none\'">';
+            } else {
+                html += '<div style="width:90px;height:135px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:4px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.7rem;text-align:center;padding:4px;">' + escapeHtml(m.name) + '</div>';
+            }
+            // 信息
+            html += '<div class="flex-grow-1">';
+            html += '<h5 class="mb-1">' + escapeHtml(m.name) + '</h5>';
+            if (tmdb && tmdb.year) {
+                html += '<div class="text-muted small mb-1">年份: ' + escapeHtml(tmdb.year) + '</div>';
+            }
+            if (tmdb && tmdb.rating && tmdb.rating !== '0' && tmdb.rating !== '0.0') {
+                html += '<div class="small mb-1"><span class="badge bg-warning text-dark">★ ' + escapeHtml(tmdb.rating) + '</span></div>';
+            }
+            html += '<div class="text-muted small mb-1">页码: 第' + escapeHtml(m.page) + '页 / 序号: ' + escapeHtml(m.id) + '</div>';
+            html += '<div class="text-muted small mb-1">保存时间: ' + escapeHtml(m.save_time) + '</div>';
+            html += '</div>';
+            html += '</div>';
+
+            // 磁链状态徽章
+            if (m.is_empty) {
+                html += '<span class="badge bg-warning text-dark mt-2">未填磁链</span>';
+            } else {
+                html += '<span class="badge bg-success mt-2">已填磁链</span>';
+            }
+            html += '</div>';
+
+            // 操作按钮区
+            html += '<div class="p-3 border-bottom">';
+            html += '<div class="d-flex flex-wrap gap-2">';
+            html += '<button class="btn btn-sm btn-outline-primary" onclick="showEditModal(' + m.id + ', ' + m.page + ', \'' + escapeHtml(m.name).replace(/'/g, "\\'") + '\', \'' + escapeHtml(m.magnet).replace(/'/g, "\\'") + '\')"><i class="bi bi-pencil me-1"></i>编辑</button>';
+            html += '<button class="btn btn-sm btn-outline-info" onclick="searchMagnetForDetail(' + m.id + ', ' + m.page + ', \'' + escapeHtml(m.name).replace(/'/g, "\\'") + '\')"><i class="bi bi-magnet me-1"></i>搜索磁链</button>';
+            if (!m.is_empty) {
+                html += '<button class="btn btn-sm btn-outline-success" onclick="transferTo115(' + m.id + ', ' + m.page + ')"><i class="bi bi-cloud-upload me-1"></i>转存115</button>';
+                html += '<button class="btn btn-sm btn-outline-secondary" onclick="copyDetailMagnet(' + m.id + ', ' + m.page + ')"><i class="bi bi-clipboard me-1"></i>复制磁链</button>';
+            }
+            html += '<button class="btn btn-sm btn-outline-danger" onclick="deleteMovie(' + m.id + ', ' + m.page + ')"><i class="bi bi-trash me-1"></i>删除</button>';
+            html += '</div>';
+            html += '</div>';
+
+            // 剧情简介
+            if (tmdb && tmdb.overview) {
+                html += '<div class="p-3 border-bottom">';
+                html += '<h6 class="small text-muted mb-2"><i class="bi bi-card-text me-1"></i>剧情简介</h6>';
+                html += '<div class="small" style="max-height:120px;overflow-y:auto;">' + escapeHtml(tmdb.overview) + '</div>';
+                html += '</div>';
+            }
+
+            // 转存历史
+            html += '<div class="p-3">';
+            html += '<h6 class="small text-muted mb-2"><i class="bi bi-clock-history me-1"></i>转存历史 (' + history.length + ')</h6>';
+            if (history.length === 0) {
+                html += '<div class="text-muted small">暂无转存记录</div>';
+            } else {
+                html += '<ul class="list-group list-group-flush">';
+                history.forEach(function(r) {
+                    var time = r.time ? r.time.substring(0, 19).replace('T', ' ') : '';
+                    var badge = r.success ? '<span class="badge bg-success">成功</span>' : '<span class="badge bg-danger">失败</span>';
+                    var source = r.source ? '<span class="badge bg-secondary">' + escapeHtml(r.source) + '</span>' : '';
+                    html += '<li class="list-group-item px-0 py-2 small">';
+                    html += '<div class="d-flex justify-content-between align-items-center mb-1">';
+                    html += '<span>' + badge + ' ' + source + '</span>';
+                    html += '<span class="text-muted">' + escapeHtml(time) + '</span>';
+                    html += '</div>';
+                    if (r.message) {
+                        html += '<div class="text-muted text-truncate" title="' + escapeHtml(r.message) + '">' + escapeHtml(r.message) + '</div>';
+                    }
+                    html += '</li>';
+                });
+                html += '</ul>';
+            }
+            html += '</div>';
+
+            content.innerHTML = html;
+        }
+
+        // 详情面板的辅助操作
+        function searchMagnetForDetail(id, page, name) {
+            // 关闭侧滑面板，触发列表页的搜索磁链按钮
+            if (_detailOffcanvas) _detailOffcanvas.hide();
+            var btn = document.querySelector('.search-magnet-btn[data-id="' + id + '"]');
+            if (btn) btn.click();
+        }
+
+        async function copyDetailMagnet(id, page) {
+            // 复用已有的 copyMagnet 接口
+            try {
+                var resp = await apiFetch('/copy_magnet/' + id + '/' + page);
+                var result = await resp.json();
+                if (result.success) {
+                    showToast('已复制磁链到剪贴板', 'success');
+                } else {
+                    showToast(result.message || '复制失败', 'danger');
+                }
+            } catch (e) {
+                showToast('复制失败: ' + e.message, 'danger');
+            }
         }
 
         // 加载统计仪表盘（转存统计+最近记录）

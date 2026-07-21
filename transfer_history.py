@@ -195,3 +195,19 @@ def get_statistics() -> Dict[str, Any]:
         'total_success': total_success,
         'total_fail': total_fail,
     }
+
+
+def get_by_name(movie_name: str, limit: int = 20) -> List[Dict[str, Any]]:
+    """按电影名查询转存历史（按时间倒序）
+
+    Args:
+        movie_name: 电影名（精确匹配）
+        limit: 最多返回条数
+    """
+    if not movie_name:
+        return []
+    with _history_lock:
+        records = _load()
+    matched = [r for r in records if r.get('movie_name', '') == movie_name]
+    matched.sort(key=lambda x: x.get('time', ''), reverse=True)
+    return matched[:limit]

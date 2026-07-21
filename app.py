@@ -2282,6 +2282,85 @@ def history_statistics():
         return jsonify({'success': False, 'message': str(e), 'statistics': {}})
 
 
+@app.route('/history/by_name/<path:movie_name>')
+def history_by_name(movie_name: str):
+    """按电影名查询转存历史"""
+    try:
+        records = transfer_history.get_by_name(movie_name, limit=20)
+        return jsonify({'success': True, 'records': records})
+    except Exception as e:
+        logger.error(f'[转存历史] 按名查询失败: {e}')
+        return jsonify({'success': False, 'message': str(e), 'records': []})
+
+
+@app.route('/movies/detail/<int:movie_id>')
+def movies_detail(movie_id: int):
+    """获取电影详情（聚合电影信息、TMDB信息、转存历史）
+
+    返回:
+        {
+            'success': True,
+            'movie': {id, page, name, magnet, save_time, is_empty},
+            'tmdb': {url, year, rating} or None,
+            'history': [...]
+        }
+    """
+    try:
+        with data_lock:
+            df = load_movies()
+        if df.empty:
+            return jsonify({'success': False, 'message': '数据为空'}), 404
+
+        row = df[df['序号'] == movie_id]
+        if row.empty:
+            return jsonify({'success': False, 'message': '电影不存在'}), 404
+
+        r = row.iloc[0]
+        magnet = r['磁力链接']
+        is_empty = pd.isna(magnet) or str(magnet).strip() == ''
+        name = str(r['电影名']) if not pd.isna(r['电影名']) else ''
+        magnet_str = '' if is_empty else str(magnet)
+
+        movie = {
+            'id': int(r['序号']),
+            'page': int(r['页码']),
+            'name': name,
+            'magnet': magnet_str,
+            'magnet_display': (magnet_str[:50] + '...') if len(magnet_str) > 50 else magnet_str,
+            'is_empty': is_empty,
+            'save_time': str(r['保存时间']) if not pd.isna(r['保存时间']) else '',
+        }
+
+        # 转存历史
+        history = transfer_history.get_by_name(name, limit=10)
+
+        # TMDB 信息（可选，失败不影响主流程）
+        tmdb_info = None
+        try:
+            from media.tmdb import identify_media, get_tmdb_api_key
+            if get_tmdb_api_key() and name:
+                result, err = identify_media(name)
+                if result and result.get('poster_path'):
+                    tmdb_info = {
+                        'url': f"https://image.tmdb.org/t/p/w300{result['poster_path']}",
+                        'year': result.get('year', ''),
+                        'rating': str(result.get('vote_average', '')) if result.get('vote_average') else '',
+                        'overview': result.get('overview', ''),
+                    }
+        except Exception as te:
+            logger.debug(f'[电影详情] TMDB获取失败: {te}')
+
+        return jsonify({
+            'success': True,
+            'movie': movie,
+            'tmdb': tmdb_info,
+            'history': history,
+        })
+    except Exception as e:
+        logger.error(f'[电影详情] 获取失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
+
+
 # ===== 日志查看 =====
 
 @app.route('/logs')

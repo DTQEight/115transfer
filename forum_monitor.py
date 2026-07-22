@@ -14,12 +14,15 @@ import time
 import uuid
 import sqlite3
 import threading
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
 import baidu_forum
+
+logger = logging.getLogger('115transfer')
 
 # ==================== 路径与常量 ====================
 _DATA_DIR: str = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
@@ -163,6 +166,8 @@ def discover_forums() -> List[Dict[str, str]]:
     s = baidu_forum._get_session()
     r = s.get(baidu_forum.BASE + 'forum.php', timeout=(5, 15))
     r.encoding = 'gbk'
+    logger.info(f'[论坛监控] 首页响应: HTTP {r.status_code}, 长度={len(r.text)}')
+
     forums: List[Dict[str, str]] = []
     seen: set = set()
     for m in _FORUM_LINK_RE.finditer(r.text):
@@ -172,6 +177,25 @@ def discover_forums() -> List[Dict[str, str]]:
             continue
         seen.add(fid)
         forums.append({'fid': fid, 'name': name})
+
+    # 如果标准正则没匹配到，尝试伪静态格式 forum-XX-1.html
+    if not forums:
+        logger.info('[论坛监控] 标准板块链接未匹配，尝试伪静态格式')
+        for m in re.finditer(r'href="forum-(\d+)-\d+\.html"[^>]*>([^<]+)', r.text):
+            fid = m.group(1)
+            name = baidu_forum._strip_html(m.group(2)).strip()
+            if fid in seen or not name:
+                continue
+            seen.add(fid)
+            forums.append({'fid': fid, 'name': name})
+
+    if not forums:
+        # 记录 HTML 片段帮助诊断
+        snippet = r.text[:3000] if len(r.text) > 3000 else r.text
+        logger.warning(f'[论坛监控] 未发现任何板块，HTML片段:\n{snippet}')
+    else:
+        logger.info(f'[论坛监控] 发现 {len(forums)} 个板块: {forums}')
+
     return forums
 
 
@@ -421,11 +445,18 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
         except Exception as e:
             message = f'第{page}页请求失败: {e}'
             status = 'failed'
+            logger.error(f'[论坛监控] {forum_name} 第{page}页请求失败: {e}')
             break
 
         threads, total_pages = parse_forum_page(r.text, fid, forum_name)
+        logger.info(f'[论坛监控] {forum_name} 第{page}页: HTTP {r.status_code}, '
+                    f'解析到{len(threads)}帖, 总页数={total_pages}')
         if not threads:
             message = f'第{page}页无帖子，结束'
+            # 如果第1页就没帖子，记录 HTML 片段帮助诊断
+            if page == 1:
+                snippet = r.text[:2000] if len(r.text) > 2000 else r.text
+                logger.warning(f'[论坛监控] {forum_name}(fid={fid}) 第1页无帖子，HTML片段:\n{snippet}')
             break
 
         threads_found += len(threads)
@@ -538,10 +569,12 @@ def run_full_crawl() -> Dict[str, Any]:
             'threads_found': 0, 'threads_new': 0, 'seeds_downloaded': 0,
             'message': '正在发现板块...'
         })
+        logger.info('[论坛监控] 全量拉取开始')
 
         forums = discover_forums()
         if not forums:
             _monitor_status.update({'running': False, 'message': '未发现任何板块'})
+            logger.warning('[论坛监控] 全量拉取失败：未发现任何板块')
             return {'success': False, 'message': '未发现任何板块，请检查论坛登录状态'}
 
         total_new = 0
@@ -551,6 +584,7 @@ def run_full_crawl() -> Dict[str, Any]:
             if not _monitor_status.get('running', False):
                 _monitor_status['message'] = '已取消'
                 break
+            logger.info(f'[论坛监控] 开始爬取板块: {forum["name"]}(fid={forum["fid"]})')
             result = crawl_forum(
                 forum['fid'], forum['name'], 'full',
                 cfg['page_delay'], cfg['thread_delay'],
@@ -568,6 +602,7 @@ def run_full_crawl() -> Dict[str, Any]:
             'running': False,
             'message': f'全量完成：新增{total_new}帖，下载{total_seeds}种子',
         })
+        logger.info(f'[论坛监控] 全量拉取完成：新增{total_new}帖，下载{total_seeds}种子')
         return {
             'success': True,
             'run_id': run_id,
@@ -577,6 +612,7 @@ def run_full_crawl() -> Dict[str, Any]:
         }
     except Exception as e:
         _monitor_status.update({'running': False, 'message': f'全量失败: {e}'})
+        logger.error(f'[论坛监控] 全量拉取异常: {e}', exc_info=True)
         return {'success': False, 'message': str(e)}
     finally:
         _monitor_lock.release()

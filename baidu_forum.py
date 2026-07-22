@@ -19,6 +19,8 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 CONFIG_FILE = os.path.join(
     os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))),
@@ -90,6 +92,7 @@ def _build_session():
     s = requests.Session()
     s.headers.update({'User-Agent': UA})
     s.trust_env = False  # 忽略系统代理环境变量
+    s.verify = False  # 论坛SSL证书域名不匹配，禁用证书验证
     # 配置连接池：增大连接数，启用重试，复用TCP连接
     retry = Retry(total=2, backoff_factor=0.3,
                   status_forcelist=[500, 502, 503, 504],

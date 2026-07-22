@@ -637,7 +637,6 @@ async function saveMonitorConfig() {
         formData.append('thread_delay', document.getElementById('monitorThreadDelay').value);
         formData.append('max_pages_per_run', document.getElementById('monitorMaxPages').value);
         formData.append('concurrent_threads', document.getElementById('monitorConcurrent').value);
-        formData.append('csrf_token', csrf_token());
         var resp = await apiFetch('/baidu/monitor_config', { method: 'POST', body: formData });
         var data = await resp.json();
         if (data.success) {
@@ -706,7 +705,6 @@ async function startFullCrawl() {
     if (!confirm('全量拉取会遍历所有板块所有页面，可能耗时较长。确认开始？')) return;
     try {
         var formData = new FormData();
-        formData.append('csrf_token', csrf_token());
         var resp = await apiFetch('/baidu/monitor_full', { method: 'POST', body: formData });
         var data = await resp.json();
         if (data.success) {
@@ -723,7 +721,6 @@ async function startFullCrawl() {
 async function startIncremental() {
     try {
         var formData = new FormData();
-        formData.append('csrf_token', csrf_token());
         var resp = await apiFetch('/baidu/monitor_incremental', { method: 'POST', body: formData });
         var data = await resp.json();
         if (data.success) {
@@ -740,7 +737,6 @@ async function startIncremental() {
 async function cancelMonitor() {
     try {
         var formData = new FormData();
-        formData.append('csrf_token', csrf_token());
         var resp = await apiFetch('/baidu/monitor_cancel', { method: 'POST', body: formData });
         var data = await resp.json();
         showToast(data.message, data.success ? 'success' : 'danger');

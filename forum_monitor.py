@@ -192,7 +192,10 @@ def discover_forums() -> List[Dict[str, str]]:
     if not forums:
         # 记录 HTML 片段帮助诊断
         snippet = r.text[:3000] if len(r.text) > 3000 else r.text
-        logger.warning(f'[论坛监控] 未发现任何板块，HTML片段:\n{snippet}')
+        logger.warning(f'[论坛监控] 首页未匹配到板块链接，HTML片段:\n{snippet}')
+        # 回退到已知的电影板块 fid=44（filter=sortid&sortid=1 查看全部帖子）
+        logger.info('[论坛监控] 回退到默认板块 fid=44')
+        forums = [{'fid': '44', 'name': '电影区'}]
     else:
         logger.info(f'[论坛监控] 发现 {len(forums)} 个板块: {forums}')
 
@@ -438,7 +441,7 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
             status = 'cancelled'
             break
 
-        url = baidu_forum.BASE + f'forum.php?mod=forumdisplay&fid={fid}&page={page}'
+        url = baidu_forum.BASE + f'forum.php?mod=forumdisplay&fid={fid}&filter=sortid&sortid=1&page={page}'
         try:
             r = s.get(url, timeout=(5, 15))
             r.encoding = 'gbk'

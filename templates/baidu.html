@@ -47,6 +47,150 @@
                 <div id="searchResult"></div>
             </div>
         </div>
+
+        <!-- 全论坛监控卡片 -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-radar me-2"></i>全论坛监控</span>
+                <span id="monitorStatusBadge" class="badge bg-secondary">未运行</span>
+            </div>
+            <div class="card-body">
+                <!-- 监控状态条 -->
+                <div id="monitorStatusBar" class="mb-3" style="display:none;">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span id="monitorStatusText" class="small"></span>
+                        <span id="monitorProgressText" class="small text-muted"></span>
+                    </div>
+                    <div class="progress" style="height:6px;">
+                        <div id="monitorProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" style="width:100%"></div>
+                    </div>
+                </div>
+
+                <!-- 统计信息 -->
+                <div class="row text-center mb-3">
+                    <div class="col-4">
+                        <div class="border rounded py-2">
+                            <div id="statThreads" class="fs-5 fw-bold text-primary">0</div>
+                            <div class="small text-muted">已爬帖子</div>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="border rounded py-2">
+                            <div id="statSeeds" class="fs-5 fw-bold text-success">0</div>
+                            <div class="small text-muted">种子文件</div>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="border rounded py-2">
+                            <div id="statForums" class="fs-5 fw-bold text-info">0</div>
+                            <div class="small text-muted">板块数</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 操作按钮 -->
+                <div class="d-flex flex-wrap gap-2 mb-3">
+                    <button onclick="startFullCrawl()" class="btn btn-primary" id="btnFullCrawl">
+                        <i class="bi bi-download me-1"></i>全量拉取
+                    </button>
+                    <button onclick="startIncremental()" class="btn btn-outline-info" id="btnIncremental">
+                        <i class="bi bi-arrow-repeat me-1"></i>增量监控
+                    </button>
+                    <button onclick="cancelMonitor()" class="btn btn-outline-danger" id="btnCancel" style="display:none;">
+                        <i class="bi bi-stop-circle me-1"></i>取消
+                    </button>
+                    <button onclick="refreshMonitorStatus()" class="btn btn-outline-secondary">
+                        <i class="bi bi-arrow-clockwise me-1"></i>刷新
+                    </button>
+                </div>
+
+                <!-- 配置折叠区 -->
+                <details class="mb-3">
+                    <summary class="fw-medium cursor-pointer mb-2">监控配置（限流参数 + 定时任务）</summary>
+                    <div class="card card-body mt-2">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label class="form-label small">启用定时增量监控</label>
+                                <div class="form-check form-switch">
+                                    <input type="checkbox" class="form-check-input" id="monitorEnabled">
+                                    <label class="form-check-label small" for="monitorEnabled">启用</label>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label small">Cron 表达式（分 时 日 月 周）</label>
+                                <input type="text" id="monitorCron" class="form-control form-control-sm" placeholder="0 4 * * *" value="0 4 * * *">
+                                <div class="form-text">默认每天凌晨4点执行</div>
+                            </div>
+                            <div class="col-md-3 col-6">
+                                <label class="form-label small">页间延迟(秒)</label>
+                                <input type="number" id="monitorPageDelay" class="form-control form-control-sm" min="0.5" step="0.5" value="5">
+                            </div>
+                            <div class="col-md-3 col-6">
+                                <label class="form-label small">帖间延迟(秒)</label>
+                                <input type="number" id="monitorThreadDelay" class="form-control form-control-sm" min="0" step="0.5" value="3">
+                            </div>
+                            <div class="col-md-3 col-6">
+                                <label class="form-label small">每次最多页数</label>
+                                <input type="number" id="monitorMaxPages" class="form-control form-control-sm" min="1" value="200">
+                            </div>
+                            <div class="col-md-3 col-6">
+                                <label class="form-label small">并发线程数</label>
+                                <input type="number" id="monitorConcurrent" class="form-control form-control-sm" min="1" max="6" value="1">
+                                <div class="form-text">保守模式建议1</div>
+                            </div>
+                        </div>
+                        <button onclick="saveMonitorConfig()" class="btn btn-primary btn-sm mt-3">
+                            <i class="bi bi-save me-1"></i>保存配置
+                        </button>
+                        <div id="monitorConfigResult" class="mt-2"></div>
+                    </div>
+                </details>
+
+                <!-- Tab 切换：种子列表 / 板块进度 / 日志 -->
+                <ul class="nav nav-tabs" role="tablist">
+                    <li class="nav-item">
+                        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabSeeds" type="button">
+                            <i class="bi bi-collection me-1"></i>种子列表
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabForums" type="button">
+                            <i class="bi bi-list-ul me-1"></i>板块进度
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabLogs" type="button">
+                            <i class="bi bi-clock-history me-1"></i>运行日志
+                        </button>
+                    </li>
+                </ul>
+                <div class="tab-content mt-3">
+                    <!-- 种子列表 -->
+                    <div class="tab-pane fade show active" id="tabSeeds" role="tabpanel">
+                        <div class="input-group mb-3">
+                            <input type="text" id="seedKeyword" class="form-control form-control-sm" placeholder="按标题搜索">
+                            <button onclick="loadSeeds(1)" class="btn btn-sm btn-outline-primary">搜索</button>
+                        </div>
+                        <div id="seedsList" class="table-responsive">
+                            <div class="text-muted text-center py-3">点击"刷新"或搜索查看种子</div>
+                        </div>
+                        <div id="seedsPagination" class="d-flex justify-content-center mt-2"></div>
+                    </div>
+                    <!-- 板块进度 -->
+                    <div class="tab-pane fade" id="tabForums" role="tabpanel">
+                        <div id="forumsProgress" class="table-responsive">
+                            <div class="text-muted text-center py-3">点击"刷新"查看板块进度</div>
+                        </div>
+                    </div>
+                    <!-- 运行日志 -->
+                    <div class="tab-pane fade" id="tabLogs" role="tabpanel">
+                        <div id="monitorLogs" class="table-responsive">
+                            <div class="text-muted text-center py-3">点击"刷新"查看日志</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 {% endblock %}
@@ -452,4 +596,302 @@ function fallbackCopy(text) {
     }
     document.body.removeChild(ta);
 }
+
+// ==================== 全论坛监控 ====================
+
+var _monitorPollTimer = null;
+var _seedCurrentPage = 1;
+
+// 页面加载时初始化监控配置和状态
+async function initMonitor() {
+    await loadMonitorConfig();
+    await refreshMonitorStatus();
+    await loadSeeds(1);
+    await loadForumsProgress();
+    await loadMonitorLogs();
+}
+
+async function loadMonitorConfig() {
+    try {
+        var resp = await apiFetch('/baidu/monitor_config');
+        var data = await resp.json();
+        if (!data.success) return;
+        var c = data.config;
+        document.getElementById('monitorEnabled').checked = c.enabled;
+        document.getElementById('monitorCron').value = c.cron;
+        document.getElementById('monitorPageDelay').value = c.page_delay;
+        document.getElementById('monitorThreadDelay').value = c.thread_delay;
+        document.getElementById('monitorMaxPages').value = c.max_pages_per_run;
+        document.getElementById('monitorConcurrent').value = c.concurrent_threads;
+    } catch (e) {
+        console.error('加载监控配置失败:', e);
+    }
+}
+
+async function saveMonitorConfig() {
+    try {
+        var formData = new FormData();
+        formData.append('enabled', document.getElementById('monitorEnabled').checked ? 'true' : 'false');
+        formData.append('cron', document.getElementById('monitorCron').value.trim());
+        formData.append('page_delay', document.getElementById('monitorPageDelay').value);
+        formData.append('thread_delay', document.getElementById('monitorThreadDelay').value);
+        formData.append('max_pages_per_run', document.getElementById('monitorMaxPages').value);
+        formData.append('concurrent_threads', document.getElementById('monitorConcurrent').value);
+        formData.append('csrf_token', csrf_token());
+        var resp = await apiFetch('/baidu/monitor_config', { method: 'POST', body: formData });
+        var data = await resp.json();
+        if (data.success) {
+            showToast(data.message, 'success');
+        } else {
+            showToast(data.message || '保存失败', 'danger');
+        }
+    } catch (e) {
+        showToast('保存失败: ' + e.message, 'danger');
+    }
+}
+
+async function refreshMonitorStatus() {
+    try {
+        var resp = await apiFetch('/baidu/monitor_status');
+        var data = await resp.json();
+        if (!data.success) return;
+        var st = data.status;
+        var stats = data.statistics;
+        var cfg = data.config;
+
+        // 统计
+        document.getElementById('statThreads').textContent = stats.total_threads || 0;
+        document.getElementById('statSeeds').textContent = stats.total_seeds || 0;
+        document.getElementById('statForums').textContent = stats.forums_crawled || 0;
+
+        // 状态徽章
+        var badge = document.getElementById('monitorStatusBadge');
+        var statusBar = document.getElementById('monitorStatusBar');
+        var btnCancel = document.getElementById('btnCancel');
+        var btnFull = document.getElementById('btnFullCrawl');
+        var btnInc = document.getElementById('btnIncremental');
+
+        if (st.running) {
+            badge.className = 'badge bg-success';
+            badge.textContent = (st.mode === 'full' ? '全量拉取中' : '增量监控中');
+            statusBar.style.display = '';
+            btnCancel.style.display = '';
+            btnFull.disabled = true;
+            btnInc.disabled = true;
+            document.getElementById('monitorStatusText').textContent = st.message || '运行中';
+            document.getElementById('monitorProgressText').textContent =
+                st.current_forum + ' 第' + st.current_page + '页 | 新增' + st.threads_new + '帖 | ' + st.seeds_downloaded + '种子';
+            // 运行中轮询
+            if (!_monitorPollTimer) {
+                _monitorPollTimer = setInterval(refreshMonitorStatus, 3000);
+            }
+        } else {
+            badge.className = 'badge bg-secondary';
+            badge.textContent = '未运行';
+            statusBar.style.display = 'none';
+            btnCancel.style.display = 'none';
+            btnFull.disabled = false;
+            btnInc.disabled = false;
+            if (_monitorPollTimer) {
+                clearInterval(_monitorPollTimer);
+                _monitorPollTimer = null;
+            }
+        }
+    } catch (e) {
+        console.error('刷新状态失败:', e);
+    }
+}
+
+async function startFullCrawl() {
+    if (!confirm('全量拉取会遍历所有板块所有页面，可能耗时较长。确认开始？')) return;
+    try {
+        var formData = new FormData();
+        formData.append('csrf_token', csrf_token());
+        var resp = await apiFetch('/baidu/monitor_full', { method: 'POST', body: formData });
+        var data = await resp.json();
+        if (data.success) {
+            showToast(data.message, 'success');
+            refreshMonitorStatus();
+        } else {
+            showToast(data.message || '启动失败', 'danger');
+        }
+    } catch (e) {
+        showToast('启动失败: ' + e.message, 'danger');
+    }
+}
+
+async function startIncremental() {
+    try {
+        var formData = new FormData();
+        formData.append('csrf_token', csrf_token());
+        var resp = await apiFetch('/baidu/monitor_incremental', { method: 'POST', body: formData });
+        var data = await resp.json();
+        if (data.success) {
+            showToast(data.message, 'success');
+            refreshMonitorStatus();
+        } else {
+            showToast(data.message || '启动失败', 'danger');
+        }
+    } catch (e) {
+        showToast('启动失败: ' + e.message, 'danger');
+    }
+}
+
+async function cancelMonitor() {
+    try {
+        var formData = new FormData();
+        formData.append('csrf_token', csrf_token());
+        var resp = await apiFetch('/baidu/monitor_cancel', { method: 'POST', body: formData });
+        var data = await resp.json();
+        showToast(data.message, data.success ? 'success' : 'danger');
+        refreshMonitorStatus();
+    } catch (e) {
+        showToast('取消失败: ' + e.message, 'danger');
+    }
+}
+
+async function loadSeeds(page) {
+    _seedCurrentPage = page || 1;
+    try {
+        var keyword = document.getElementById('seedKeyword').value.trim();
+        var url = '/baidu/monitor_threads?page=' + _seedCurrentPage + '&page_size=30';
+        if (keyword) url += '&keyword=' + encodeURIComponent(keyword);
+        var resp = await apiFetch(url);
+        var data = await resp.json();
+        if (!data.success) {
+            document.getElementById('seedsList').innerHTML = '<div class="text-danger">加载失败</div>';
+            return;
+        }
+        var threads = data.threads;
+        var total = data.total;
+        var pageSize = data.page_size;
+        if (threads.length === 0) {
+            document.getElementById('seedsList').innerHTML = '<div class="text-muted text-center py-3">暂无数据</div>';
+            document.getElementById('seedsPagination').innerHTML = '';
+            return;
+        }
+        var html = '<table class="table table-sm table-hover align-middle">';
+        html += '<thead><tr><th>标题</th><th class="hide-mobile">板块</th><th>种子</th><th class="hide-mobile">抓取时间</th></tr></thead><tbody>';
+        threads.forEach(function(t) {
+            var time = t.fetched_at ? t.fetched_at.substring(0, 19).replace('T', ' ') : '';
+            var seeds = [];
+            try { seeds = JSON.parse(t.seed_paths || '[]'); } catch (e) {}
+            var seedHtml = '';
+            if (seeds.length > 0) {
+                seedHtml = '<span class="badge bg-success me-1">' + seeds.length + '个</span>';
+                seeds.forEach(function(s, i) {
+                    if (i < 3) {
+                        seedHtml += '<a href="/baidu/monitor_seed_download?path=' + encodeURIComponent(s) +
+                            '" class="btn btn-sm btn-outline-secondary me-1" title="' + escapeHtml(s) + '">' +
+                            '<i class="bi bi-download"></i>' + escapeHtml(s.split('/').pop().substring(0, 12)) + '</a>';
+                    }
+                });
+                if (seeds.length > 3) seedHtml += '<span class="text-muted small">+' + (seeds.length - 3) + '</span>';
+            } else {
+                seedHtml = '<span class="text-muted">无</span>';
+            }
+            html += '<tr>';
+            html += '<td class="fw-medium">' + escapeHtml(t.title) + '</td>';
+            html += '<td class="hide-mobile small">' + escapeHtml(t.forum_name || '') + '</td>';
+            html += '<td>' + seedHtml + '</td>';
+            html += '<td class="hide-mobile small text-muted">' + escapeHtml(time) + '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        document.getElementById('seedsList').innerHTML = html;
+
+        // 分页
+        var totalPages = Math.ceil(total / pageSize);
+        var pgHtml = '';
+        if (totalPages > 1) {
+            pgHtml += '<nav><ul class="pagination pagination-sm">';
+            if (_seedCurrentPage > 1) {
+                pgHtml += '<li class="page-item"><a class="page-link" href="javascript:loadSeeds(' + (_seedCurrentPage - 1) + ')">上一页</a></li>';
+            }
+            for (var i = 1; i <= totalPages && i <= 10; i++) {
+                pgHtml += '<li class="page-item ' + (i === _seedCurrentPage ? 'active' : '') + '"><a class="page-link" href="javascript:loadSeeds(' + i + ')">' + i + '</a></li>';
+            }
+            if (totalPages > 10) pgHtml += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+            if (_seedCurrentPage < totalPages) {
+                pgHtml += '<li class="page-item"><a class="page-link" href="javascript:loadSeeds(' + (_seedCurrentPage + 1) + ')">下一页</a></li>';
+            }
+            pgHtml += '</ul></nav>';
+            pgHtml += '<div class="text-muted small text-center">共 ' + total + ' 条</div>';
+        }
+        document.getElementById('seedsPagination').innerHTML = pgHtml;
+    } catch (e) {
+        document.getElementById('seedsList').innerHTML = '<div class="text-danger">加载失败: ' + escapeHtml(e.message) + '</div>';
+    }
+}
+
+async function loadForumsProgress() {
+    try {
+        var resp = await apiFetch('/baidu/monitor_forums');
+        var data = await resp.json();
+        if (!data.success) return;
+        var forums = data.forums;
+        if (forums.length === 0) {
+            document.getElementById('forumsProgress').innerHTML = '<div class="text-muted text-center py-3">暂无板块进度，请先执行全量拉取</div>';
+            return;
+        }
+        var html = '<table class="table table-sm table-hover">';
+        html += '<thead><tr><th>板块</th><th>已爬页/总页</th><th>帖子数</th><th>模式</th><th class="hide-mobile">上次爬取</th></tr></thead><tbody>';
+        forums.forEach(function(f) {
+            var lastAt = f.last_crawl_at ? f.last_crawl_at.substring(0, 19).replace('T', ' ') : '';
+            var modeBadge = f.mode === 'full' ? '<span class="badge bg-primary">全量</span>' :
+                            (f.mode === 'incremental' ? '<span class="badge bg-info">增量</span>' : '-');
+            html += '<tr>';
+            html += '<td>' + escapeHtml(f.forum_name || '') + '</td>';
+            html += '<td>' + f.last_page + ' / ' + (f.total_pages || '?') + '</td>';
+            html += '<td>' + f.thread_count + '</td>';
+            html += '<td>' + modeBadge + '</td>';
+            html += '<td class="hide-mobile small text-muted">' + escapeHtml(lastAt) + '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        document.getElementById('forumsProgress').innerHTML = html;
+    } catch (e) {
+        document.getElementById('forumsProgress').innerHTML = '<div class="text-danger">加载失败</div>';
+    }
+}
+
+async function loadMonitorLogs() {
+    try {
+        var resp = await apiFetch('/baidu/monitor_logs?limit=30');
+        var data = await resp.json();
+        if (!data.success) return;
+        var logs = data.logs;
+        if (logs.length === 0) {
+            document.getElementById('monitorLogs').innerHTML = '<div class="text-muted text-center py-3">暂无日志</div>';
+            return;
+        }
+        var html = '<table class="table table-sm table-hover">';
+        html += '<thead><tr><th>时间</th><th>模式</th><th class="hide-mobile">板块</th><th>页/新帖/种子</th><th>状态</th><th>消息</th></tr></thead><tbody>';
+        logs.forEach(function(l) {
+            var finished = l.finished_at ? l.finished_at.substring(0, 19).replace('T', ' ') : '';
+            var modeBadge = l.mode === 'full' ? '<span class="badge bg-primary">全量</span>' : '<span class="badge bg-info">增量</span>';
+            var statusBadge = '';
+            if (l.status === 'success') statusBadge = '<span class="badge bg-success">成功</span>';
+            else if (l.status === 'cancelled') statusBadge = '<span class="badge bg-warning text-dark">取消</span>';
+            else statusBadge = '<span class="badge bg-danger">失败</span>';
+            html += '<tr>';
+            html += '<td class="small">' + escapeHtml(finished) + '</td>';
+            html += '<td>' + modeBadge + '</td>';
+            html += '<td class="hide-mobile small">' + escapeHtml(l.forum_name || '') + '</td>';
+            html += '<td class="small">' + l.pages_crawled + '/' + l.threads_new + '/' + l.seeds_downloaded + '</td>';
+            html += '<td>' + statusBadge + '</td>';
+            html += '<td class="small text-muted">' + escapeHtml(l.message || '') + '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        document.getElementById('monitorLogs').innerHTML = html;
+    } catch (e) {
+        document.getElementById('monitorLogs').innerHTML = '<div class="text-danger">加载失败</div>';
+    }
+}
+
+// 页面加载后初始化监控
+document.addEventListener('DOMContentLoaded', function() {
+    initMonitor();
+});
 {% endblock %}

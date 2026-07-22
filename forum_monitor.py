@@ -1,0 +1,730 @@
+"""全论坛监控爬取模块
+
+功能：
+- 全量拉取：首次手动触发，遍历所有板块所有页面
+- 增量监控：定时任务，只爬新帖（板块按最新回帖排序，整页都已爬过则停止）
+- 保存帖子标题 + 种子文件（不转磁力链接）
+- 限流：page_delay / thread_delay / max_pages_per_run / concurrent_threads
+- 存储：SQLite 存帖子元数据 + 断点续传进度 + 监控日志；种子文件存磁盘
+"""
+import os
+import re
+import json
+import time
+import uuid
+import sqlite3
+import threading
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional, Tuple
+
+import baidu_forum
+
+# ==================== 路径与常量 ====================
+_DATA_DIR: str = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+_DB_FILE: str = os.path.join(_DATA_DIR, 'forum_monitor.db')
+_SEED_DIR: str = os.path.join(_DATA_DIR, 'forum_seeds')
+_CONFIG_KEY: str = 'monitor'
+_BJ_TZ = ZoneInfo("Asia/Shanghai")
+
+# 监控锁：防止全量/增量/手动任务并发执行
+_monitor_lock: threading.Lock = threading.Lock()
+# 监控运行状态（内存中，UI 查询用）
+_monitor_status: Dict[str, Any] = {
+    'running': False,
+    'mode': '',            # 'full' / 'incremental'
+    'started_at': '',
+    'current_forum': '',
+    'current_page': 0,
+    'threads_found': 0,
+    'threads_new': 0,
+    'seeds_downloaded': 0,
+    'message': '',
+}
+
+# ==================== 正则：板块发现 + 帖子列表解析 ====================
+# Discuz X3.4 板块链接：forum.php?mod=forumdisplay&fid=12
+_FORUM_LINK_RE = re.compile(
+    r'forum\.php\?mod=forumdisplay&(?:amp;)?fid=(\d+)[^"]*"[^>]*>([^<]+)'
+)
+# 帖子标题链接：class="s xst" 是 Discuz 主题列表的标题 class
+_THREAD_TITLE_RE = re.compile(
+    r'href="forum\.php\?mod=viewthread&(?:amp;)?tid=(\d+)[^"]*"[^>]*class="s xst"[^>]*>([^<]+)</a>'
+)
+# 帖子作者：<cite><a>作者名</a></cite>
+_THREAD_AUTHOR_RE = re.compile(r'<cite>\s*<a[^>]*>([^<]+)</a>')
+# 帖子日期：<em><a>2024-1-1</a></em> 或 <em>2024-1-1</em>
+_THREAD_DATE_RE = re.compile(r'<em[^>]*>(?:<a[^>]*>)?([^<]+?)(?:</a>)?</em>')
+# 分页：尾页页码
+_TOTAL_PAGES_RE = re.compile(r'class="pg"[^>]*>.*?>(\d+)\s*</a>\s*<a[^>]*class="nxt"', re.DOTALL)
+
+
+def _now_iso() -> str:
+    """当前北京时间 ISO 格式字符串"""
+    return datetime.now(_BJ_TZ).isoformat()
+
+
+# ==================== SQLite 初始化 ====================
+
+def _get_db() -> sqlite3.Connection:
+    """获取 SQLite 连接（WAL 模式提升并发读写）"""
+    os.makedirs(os.path.dirname(_DB_FILE), exist_ok=True)
+    conn = sqlite3.connect(_DB_FILE, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA synchronous=NORMAL')
+    return conn
+
+
+def _init_db() -> None:
+    """初始化表结构"""
+    with _get_db() as conn:
+        conn.executescript('''
+            CREATE TABLE IF NOT EXISTS threads (
+                tid TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                fid TEXT,
+                forum_name TEXT,
+                author TEXT,
+                post_date TEXT,
+                fetched_at TEXT NOT NULL,
+                seed_count INTEGER DEFAULT 0,
+                seed_paths TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_threads_fid ON threads(fid);
+            CREATE INDEX IF NOT EXISTS idx_threads_fetched ON threads(fetched_at);
+            CREATE INDEX IF NOT EXISTS idx_threads_title ON threads(title);
+
+            CREATE TABLE IF NOT EXISTS crawl_progress (
+                fid TEXT PRIMARY KEY,
+                forum_name TEXT,
+                last_page INTEGER DEFAULT 0,
+                last_tid TEXT,
+                last_crawl_at TEXT,
+                total_pages INTEGER,
+                mode TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS monitor_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                mode TEXT,
+                fid TEXT,
+                forum_name TEXT,
+                pages_crawled INTEGER,
+                threads_found INTEGER,
+                threads_new INTEGER,
+                seeds_downloaded INTEGER,
+                status TEXT,
+                message TEXT
+            );
+        ''')
+
+
+# ==================== 配置读写（复用 baidu_forum 配置文件） ====================
+
+def get_monitor_config() -> Dict[str, Any]:
+    """读取监控配置（从 baidu_forum_config.json 的 monitor 节点）
+
+    默认值为保守限流参数。
+    """
+    cfg = baidu_forum.load_config()
+    m = cfg.get(_CONFIG_KEY, {}) or {}
+    return {
+        'enabled': bool(m.get('enabled', False)),
+        'cron': m.get('cron', '0 4 * * *'),
+        'page_delay': float(m.get('page_delay', 5)),
+        'thread_delay': float(m.get('thread_delay', 3)),
+        'max_pages_per_run': int(m.get('max_pages_per_run', 200)),
+        'concurrent_threads': int(m.get('concurrent_threads', 1)),
+        'last_full_crawl_at': m.get('last_full_crawl_at', ''),
+        'last_incremental_at': m.get('last_incremental_at', ''),
+    }
+
+
+def save_monitor_config(monitor_cfg: Dict[str, Any]) -> None:
+    """事务性保存监控配置"""
+    def _mutator(cfg: Dict[str, Any]) -> None:
+        cfg[_CONFIG_KEY] = monitor_cfg
+    baidu_forum.update_config(_mutator)
+
+
+# ==================== 板块发现 ====================
+
+def discover_forums() -> List[Dict[str, str]]:
+    """发现论坛所有板块
+
+    Returns:
+        [{'fid': '12', 'name': '电影区'}, ...]
+    """
+    s = baidu_forum._get_session()
+    r = s.get(baidu_forum.BASE + 'forum.php', timeout=(5, 15))
+    r.encoding = 'gbk'
+    forums: List[Dict[str, str]] = []
+    seen: set = set()
+    for m in _FORUM_LINK_RE.finditer(r.text):
+        fid = m.group(1)
+        name = baidu_forum._strip_html(m.group(2)).strip()
+        if fid in seen or not name:
+            continue
+        seen.add(fid)
+        forums.append({'fid': fid, 'name': name})
+    return forums
+
+
+# ==================== 板块帖子列表解析 ====================
+
+def parse_forum_page(html: str, fid: str, forum_name: str) -> Tuple[List[Dict[str, str]], int]:
+    """解析板块单页 HTML
+
+    Returns:
+        (threads, total_pages)
+        threads: [{'tid', 'title', 'fid', 'forum_name', 'author', 'post_date'}, ...]
+    """
+    threads: List[Dict[str, str]] = []
+    seen: set = set()
+    # 用标题正则定位每个帖子，再在标题附近上下文提取作者和日期
+    for m in _THREAD_TITLE_RE.finditer(html):
+        tid = m.group(1)
+        if tid in seen:
+            continue
+        title = baidu_forum._strip_html(m.group(2)).strip()
+        if not title:
+            continue
+
+        # 在标题位置前后取一段上下文，提取作者和日期
+        start = max(0, m.start() - 500)
+        end = min(len(html), m.end() + 1500)
+        ctx = html[start:end]
+
+        author = ''
+        author_m = _THREAD_AUTHOR_RE.search(ctx)
+        if author_m:
+            author = baidu_forum._strip_html(author_m.group(1)).strip()
+
+        post_date = ''
+        date_m = _THREAD_DATE_RE.search(ctx)
+        if date_m:
+            post_date = baidu_forum._strip_html(date_m.group(1)).strip()
+
+        seen.add(tid)
+        threads.append({
+            'tid': tid,
+            'title': title,
+            'fid': fid,
+            'forum_name': forum_name,
+            'author': author,
+            'post_date': post_date,
+        })
+
+    # 总页数
+    total_pages = 1
+    tp_m = _TOTAL_PAGES_RE.search(html)
+    if tp_m:
+        try:
+            total_pages = int(tp_m.group(1))
+        except ValueError:
+            pass
+    return threads, total_pages
+
+
+# ==================== 种子文件下载与保存 ====================
+
+def _save_seed_file(content: bytes, fid: str, tid: str, aid: str) -> str:
+    """保存种子文件到磁盘
+
+    Returns:
+        相对路径（相对于 _SEED_DIR），如 '12/12345_67890.torrent'
+    """
+    dir_path = os.path.join(_SEED_DIR, fid)
+    os.makedirs(dir_path, exist_ok=True)
+    filename = f'{tid}_{aid}.torrent'
+    filepath = os.path.join(dir_path, filename)
+    with open(filepath, 'wb') as f:
+        f.write(content)
+    return os.path.join(fid, filename)
+
+
+def download_thread_seeds(tid: str, fid: str) -> List[str]:
+    """下载帖子所有种子文件
+
+    复用 baidu_forum 的附件发现 + 下载逻辑，但不转磁力链接。
+    单个附件失败跳过，不影响其他附件。
+
+    Returns:
+        保存的相对路径列表，如 ['12/12345_67890.torrent']
+    """
+    s = baidu_forum._get_session()
+    attachments = baidu_forum._get_thread_attachments_with_session(s, tid)
+    if not attachments:
+        return []
+    saved: List[str] = []
+    for att in attachments:
+        try:
+            content, _ = baidu_forum._download_torrent_with_session(s, att['url'])
+            rel_path = _save_seed_file(content, fid, tid, att['aid'])
+            saved.append(rel_path)
+        except Exception:
+            continue  # 非种子附件或下载失败，跳过
+    return saved
+
+
+# ==================== 存储操作 ====================
+
+def _upsert_thread(thread: Dict[str, str], seed_paths: List[str]) -> bool:
+    """插入或更新帖子记录
+
+    Returns:
+        True 表示新帖（首次插入），False 表示已存在
+    """
+    with _get_db() as conn:
+        cur = conn.execute('SELECT tid FROM threads WHERE tid=?', (thread['tid'],))
+        exists = cur.fetchone() is not None
+        conn.execute('''
+            INSERT INTO threads (tid, title, fid, forum_name, author, post_date, fetched_at, seed_count, seed_paths)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tid) DO UPDATE SET
+                title=excluded.title,
+                fid=excluded.fid,
+                forum_name=excluded.forum_name,
+                author=excluded.author,
+                post_date=excluded.post_date,
+                fetched_at=excluded.fetched_at,
+                seed_count=excluded.seed_count,
+                seed_paths=excluded.seed_paths
+        ''', (
+            thread['tid'], thread['title'], thread['fid'], thread['forum_name'],
+            thread['author'], thread['post_date'], _now_iso(),
+            len(seed_paths), json.dumps(seed_paths, ensure_ascii=False)
+        ))
+    return not exists
+
+
+def _get_known_tids(tids: List[str]) -> set:
+    """批量查询已存在的 tid 集合"""
+    if not tids:
+        return set()
+    with _get_db() as conn:
+        placeholders = ','.join('?' * len(tids))
+        cur = conn.execute(f'SELECT tid FROM threads WHERE tid IN ({placeholders})', tids)
+        return {row['tid'] for row in cur.fetchall()}
+
+
+def _update_progress(fid: str, forum_name: str, last_page: int, last_tid: str,
+                     total_pages: int, mode: str) -> None:
+    """更新板块爬取进度"""
+    with _get_db() as conn:
+        conn.execute('''
+            INSERT INTO crawl_progress (fid, forum_name, last_page, last_tid, last_crawl_at, total_pages, mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(fid) DO UPDATE SET
+                forum_name=excluded.forum_name,
+                last_page=excluded.last_page,
+                last_tid=excluded.last_tid,
+                last_crawl_at=excluded.last_crawl_at,
+                total_pages=excluded.total_pages,
+                mode=excluded.mode
+        ''', (fid, forum_name, last_page, last_tid, _now_iso(), total_pages, mode))
+
+
+def _get_progress(fid: str) -> Optional[Dict[str, Any]]:
+    """获取板块爬取进度"""
+    with _get_db() as conn:
+        cur = conn.execute('SELECT * FROM crawl_progress WHERE fid=?', (fid,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def _insert_log(run_id: str, started_at: str, finished_at: str, mode: str,
+                fid: str, forum_name: str, pages_crawled: int,
+                threads_found: int, threads_new: int,
+                seeds_downloaded: int, status: str, message: str) -> None:
+    """插入监控日志"""
+    with _get_db() as conn:
+        conn.execute('''
+            INSERT INTO monitor_log
+                (run_id, started_at, finished_at, mode, fid, forum_name,
+                 pages_crawled, threads_found, threads_new, seeds_downloaded, status, message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (run_id, started_at, finished_at, mode, fid, forum_name,
+              pages_crawled, threads_found, threads_new, seeds_downloaded, status, message))
+
+
+# ==================== 状态管理 ====================
+
+def get_status() -> Dict[str, Any]:
+    """获取监控运行状态"""
+    return dict(_monitor_status)
+
+
+def _update_status(**kwargs: Any) -> None:
+    _monitor_status.update(kwargs)
+
+
+def cancel() -> bool:
+    """请求取消正在运行的监控任务（非阻塞，实际停止由爬取循环检测 running 标志）"""
+    if _monitor_status.get('running', False):
+        _monitor_status['running'] = False
+        _monitor_status['message'] = '正在取消...'
+        return True
+    return False
+
+
+# ==================== 核心爬取逻辑 ====================
+
+def _download_seeds_for_thread(thread: Dict[str, str]) -> List[str]:
+    """下载单个帖子的种子（独立函数，便于线程池调用）"""
+    try:
+        return download_thread_seeds(thread['tid'], thread['fid'])
+    except Exception:
+        return []
+
+
+def crawl_forum(fid: str, forum_name: str, mode: str,
+                page_delay: float, thread_delay: float,
+                max_pages: int, concurrent_threads: int,
+                run_id: str, started_at: str) -> Dict[str, Any]:
+    """爬取单个板块
+
+    Args:
+        mode: 'full' 全量 / 'incremental' 增量
+        max_pages: 本次最多爬多少页
+        concurrent_threads: 每页内新帖种子下载并发数（1=串行）
+
+    Returns:
+        {'pages_crawled', 'threads_found', 'threads_new', 'seeds_downloaded', 'message', 'status'}
+    """
+    s = baidu_forum._get_session()
+    pages_crawled = 0
+    threads_found = 0
+    threads_new = 0
+    seeds_downloaded = 0
+    message = ''
+    status = 'success'
+
+    page = 1
+    stop = False
+    while page <= max_pages and not stop:
+        # 检查取消标志
+        if not _monitor_status.get('running', False):
+            message = '已被取消'
+            status = 'cancelled'
+            break
+
+        url = baidu_forum.BASE + f'forum.php?mod=forumdisplay&fid={fid}&page={page}'
+        try:
+            r = s.get(url, timeout=(5, 15))
+            r.encoding = 'gbk'
+        except Exception as e:
+            message = f'第{page}页请求失败: {e}'
+            status = 'failed'
+            break
+
+        threads, total_pages = parse_forum_page(r.text, fid, forum_name)
+        if not threads:
+            message = f'第{page}页无帖子，结束'
+            break
+
+        threads_found += len(threads)
+
+        # 查询本页哪些帖子已存在
+        tids_this_page = [t['tid'] for t in threads]
+        known = _get_known_tids(tids_this_page)
+        new_threads = [t for t in threads if t['tid'] not in known]
+
+        # 增量模式：如果整页都已爬过，说明后面都是更老的旧帖，停止
+        if mode == 'incremental' and len(new_threads) == 0 and len(known) > 0:
+            message = f'第{page}页全部已爬过，增量结束'
+            stop = True
+            break
+
+        # 处理新帖：下载种子
+        if new_threads:
+            if concurrent_threads <= 1:
+                # 串行：每个帖子后 sleep thread_delay
+                for t in new_threads:
+                    if not _monitor_status.get('running', False):
+                        message = '已被取消'
+                        status = 'cancelled'
+                        stop = True
+                        break
+                    seed_paths = _download_seeds_for_thread(t)
+                    is_new = _upsert_thread(t, seed_paths)
+                    if is_new:
+                        threads_new += 1
+                    seeds_downloaded += len(seed_paths)
+                    time.sleep(thread_delay)
+            else:
+                # 并发：用线程池下载本页新帖种子
+                with ThreadPoolExecutor(max_workers=concurrent_threads) as pool:
+                    future_to_thread = {
+                        pool.submit(_download_seeds_for_thread, t): t
+                        for t in new_threads
+                    }
+                    for fut in as_completed(future_to_thread):
+                        if not _monitor_status.get('running', False):
+                            message = '已被取消'
+                            status = 'cancelled'
+                            stop = True
+                            break
+                        t = future_to_thread[fut]
+                        try:
+                            seed_paths = fut.result()
+                        except Exception:
+                            seed_paths = []
+                        is_new = _upsert_thread(t, seed_paths)
+                        if is_new:
+                            threads_new += 1
+                        seeds_downloaded += len(seed_paths)
+                # 并发模式批次间隔
+                if not stop and page < max_pages:
+                    time.sleep(thread_delay)
+
+        # 更新进度（记录本页第一个帖子 tid，即本页最新的帖子）
+        _update_progress(fid, forum_name, page, threads[0]['tid'], total_pages, mode)
+        _update_status(
+            current_forum=forum_name,
+            current_page=page,
+            threads_found=threads_found,
+            threads_new=threads_new,
+            seeds_downloaded=seeds_downloaded,
+        )
+
+        pages_crawled += 1
+        page += 1
+        # 页间延迟
+        if page <= max_pages and not stop:
+            time.sleep(page_delay)
+
+    if not message:
+        message = f'完成：爬取{pages_crawled}页，发现{threads_found}帖，新增{threads_new}帖'
+
+    # 写日志
+    _insert_log(run_id, started_at, _now_iso(), mode, fid, forum_name,
+                pages_crawled, threads_found, threads_new, seeds_downloaded,
+                status, message)
+
+    return {
+        'pages_crawled': pages_crawled,
+        'threads_found': threads_found,
+        'threads_new': threads_new,
+        'seeds_downloaded': seeds_downloaded,
+        'message': message,
+        'status': status,
+    }
+
+
+def run_full_crawl() -> Dict[str, Any]:
+    """全量拉取所有板块（首次使用）
+
+    遍历所有板块的所有页面（受 max_pages_per_run 限制），
+    已存在的帖子跳过种子下载，只下载新帖种子。
+    """
+    run_id = str(uuid.uuid4())[:8]
+    started_at = _now_iso()
+
+    if not _monitor_lock.acquire(blocking=False):
+        return {'success': False, 'message': '已有监控任务在运行'}
+
+    try:
+        _init_db()
+        cfg = get_monitor_config()
+        _monitor_status.update({
+            'running': True, 'mode': 'full', 'started_at': started_at,
+            'current_forum': '', 'current_page': 0,
+            'threads_found': 0, 'threads_new': 0, 'seeds_downloaded': 0,
+            'message': '正在发现板块...'
+        })
+
+        forums = discover_forums()
+        if not forums:
+            _monitor_status.update({'running': False, 'message': '未发现任何板块'})
+            return {'success': False, 'message': '未发现任何板块，请检查论坛登录状态'}
+
+        total_new = 0
+        total_seeds = 0
+        forum_results: List[Dict[str, Any]] = []
+        for forum in forums:
+            if not _monitor_status.get('running', False):
+                _monitor_status['message'] = '已取消'
+                break
+            result = crawl_forum(
+                forum['fid'], forum['name'], 'full',
+                cfg['page_delay'], cfg['thread_delay'],
+                cfg['max_pages_per_run'], cfg['concurrent_threads'],
+                run_id, started_at
+            )
+            total_new += result['threads_new']
+            total_seeds += result['seeds_downloaded']
+            forum_results.append({'fid': forum['fid'], 'name': forum['name'], **result})
+
+        cfg['last_full_crawl_at'] = _now_iso()
+        save_monitor_config(cfg)
+
+        _monitor_status.update({
+            'running': False,
+            'message': f'全量完成：新增{total_new}帖，下载{total_seeds}种子',
+        })
+        return {
+            'success': True,
+            'run_id': run_id,
+            'forums': forum_results,
+            'total_new': total_new,
+            'total_seeds': total_seeds,
+        }
+    except Exception as e:
+        _monitor_status.update({'running': False, 'message': f'全量失败: {e}'})
+        return {'success': False, 'message': str(e)}
+    finally:
+        _monitor_lock.release()
+
+
+def run_incremental() -> Dict[str, Any]:
+    """增量监控：只爬每个板块的新帖
+
+    从第1页开始，遇到整页都已爬过则停止该板块。
+    限制最多爬 20 页（增量只需覆盖最新帖）。
+    """
+    run_id = str(uuid.uuid4())[:8]
+    started_at = _now_iso()
+
+    if not _monitor_lock.acquire(blocking=False):
+        return {'success': False, 'message': '已有监控任务在运行'}
+
+    try:
+        _init_db()
+        cfg = get_monitor_config()
+        _monitor_status.update({
+            'running': True, 'mode': 'incremental', 'started_at': started_at,
+            'current_forum': '', 'current_page': 0,
+            'threads_found': 0, 'threads_new': 0, 'seeds_downloaded': 0,
+            'message': '正在发现板块...'
+        })
+
+        forums = discover_forums()
+        if not forums:
+            _monitor_status.update({'running': False, 'message': '未发现任何板块'})
+            return {'success': False, 'message': '未发现任何板块，请检查论坛登录状态'}
+
+        # 增量模式最多爬20页
+        inc_max_pages = min(cfg['max_pages_per_run'], 20)
+
+        total_new = 0
+        total_seeds = 0
+        forum_results: List[Dict[str, Any]] = []
+        for forum in forums:
+            if not _monitor_status.get('running', False):
+                _monitor_status['message'] = '已取消'
+                break
+            result = crawl_forum(
+                forum['fid'], forum['name'], 'incremental',
+                cfg['page_delay'], cfg['thread_delay'],
+                inc_max_pages, cfg['concurrent_threads'],
+                run_id, started_at
+            )
+            total_new += result['threads_new']
+            total_seeds += result['seeds_downloaded']
+            forum_results.append({'fid': forum['fid'], 'name': forum['name'], **result})
+
+        cfg['last_incremental_at'] = _now_iso()
+        save_monitor_config(cfg)
+
+        _monitor_status.update({
+            'running': False,
+            'message': f'增量完成：新增{total_new}帖，下载{total_seeds}种子',
+        })
+        return {
+            'success': True,
+            'run_id': run_id,
+            'forums': forum_results,
+            'total_new': total_new,
+            'total_seeds': total_seeds,
+        }
+    except Exception as e:
+        _monitor_status.update({'running': False, 'message': f'增量失败: {e}'})
+        return {'success': False, 'message': str(e)}
+    finally:
+        _monitor_lock.release()
+
+
+# ==================== 查询接口 ====================
+
+def list_threads(fid: Optional[str] = None, keyword: str = '',
+                 limit: int = 50, offset: int = 0) -> Tuple[List[Dict[str, Any]], int]:
+    """查询帖子列表
+
+    Args:
+        fid: 板块ID过滤，None 表示全部
+        keyword: 标题关键词模糊搜索
+        limit/offset: 分页
+
+    Returns:
+        (rows, total)
+    """
+    with _get_db() as conn:
+        where: List[str] = []
+        params: List[Any] = []
+        if fid:
+            where.append('fid=?')
+            params.append(fid)
+        if keyword:
+            where.append('title LIKE ?')
+            params.append(f'%{keyword}%')
+        where_clause = (' WHERE ' + ' AND '.join(where)) if where else ''
+
+        cur = conn.execute(f'SELECT COUNT(*) as c FROM threads{where_clause}', params)
+        total = cur.fetchone()['c']
+
+        cur = conn.execute(
+            f'SELECT * FROM threads{where_clause} ORDER BY fetched_at DESC LIMIT ? OFFSET ?',
+            params + [limit, offset]
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        return rows, total
+
+
+def list_forums_with_progress() -> List[Dict[str, Any]]:
+    """列出所有板块及其爬取进度"""
+    with _get_db() as conn:
+        cur = conn.execute('''
+            SELECT p.fid, p.forum_name, p.last_page, p.last_tid,
+                   p.last_crawl_at, p.total_pages, p.mode,
+                   (SELECT COUNT(*) FROM threads t WHERE t.fid=p.fid) as thread_count
+            FROM crawl_progress p
+            ORDER BY p.forum_name
+        ''')
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_statistics() -> Dict[str, Any]:
+    """获取统计信息"""
+    with _get_db() as conn:
+        cur = conn.execute('SELECT COUNT(*) as c, SUM(seed_count) as s FROM threads')
+        row = cur.fetchone()
+        cur2 = conn.execute('SELECT COUNT(DISTINCT fid) as f FROM crawl_progress')
+        forums_crawled = cur2.fetchone()['f']
+        return {
+            'total_threads': row['c'],
+            'total_seeds': row['s'] or 0,
+            'forums_crawled': forums_crawled,
+        }
+
+
+def list_recent_logs(limit: int = 20) -> List[Dict[str, Any]]:
+    """获取最近监控日志"""
+    with _get_db() as conn:
+        cur = conn.execute(
+            'SELECT * FROM monitor_log ORDER BY id DESC LIMIT ?',
+            (limit,)
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+# 模块加载时初始化数据库
+try:
+    _init_db()
+except Exception:
+    pass

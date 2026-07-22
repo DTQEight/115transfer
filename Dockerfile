@@ -13,6 +13,7 @@ COPY cloud115.py .
 COPY wechat_work.py .
 COPY douban.py .
 COPY baidu_forum.py .
+COPY forum_monitor.py .
 COPY transfer_history.py .
 COPY media/ media/
 COPY templates/ templates/

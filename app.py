@@ -1763,6 +1763,258 @@ def baidu_save():
         return jsonify({'success': False, 'message': str(e)})
 
 
+# ===== 论坛全论坛监控 =====
+
+import forum_monitor
+
+
+def _reschedule_forum_monitor() -> None:
+    """根据配置重新调度论坛增量监控任务"""
+    global _scheduler
+    if _scheduler is None:
+        return
+    try:
+        _scheduler.remove_job('forum_monitor_auto')
+    except Exception:
+        pass
+    try:
+        cfg = forum_monitor.get_monitor_config()
+        if not cfg['enabled']:
+            logger.info('[论坛监控] 自动监控未启用')
+            return
+        trigger = _parse_cron_expr(cfg['cron'])
+        if trigger is None:
+            logger.warning(f'[论坛监控] cron表达式无效: {cfg["cron"]}')
+            return
+        _scheduler.add_job(
+            _do_forum_monitor_auto,
+            trigger=trigger,
+            id='forum_monitor_auto',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info(f'[论坛监控] 已启用，调度表达式: {cfg["cron"]}')
+    except Exception as e:
+        logger.error(f'[论坛监控] 调度失败: {e}')
+
+
+def _do_forum_monitor_auto() -> None:
+    """定时增量监控执行函数（由 APScheduler 调用）"""
+    try:
+        logger.info('[论坛监控] 定时增量任务开始')
+        result = forum_monitor.run_incremental()
+        if result.get('success'):
+            logger.info(f'[论坛监控] 定时增量完成: 新增{result.get("total_new", 0)}帖，'
+                        f'下载{result.get("total_seeds", 0)}种子')
+        else:
+            logger.warning(f'[论坛监控] 定时增量失败: {result.get("message", "")}')
+    except Exception as e:
+        logger.error(f'[论坛监控] 定时增量异常: {e}')
+
+
+@app.route('/baidu/monitor_config', methods=['GET', 'POST'])
+def baidu_monitor_config() -> Union[Response, Tuple[Response, int]]:
+    """读取/配置论坛监控"""
+    if request.method == 'GET':
+        try:
+            cfg = forum_monitor.get_monitor_config()
+            return jsonify({
+                'success': True,
+                'config': {
+                    'enabled': cfg['enabled'],
+                    'cron': cfg['cron'],
+                    'page_delay': cfg['page_delay'],
+                    'thread_delay': cfg['thread_delay'],
+                    'max_pages_per_run': cfg['max_pages_per_run'],
+                    'concurrent_threads': cfg['concurrent_threads'],
+                    'last_full_crawl_at': cfg['last_full_crawl_at'],
+                    'last_incremental_at': cfg['last_incremental_at'],
+                    'running': forum_monitor.get_status()['running'],
+                }
+            })
+        except Exception as e:
+            logger.error(f'[论坛监控] 读取配置失败: {e}')
+            return jsonify({'success': False, 'message': str(e)}), 500
+
+    # POST: 更新配置
+    try:
+        cfg = forum_monitor.get_monitor_config()
+        cfg['enabled'] = request.form.get('enabled', '').lower() == 'true'
+        cron_expr = (request.form.get('cron', '')).strip()
+        if cfg['enabled']:
+            if not cron_expr:
+                return jsonify({'success': False, 'message': '请填写cron表达式'}), 400
+            if _parse_cron_expr(cron_expr) is None:
+                return jsonify({'success': False, 'message': 'cron表达式格式错误（应为5段：分 时 日 月 周）'}), 400
+        cfg['cron'] = cron_expr
+        # 限流参数（带范围校验）
+        try:
+            cfg['page_delay'] = max(0.5, float(request.form.get('page_delay', cfg['page_delay'])))
+            cfg['thread_delay'] = max(0.0, float(request.form.get('thread_delay', cfg['thread_delay'])))
+            cfg['max_pages_per_run'] = max(1, int(request.form.get('max_pages_per_run', cfg['max_pages_per_run'])))
+            cfg['concurrent_threads'] = max(1, int(request.form.get('concurrent_threads', cfg['concurrent_threads'])))
+        except (ValueError, TypeError) as ve:
+            return jsonify({'success': False, 'message': f'限流参数错误: {ve}'}), 400
+
+        forum_monitor.save_monitor_config(cfg)
+        _reschedule_forum_monitor()
+        status = '已启用' if cfg['enabled'] else '已关闭'
+        logger.info(f'[论坛监控] 配置更新: {status}, cron={cron_expr}')
+        return jsonify({'success': True, 'message': f'监控{status}'})
+    except Exception as e:
+        logger.error(f'[论坛监控] 配置失败: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/baidu/monitor_status')
+def baidu_monitor_status() -> Response:
+    """查询监控运行状态"""
+    try:
+        status = forum_monitor.get_status()
+        stats = forum_monitor.get_statistics()
+        cfg = forum_monitor.get_monitor_config()
+        return jsonify({
+            'success': True,
+            'status': status,
+            'statistics': stats,
+            'config': {
+                'enabled': cfg['enabled'],
+                'cron': cfg['cron'],
+                'last_full_crawl_at': cfg['last_full_crawl_at'],
+                'last_incremental_at': cfg['last_incremental_at'],
+            }
+        })
+    except Exception as e:
+        logger.error(f'[论坛监控] 状态查询失败: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/baidu/monitor_full', methods=['POST'])
+def baidu_monitor_full() -> Response:
+    """手动触发全量拉取（后台异步执行）"""
+    try:
+        if forum_monitor.get_status()['running']:
+            return jsonify({'success': False, 'message': '已有监控任务在运行'})
+        import threading as _threading
+        t = _threading.Thread(target=forum_monitor.run_full_crawl, daemon=True)
+        t.start()
+        return jsonify({'success': True, 'message': '全量拉取已启动，请在状态页查看进度'})
+    except Exception as e:
+        logger.error(f'[论坛监控] 启动全量失败: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/baidu/monitor_incremental', methods=['POST'])
+def baidu_monitor_incremental() -> Response:
+    """手动触发增量监控（后台异步执行）"""
+    try:
+        if forum_monitor.get_status()['running']:
+            return jsonify({'success': False, 'message': '已有监控任务在运行'})
+        import threading as _threading
+        t = _threading.Thread(target=forum_monitor.run_incremental, daemon=True)
+        t.start()
+        return jsonify({'success': True, 'message': '增量监控已启动，请在状态页查看进度'})
+    except Exception as e:
+        logger.error(f'[论坛监控] 启动增量失败: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/baidu/monitor_cancel', methods=['POST'])
+def baidu_monitor_cancel() -> Response:
+    """取消正在运行的监控任务"""
+    try:
+        cancelled = forum_monitor.cancel()
+        if cancelled:
+            logger.info('[论坛监控] 用户请求取消监控任务')
+            return jsonify({'success': True, 'message': '已请求取消，任务将在下一次循环检查时停止'})
+        return jsonify({'success': False, 'message': '当前没有运行中的监控任务'})
+    except Exception as e:
+        logger.error(f'[论坛监控] 取消失败: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/baidu/monitor_threads')
+def baidu_monitor_threads() -> Response:
+    """查询已爬取的帖子/种子列表"""
+    try:
+        fid = request.args.get('fid') or None
+        keyword = (request.args.get('keyword') or '').strip()
+        try:
+            page = max(1, int(request.args.get('page', 1)))
+            page_size = max(1, min(200, int(request.args.get('page_size', 50))))
+        except (ValueError, TypeError):
+            page, page_size = 1, 50
+        offset = (page - 1) * page_size
+        rows, total = forum_monitor.list_threads(fid=fid, keyword=keyword,
+                                                  limit=page_size, offset=offset)
+        return jsonify({
+            'success': True,
+            'threads': rows,
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+        })
+    except Exception as e:
+        logger.error(f'[论坛监控] 列表查询失败: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/baidu/monitor_forums')
+def baidu_monitor_forums() -> Response:
+    """查询所有板块的爬取进度"""
+    try:
+        forums = forum_monitor.list_forums_with_progress()
+        return jsonify({'success': True, 'forums': forums})
+    except Exception as e:
+        logger.error(f'[论坛监控] 板块进度查询失败: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/baidu/monitor_logs')
+def baidu_monitor_logs() -> Response:
+    """查询监控日志"""
+    try:
+        try:
+            limit = max(1, min(200, int(request.args.get('limit', 20))))
+        except (ValueError, TypeError):
+            limit = 20
+        logs = forum_monitor.list_recent_logs(limit=limit)
+        return jsonify({'success': True, 'logs': logs})
+    except Exception as e:
+        logger.error(f'[论坛监控] 日志查询失败: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/baidu/monitor_seed_download')
+def baidu_monitor_seed_download() -> Union[Response, Tuple[Response, int]]:
+    """下载已保存的种子文件"""
+    try:
+        rel_path = (request.args.get('path') or '').strip()
+        if not rel_path:
+            return jsonify({'success': False, 'message': '缺少path参数'}), 400
+        # 防止路径穿越：只允许 forum_seeds 目录下的文件
+        seed_root = forum_monitor._SEED_DIR
+        abs_path = os.path.normpath(os.path.join(seed_root, rel_path))
+        if not abs_path.startswith(os.path.normpath(seed_root) + os.sep):
+            return jsonify({'success': False, 'message': '非法路径'}), 400
+        if not os.path.isfile(abs_path):
+            return jsonify({'success': False, 'message': '文件不存在'}), 404
+        import mimetypes
+        mime = mimetypes.guess_type(abs_path)[0] or 'application/octet-stream'
+        with open(abs_path, 'rb') as f:
+            content = f.read()
+        filename = os.path.basename(abs_path)
+        return Response(
+            content,
+            mimetype=mime,
+            headers={'Content-Disposition': f'attachment; filename="{filename}"'}
+        )
+    except Exception as e:
+        logger.error(f'[论坛监控] 种子下载失败: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 # ===== 豆瓣同步 =====
 
 @app.route('/douban')
@@ -2514,6 +2766,7 @@ if __name__ == '__main__':
             _scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
             _scheduler.start()
             _reschedule_auto_sync()
+            _reschedule_forum_monitor()
             logger.info('[调度器] APScheduler 已启动')
         except Exception as e:
             logger.error(f'[调度器] 启动失败: {e}')

@@ -490,9 +490,21 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
     message = ''
     status = 'success'
 
-    page = 1
+    # 断点续传：全量模式下从上次中断的页码继续，而不是每次都从第1页开始
+    start_page = 1
+    if mode == 'full':
+        prog = _get_progress(fid)
+        if prog and prog.get('last_page'):
+            # 上次爬到 last_page，本次从 last_page 继续（last_page 本身可能未完成，重新爬）
+            start_page = prog['last_page']
+            logger.info(f'[论坛监控] {forum_name} 全量断点续传：从第{start_page}页开始')
+    page = start_page
+    # 全量模式：max_pages 设大值（99999），实际靠 total_pages 自然停止
+    # 增量模式：max_pages 解释为"最多爬多少页"（相对数量），从第1页开始
+    end_page = max_pages
+    actual_end = end_page  # 会在解析首页后用 total_pages 更新
     stop = False
-    while page <= max_pages and not stop:
+    while page <= end_page and page <= actual_end and not stop:
         # 检查取消标志
         if not _monitor_status.get('running', False):
             message = '已被取消'
@@ -518,8 +530,11 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
             continue
 
         threads, total_pages = parse_forum_page(r.text, fid, forum_name)
+        # 首次解析到 total_pages 后，用实际总页数限制循环（全量模式下 end_page=99999）
+        if total_pages > 0:
+            actual_end = min(end_page, total_pages) if mode == 'full' else end_page
         logger.info(f'[论坛监控] {forum_name} 第{page}页: HTTP {r.status_code}, '
-                    f'解析到{len(threads)}帖, 总页数={total_pages}')
+                    f'解析到{len(threads)}帖, 总页数={total_pages}, 爬到第{actual_end}页止')
         if not threads:
             message = f'第{page}页无帖子，结束'
             # 如果第1页就没帖子，记录 HTML 片段帮助诊断
@@ -580,7 +595,7 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
                             threads_new += 1
                         seeds_downloaded += len(seed_paths)
                 # 并发模式批次间隔
-                if not stop and page < max_pages:
+                if not stop and page < actual_end:
                     time.sleep(thread_delay)
 
         # 更新进度（记录本页第一个帖子 tid，即本页最新的帖子）
@@ -596,7 +611,7 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
         pages_crawled += 1
         page += 1
         # 页间延迟
-        if page <= max_pages and not stop:
+        if page <= actual_end and not stop:
             time.sleep(page_delay)
 
     if not message:
@@ -654,10 +669,12 @@ def run_full_crawl() -> Dict[str, Any]:
                 _monitor_status['message'] = '已取消'
                 break
             logger.info(f'[论坛监控] 开始爬取板块: {forum["name"]}(fid={forum["fid"]})')
+            # 全量模式：max_pages 设为 99999 表示爬到论坛最后一页（受 total_pages 自然限制）
+            # 不再受配置的 max_pages_per_run 限制，否则 9099 页的论坛永远爬不完
             result = crawl_forum(
                 forum['fid'], forum['name'], 'full',
                 cfg['page_delay'], cfg['thread_delay'],
-                cfg['max_pages_per_run'], cfg['concurrent_threads'],
+                99999, cfg['concurrent_threads'],
                 run_id, started_at
             )
             total_new += result['threads_new']

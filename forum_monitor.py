@@ -51,16 +51,27 @@ _monitor_status: Dict[str, Any] = {
 _FORUM_LINK_RE = re.compile(
     r'forum\.php\?mod=forumdisplay&(?:amp;)?fid=(\d+)[^"]*"[^>]*>([^<]+)'
 )
-# 帖子标题链接：class="s xst" 是 Discuz 主题列表的标题 class
+# 帖子标题链接：本论坛用自定义模板，标题链接是伪静态格式 {tid}_11.html
+# <a href="361832_11.html" title="电影标题..."  style="...">电影标题...</a>
 _THREAD_TITLE_RE = re.compile(
+    r'<a\s+href="(\d+)_\d+\.html"\s+title="([^"]+)"'
+)
+# 兼容标准 Discuz 模板：class="s xst"
+_THREAD_TITLE_STD_RE = re.compile(
     r'href="forum\.php\?mod=viewthread&(?:amp;)?tid=(\d+)[^"]*"[^>]*class="s xst"[^>]*>([^<]+)</a>'
 )
-# 帖子作者：<cite><a>作者名</a></cite>
-_THREAD_AUTHOR_RE = re.compile(r'<cite>\s*<a[^>]*>([^<]+)</a>')
-# 帖子日期：<em><a>2024-1-1</a></em> 或 <em>2024-1-1</em>
-_THREAD_DATE_RE = re.compile(r'<em[^>]*>(?:<a[^>]*>)?([^<]+?)(?:</a>)?</em>')
-# 分页：尾页页码
+# 帖子作者：<a class="user-name">作者名</a> 或 <cite><a>作者名</a></cite>
+_THREAD_AUTHOR_RE = re.compile(r'<a[^>]*class="user-name"[^>]*>([^<]+)</a>')
+# 帖子日期：<abbr class="timeago"><span title="2026-7-23 00:17">...</span></abbr> 或 <em>日期</em>
+_THREAD_DATE_RE = re.compile(r'<abbr[^>]*class="timeago"[^>]*><span\s+title="([^"]+)"')
+# 分页：尾页页码（Discuz 标准分页）
 _TOTAL_PAGES_RE = re.compile(r'class="pg"[^>]*>.*?>(\d+)\s*</a>\s*<a[^>]*class="nxt"', re.DOTALL)
+# 分页：class="last" 链接中的页码（自定义模板：<a ... class="last">... 9099</a>）
+_LAST_PAGE_RE = re.compile(r'class="last"[^>]*>\s*(?:\.\.\.\s*)?(\d+)\s*</a>')
+# 分页：伪静态分页链接 forum-44-2.html
+_TOTAL_PAGES_RE2 = re.compile(r'href="forum-\d+-(\d+)\.html"')
+# 分页：带 filter 的分页链接 ?mod=forumdisplay&fid=44&...&page=N（兼容 &amp; HTML 转义）
+_PAGE_NUM_RE = re.compile(r'(?:&|&amp;)page=(\d+)')
 
 
 def _now_iso() -> str:
@@ -207,54 +218,101 @@ def discover_forums() -> List[Dict[str, str]]:
 def parse_forum_page(html: str, fid: str, forum_name: str) -> Tuple[List[Dict[str, str]], int]:
     """解析板块单页 HTML
 
+    支持两种模板：
+    1. 本论坛自定义模板：标题链接是伪静态 {tid}_11.html + title 属性
+    2. 标准 Discuz 模板：class="s xst"
+
     Returns:
         (threads, total_pages)
         threads: [{'tid', 'title', 'fid', 'forum_name', 'author', 'post_date'}, ...]
     """
     threads: List[Dict[str, str]] = []
     seen: set = set()
-    # 用标题正则定位每个帖子，再在标题附近上下文提取作者和日期
-    for m in _THREAD_TITLE_RE.finditer(html):
-        tid = m.group(1)
-        if tid in seen:
-            continue
-        title = baidu_forum._strip_html(m.group(2)).strip()
-        if not title:
-            continue
 
-        # 在标题位置前后取一段上下文，提取作者和日期
-        start = max(0, m.start() - 500)
-        end = min(len(html), m.end() + 1500)
-        ctx = html[start:end]
+    # 先尝试自定义模板（伪静态 {tid}_11.html），再尝试标准模板
+    matches = list(_THREAD_TITLE_RE.finditer(html))
+    if not matches:
+        # 兼容标准 Discuz：class="s xst" 格式
+        for m in _THREAD_TITLE_STD_RE.finditer(html):
+            tid = m.group(1)
+            if tid in seen:
+                continue
+            title = baidu_forum._strip_html(m.group(2)).strip()
+            if not title:
+                continue
+            start = max(0, m.start() - 500)
+            end = min(len(html), m.end() + 1500)
+            ctx = html[start:end]
+            author = ''
+            author_m = _THREAD_AUTHOR_RE.search(ctx)
+            if author_m:
+                author = baidu_forum._strip_html(author_m.group(1)).strip()
+            post_date = ''
+            date_m = _THREAD_DATE_RE.search(ctx)
+            if date_m:
+                post_date = baidu_forum._strip_html(date_m.group(1)).strip()
+            seen.add(tid)
+            threads.append({
+                'tid': tid, 'title': title, 'fid': fid,
+                'forum_name': forum_name, 'author': author, 'post_date': post_date,
+            })
+    else:
+        # 自定义模板：标题链接伪静态格式，作者和日期在后续兄弟节点
+        for m in matches:
+            tid = m.group(1)
+            if tid in seen:
+                continue
+            title = m.group(2).strip()
+            if not title:
+                continue
+            # 在标题位置之后取一段上下文，提取作者和日期
+            start = max(0, m.start() - 200)
+            end = min(len(html), m.end() + 1500)
+            ctx = html[start:end]
+            author = ''
+            author_m = _THREAD_AUTHOR_RE.search(ctx)
+            if author_m:
+                author = baidu_forum._strip_html(author_m.group(1)).strip()
+            post_date = ''
+            date_m = _THREAD_DATE_RE.search(ctx)
+            if date_m:
+                post_date = baidu_forum._strip_html(date_m.group(1)).strip()
+            seen.add(tid)
+            threads.append({
+                'tid': tid, 'title': title, 'fid': fid,
+                'forum_name': forum_name, 'author': author, 'post_date': post_date,
+            })
 
-        author = ''
-        author_m = _THREAD_AUTHOR_RE.search(ctx)
-        if author_m:
-            author = baidu_forum._strip_html(author_m.group(1)).strip()
-
-        post_date = ''
-        date_m = _THREAD_DATE_RE.search(ctx)
-        if date_m:
-            post_date = baidu_forum._strip_html(date_m.group(1)).strip()
-
-        seen.add(tid)
-        threads.append({
-            'tid': tid,
-            'title': title,
-            'fid': fid,
-            'forum_name': forum_name,
-            'author': author,
-            'post_date': post_date,
-        })
-
-    # 总页数
+    # 总页数：优先从 class="last" 链接提取（最准确）
     total_pages = 1
-    tp_m = _TOTAL_PAGES_RE.search(html)
-    if tp_m:
+    lp_m = _LAST_PAGE_RE.search(html)
+    if lp_m:
         try:
-            total_pages = int(tp_m.group(1))
+            total_pages = int(lp_m.group(1))
         except ValueError:
             pass
+    if total_pages == 1:
+        tp_m = _TOTAL_PAGES_RE.search(html)
+        if tp_m:
+            try:
+                total_pages = int(tp_m.group(1))
+            except ValueError:
+                pass
+    if total_pages == 1:
+        # 回退：从所有分页链接中取最大页码
+        page_nums = []
+        for pm in _TOTAL_PAGES_RE2.finditer(html):
+            try:
+                page_nums.append(int(pm.group(1)))
+            except ValueError:
+                pass
+        for pm in _PAGE_NUM_RE.finditer(html):
+            try:
+                page_nums.append(int(pm.group(1)))
+            except ValueError:
+                pass
+        if page_nums:
+            total_pages = max(page_nums)
     return threads, total_pages
 
 

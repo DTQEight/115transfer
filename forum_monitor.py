@@ -175,7 +175,7 @@ def discover_forums() -> List[Dict[str, str]]:
         [{'fid': '12', 'name': '电影区'}, ...]
     """
     s = baidu_forum._get_session()
-    r = s.get(baidu_forum.BASE + 'forum.php', timeout=(5, 15))
+    r = s.get(baidu_forum.BASE + 'forum.php', timeout=(10, 30))
     r.encoding = 'gbk'
     logger.info(f'[论坛监控] 首页响应: HTTP {r.status_code}, 长度={len(r.text)}')
 
@@ -500,14 +500,22 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
             break
 
         url = baidu_forum.BASE + f'forum.php?mod=forumdisplay&fid={fid}&filter=sortid&sortid=1&page={page}'
-        try:
-            r = s.get(url, timeout=(5, 15))
-            r.encoding = 'gbk'
-        except Exception as e:
-            message = f'第{page}页请求失败: {e}'
-            status = 'failed'
-            logger.error(f'[论坛监控] {forum_name} 第{page}页请求失败: {e}')
-            break
+        r = None
+        for attempt in range(2):  # 最多重试1次
+            try:
+                r = s.get(url, timeout=(10, 30))
+                r.encoding = 'gbk'
+                break
+            except Exception as e:
+                if attempt == 0:
+                    logger.warning(f'[论坛监控] {forum_name} 第{page}页首次请求失败，5秒后重试: {e}')
+                    time.sleep(5)
+                else:
+                    logger.error(f'[论坛监控] {forum_name} 第{page}页重试仍失败，跳过: {e}')
+        if r is None:
+            # 两次都失败，跳过本页继续下一页（不中断整个任务）
+            page += 1
+            continue
 
         threads, total_pages = parse_forum_page(r.text, fid, forum_name)
         logger.info(f'[论坛监控] {forum_name} 第{page}页: HTTP {r.status_code}, '

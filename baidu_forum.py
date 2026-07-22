@@ -185,7 +185,12 @@ def _login(s, username, password):
     m_formhash = re.search(r'name="formhash"\s+value="([^"]+)"', r.text)
     m_loginhash = re.search(r'loginhash=([A-Za-z0-9]+)', r.text)
     if not m_formhash or not m_loginhash:
-        raise RuntimeError('登录页解析失败')
+        # 记录诊断信息：HTTP状态、最终URL、HTML片段
+        snippet = r.text[:800] if r.text else '(空)'
+        raise RuntimeError(
+            f'登录页解析失败: HTTP {r.status_code}, URL={r.url}, '
+            f'长度={len(r.text)}, HTML片段: {snippet}'
+        )
     formhash = m_formhash.group(1)
     loginhash = m_loginhash.group(1)
 

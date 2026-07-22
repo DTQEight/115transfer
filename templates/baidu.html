@@ -796,7 +796,7 @@ async function loadSeeds(page) {
         html += '</tbody></table>';
         document.getElementById('seedsList').innerHTML = html;
 
-        // 分页
+        // 分页（滑动窗口：当前页前后各2页 + 首末页）
         var totalPages = Math.ceil(total / pageSize);
         var pgHtml = '';
         if (totalPages > 1) {
@@ -804,15 +804,28 @@ async function loadSeeds(page) {
             if (_seedCurrentPage > 1) {
                 pgHtml += '<li class="page-item"><a class="page-link" href="javascript:loadSeeds(' + (_seedCurrentPage - 1) + ')">上一页</a></li>';
             }
-            for (var i = 1; i <= totalPages && i <= 10; i++) {
+            // 计算要显示的页码范围：当前页前2后2
+            var start = Math.max(1, _seedCurrentPage - 2);
+            var end = Math.min(totalPages, _seedCurrentPage + 2);
+            // 显示首页
+            if (start > 1) {
+                pgHtml += '<li class="page-item"><a class="page-link" href="javascript:loadSeeds(1)">1</a></li>';
+                if (start > 2) pgHtml += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+            }
+            // 显示中间页码
+            for (var i = start; i <= end; i++) {
                 pgHtml += '<li class="page-item ' + (i === _seedCurrentPage ? 'active' : '') + '"><a class="page-link" href="javascript:loadSeeds(' + i + ')">' + i + '</a></li>';
             }
-            if (totalPages > 10) pgHtml += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+            // 显示末页
+            if (end < totalPages) {
+                if (end < totalPages - 1) pgHtml += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+                pgHtml += '<li class="page-item"><a class="page-link" href="javascript:loadSeeds(' + totalPages + ')">' + totalPages + '</a></li>';
+            }
             if (_seedCurrentPage < totalPages) {
                 pgHtml += '<li class="page-item"><a class="page-link" href="javascript:loadSeeds(' + (_seedCurrentPage + 1) + ')">下一页</a></li>';
             }
             pgHtml += '</ul></nav>';
-            pgHtml += '<div class="text-muted small text-center">共 ' + total + ' 条</div>';
+            pgHtml += '<div class="text-muted small text-center">第 ' + _seedCurrentPage + '/' + totalPages + ' 页，共 ' + total + ' 条</div>';
         }
         document.getElementById('seedsPagination').innerHTML = pgHtml;
     } catch (e) {

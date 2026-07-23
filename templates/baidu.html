@@ -670,43 +670,58 @@ async function loadDashboard() {
 
 function renderDashboard(d) {
     var html = '';
+    // 空值保护，避免字段缺失时 toLocaleString() 抛 TypeError
+    d = d || {};
+    var totalThreads = d.total_threads || 0;
+    var totalSeeds = d.total_seeds || 0;
+    var withSeeds = d.threads_with_seeds || 0;
+    var withoutSeeds = d.threads_without_seeds || 0;
+    var seedRate = d.seed_rate || 0;
+
+    // 空数据直接显示提示，避免后续渲染异常
+    if (totalThreads === 0) {
+        document.getElementById('dashboardContent').innerHTML = '<div class="text-muted text-center py-4">暂无数据，请先执行全量拉取</div>';
+        return;
+    }
 
     // 核心指标卡片
     html += '<div class="row g-2 mb-3">';
     html += '<div class="col-6 col-md-3"><div class="card text-center"><div class="card-body py-2">';
-    html += '<div class="text-primary fs-4 fw-bold">' + d.total_threads.toLocaleString() + '</div>';
+    html += '<div class="text-primary fs-4 fw-bold">' + totalThreads.toLocaleString() + '</div>';
     html += '<div class="text-muted small">总帖子数</div>';
     html += '</div></div></div>';
     html += '<div class="col-6 col-md-3"><div class="card text-center"><div class="card-body py-2">';
-    html += '<div class="text-success fs-4 fw-bold">' + d.total_seeds.toLocaleString() + '</div>';
+    html += '<div class="text-success fs-4 fw-bold">' + totalSeeds.toLocaleString() + '</div>';
     html += '<div class="text-muted small">种子文件总数</div>';
     html += '</div></div></div>';
     html += '<div class="col-6 col-md-3"><div class="card text-center"><div class="card-body py-2">';
-    html += '<div class="text-info fs-4 fw-bold">' + d.threads_with_seeds.toLocaleString() + '</div>';
+    html += '<div class="text-info fs-4 fw-bold">' + withSeeds.toLocaleString() + '</div>';
     html += '<div class="text-muted small">有种子帖子</div>';
     html += '</div></div></div>';
     html += '<div class="col-6 col-md-3"><div class="card text-center"><div class="card-body py-2">';
-    html += '<div class="text-warning fs-4 fw-bold">' + d.threads_without_seeds.toLocaleString() + '</div>';
+    html += '<div class="text-warning fs-4 fw-bold">' + withoutSeeds.toLocaleString() + '</div>';
     html += '<div class="text-muted small">无种子帖子</div>';
     html += '</div></div></div>';
     html += '</div>';
 
-    // 种子覆盖率进度条
+    // 种子覆盖率进度条（限制 0-100，避免 NaN/负数）
+    var rateWidth = Math.max(0, Math.min(seedRate, 100));
     html += '<div class="mb-3">';
-    html += '<div class="d-flex justify-content-between mb-1"><span class="small">种子覆盖率</span><span class="small text-muted">' + d.seed_rate + '%</span></div>';
-    html += '<div class="progress" style="height: 8px;"><div class="progress-bar bg-success" style="width: ' + d.seed_rate + '%"></div></div>';
+    html += '<div class="d-flex justify-content-between mb-1"><span class="small">种子覆盖率</span><span class="small text-muted">' + seedRate + '%</span></div>';
+    html += '<div class="progress" style="height: 8px;"><div class="progress-bar bg-success" style="width: ' + rateWidth + '%"></div></div>';
     html += '</div>';
 
     // 各板块爬取进度
     if (d.progress && d.progress.length > 0) {
         html += '<h6 class="mt-3 mb-2"><i class="bi bi-bar-chart me-1"></i>板块爬取进度</h6>';
         d.progress.forEach(function(p) {
+            var pct = Math.max(0, Math.min(p.percent || 0, 100));
             html += '<div class="mb-2">';
             html += '<div class="d-flex justify-content-between mb-1">';
-            html += '<span class="small">' + escapeHtml(p.forum_name || p.fid) + '</span>';
-            html += '<span class="small text-muted">' + p.last_page + ' / ' + p.total_pages + ' 页 (' + p.percent + '%)</span>';
+            html += '<span class="small">' + escapeHtml(p.forum_name || p.fid || '') + '</span>';
+            html += '<span class="small text-muted">' + (p.last_page || 0) + ' / ' + (p.total_pages || 0) + ' 页 (' + pct + '%)</span>';
             html += '</div>';
-            html += '<div class="progress" style="height: 6px;"><div class="progress-bar bg-primary" style="width: ' + Math.min(p.percent, 100) + '%"></div></div>';
+            html += '<div class="progress" style="height: 6px;"><div class="progress-bar bg-primary" style="width: ' + pct + '%"></div></div>';
             html += '</div>';
         });
     }
@@ -716,7 +731,7 @@ function renderDashboard(d) {
         html += '<h6 class="mt-4 mb-2"><i class="bi bi-calendar-week me-1"></i>最近7天每日统计</h6>';
         html += '<table class="table table-sm table-hover"><thead><tr><th>日期</th><th>新增帖子</th><th>新增种子</th></tr></thead><tbody>';
         d.daily_stats.forEach(function(s) {
-            html += '<tr><td>' + s.day + '</td><td>' + (s.threads || 0) + '</td><td>' + (s.seeds || 0) + '</td></tr>';
+            html += '<tr><td>' + escapeHtml(s.day || '') + '</td><td>' + (s.threads || 0) + '</td><td>' + (s.seeds || 0) + '</td></tr>';
         });
         html += '</tbody></table>';
     }
@@ -731,16 +746,12 @@ function renderDashboard(d) {
             var modeBadge = r.mode === 'full' ? '<span class="badge bg-primary">全量</span>' : '<span class="badge bg-info">增量</span>';
             var statusBadge = r.status === 'success' ? '<span class="badge bg-success">成功</span>' :
                               (r.status === 'cancelled' ? '<span class="badge bg-warning">取消</span>' : '<span class="badge bg-danger">失败</span>');
-            html += '<tr><td class="small">' + started + '</td><td>' + modeBadge + '</td>';
+            html += '<tr><td class="small">' + escapeHtml(started) + '</td><td>' + modeBadge + '</td>';
             html += '<td class="small">' + escapeHtml(r.forum_name || '') + '</td>';
-            html += '<td class="small">' + r.pages_crawled + '/' + r.threads_new + '/' + r.seeds_downloaded + '</td>';
+            html += '<td class="small">' + (r.pages_crawled || 0) + '/' + (r.threads_new || 0) + '/' + (r.seeds_downloaded || 0) + '</td>';
             html += '<td>' + statusBadge + '</td></tr>';
         });
         html += '</tbody></table></div>';
-    }
-
-    if (d.total_threads === 0) {
-        html = '<div class="text-muted text-center py-4">暂无数据，请先执行全量拉取</div>';
     }
 
     document.getElementById('dashboardContent').innerHTML = html;
@@ -863,6 +874,12 @@ async function refreshMonitorStatus() {
             }
             document.getElementById('monitorProgressText').textContent =
                 st.current_forum + ' 第' + st.current_page + '页 | 新增' + st.threads_new + '帖 | ' + st.seeds_downloaded + '种子' + etaText;
+            // 更新进度条宽度（基于当前板块进度 cp/planned）
+            var progressBar = document.getElementById('monitorProgressBar');
+            if (progressBar) {
+                var pct = (planned > 0 && cp > 0) ? Math.max(0, Math.min(100, cp * 100 / planned)) : 100;
+                progressBar.style.width = pct + '%';
+            }
             // 运行中轮询
             if (!_monitorPollTimer) {
                 _monitorPollTimer = setInterval(refreshMonitorStatus, 3000);

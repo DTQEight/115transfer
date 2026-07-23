@@ -15,6 +15,7 @@ import uuid
 import sqlite3
 import threading
 import logging
+from contextlib import contextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -85,7 +86,10 @@ def _now_iso() -> str:
 # ==================== SQLite 初始化 ====================
 
 def _get_db() -> sqlite3.Connection:
-    """获取 SQLite 连接（WAL 模式提升并发读写）"""
+    """获取 SQLite 连接（WAL 模式提升并发读写）
+
+    注意：调用方必须负责关闭连接。推荐使用 `with _db_ctx() as conn:` 模式。
+    """
     os.makedirs(os.path.dirname(_DB_FILE), exist_ok=True)
     conn = sqlite3.connect(_DB_FILE, timeout=30)
     conn.row_factory = sqlite3.Row
@@ -94,9 +98,26 @@ def _get_db() -> sqlite3.Connection:
     return conn
 
 
+@contextmanager
+def _db_ctx() -> Any:
+    """SQLite 连接上下文管理器：退出时自动 commit/rollback 并关闭连接
+
+    解决 sqlite3.Connection 的 with 语法只 commit 不 close 的泄漏问题。
+    """
+    conn = _get_db()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def _init_db() -> None:
     """初始化表结构"""
-    with _get_db() as conn:
+    with _db_ctx() as conn:
         conn.executescript('''
             CREATE TABLE IF NOT EXISTS threads (
                 tid TEXT PRIMARY KEY,
@@ -327,13 +348,22 @@ def _save_seed_file(content: bytes, fid: str, tid: str, aid: str) -> str:
     Returns:
         相对路径（相对于 _SEED_DIR），如 '12/12345_67890.torrent'
     """
-    dir_path = os.path.join(_SEED_DIR, fid)
+    # 安全校验：fid/tid/aid 只允许字母数字下划线短横，防止路径遍历
+    safe_fid = re.sub(r'[^a-zA-Z0-9_-]', '', fid)
+    safe_tid = re.sub(r'[^a-zA-Z0-9_-]', '', tid)
+    safe_aid = re.sub(r'[^a-zA-Z0-9_-]', '', aid)
+    if not safe_fid or not safe_tid or not safe_aid:
+        raise ValueError('无效的文件标识符')
+    dir_path = os.path.join(_SEED_DIR, safe_fid)
     os.makedirs(dir_path, exist_ok=True)
-    filename = f'{tid}_{aid}.torrent'
+    filename = f'{safe_tid}_{safe_aid}.torrent'
     filepath = os.path.join(dir_path, filename)
+    # 二次校验：确保最终路径未逃出 _SEED_DIR
+    if not os.path.abspath(filepath).startswith(os.path.abspath(_SEED_DIR) + os.sep):
+        raise ValueError('路径遍历攻击')
     with open(filepath, 'wb') as f:
         f.write(content)
-    return os.path.join(fid, filename)
+    return os.path.join(safe_fid, filename)
 
 
 def download_thread_seeds(tid: str, fid: str) -> List[str]:
@@ -368,7 +398,7 @@ def _upsert_thread(thread: Dict[str, str], seed_paths: List[str]) -> bool:
     Returns:
         True 表示新帖（首次插入），False 表示已存在
     """
-    with _get_db() as conn:
+    with _db_ctx() as conn:
         cur = conn.execute('SELECT tid FROM threads WHERE tid=?', (thread['tid'],))
         exists = cur.fetchone() is not None
         conn.execute('''
@@ -395,7 +425,7 @@ def _get_known_tids(tids: List[str]) -> set:
     """批量查询已存在的 tid 集合"""
     if not tids:
         return set()
-    with _get_db() as conn:
+    with _db_ctx() as conn:
         placeholders = ','.join('?' * len(tids))
         cur = conn.execute(f'SELECT tid FROM threads WHERE tid IN ({placeholders})', tids)
         return {row['tid'] for row in cur.fetchall()}
@@ -404,7 +434,7 @@ def _get_known_tids(tids: List[str]) -> set:
 def _update_progress(fid: str, forum_name: str, last_page: int, last_tid: str,
                      total_pages: int, mode: str) -> None:
     """更新板块爬取进度"""
-    with _get_db() as conn:
+    with _db_ctx() as conn:
         conn.execute('''
             INSERT INTO crawl_progress (fid, forum_name, last_page, last_tid, last_crawl_at, total_pages, mode)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -420,7 +450,7 @@ def _update_progress(fid: str, forum_name: str, last_page: int, last_tid: str,
 
 def _get_progress(fid: str) -> Optional[Dict[str, Any]]:
     """获取板块爬取进度"""
-    with _get_db() as conn:
+    with _db_ctx() as conn:
         cur = conn.execute('SELECT * FROM crawl_progress WHERE fid=?', (fid,))
         row = cur.fetchone()
         return dict(row) if row else None
@@ -431,7 +461,7 @@ def _insert_log(run_id: str, started_at: str, finished_at: str, mode: str,
                 threads_found: int, threads_new: int,
                 seeds_downloaded: int, status: str, message: str) -> None:
     """插入监控日志"""
-    with _get_db() as conn:
+    with _db_ctx() as conn:
         conn.execute('''
             INSERT INTO monitor_log
                 (run_id, started_at, finished_at, mode, fid, forum_name,
@@ -503,10 +533,14 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
     start_page = 1
     if mode == 'full':
         prog = _get_progress(fid)
-        if prog and prog.get('last_page'):
-            # 上次爬到 last_page，本次从 last_page 继续（last_page 本身可能未完成，重新爬）
-            start_page = prog['last_page']
-            logger.info(f'[论坛监控] {forum_name} 全量断点续传：从第{start_page}页开始')
+        if prog and prog.get('last_page') and prog.get('total_pages'):
+            # 仅当上次未完成时才断点续传（last_page < total_pages）
+            # 上次已完成（last_page >= total_pages）则从第1页重新爬取新帖
+            if prog['last_page'] < prog['total_pages']:
+                start_page = prog['last_page']
+                logger.info(f'[论坛监控] {forum_name} 全量断点续传：从第{start_page}页开始（总{prog["total_pages"]}页）')
+            else:
+                logger.info(f'[论坛监控] {forum_name} 上次全量已完成，从第1页重新爬取新帖')
     page = start_page
     # 全量模式：max_pages 设大值（99999），实际靠 total_pages 自然停止
     # 增量模式：max_pages 解释为"最多爬多少页"（相对数量），从第1页开始
@@ -815,7 +849,7 @@ def list_threads(fid: Optional[str] = None, keyword: str = '',
     Returns:
         (rows, total)
     """
-    with _get_db() as conn:
+    with _db_ctx() as conn:
         where: List[str] = []
         params: List[Any] = []
         if fid:
@@ -843,7 +877,7 @@ def list_threads(fid: Optional[str] = None, keyword: str = '',
 
 def list_forums_with_progress() -> List[Dict[str, Any]]:
     """列出所有板块及其爬取进度"""
-    with _get_db() as conn:
+    with _db_ctx() as conn:
         cur = conn.execute('''
             SELECT p.fid, p.forum_name, p.last_page, p.last_tid,
                    p.last_crawl_at, p.total_pages, p.mode,
@@ -856,7 +890,7 @@ def list_forums_with_progress() -> List[Dict[str, Any]]:
 
 def get_statistics() -> Dict[str, Any]:
     """获取统计信息"""
-    with _get_db() as conn:
+    with _db_ctx() as conn:
         cur = conn.execute('SELECT COUNT(*) as c, SUM(seed_count) as s FROM threads')
         row = cur.fetchone()
         cur2 = conn.execute('SELECT COUNT(DISTINCT fid) as f FROM crawl_progress')
@@ -870,7 +904,7 @@ def get_statistics() -> Dict[str, Any]:
 
 def list_recent_logs(limit: int = 20) -> List[Dict[str, Any]]:
     """获取最近监控日志"""
-    with _get_db() as conn:
+    with _db_ctx() as conn:
         cur = conn.execute(
             'SELECT * FROM monitor_log ORDER BY id DESC LIMIT ?',
             (limit,)
@@ -893,7 +927,7 @@ def get_dashboard() -> Dict[str, Any]:
             'daily_stats': 最近7天每日新增帖子和种子数,
         }
     """
-    with _get_db() as conn:
+    with _db_ctx() as conn:
         # 总帖子数和种子统计
         cur = conn.execute(
             'SELECT COUNT(*) as total, '

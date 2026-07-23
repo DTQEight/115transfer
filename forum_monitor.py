@@ -571,6 +571,11 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
                     if is_new:
                         threads_new += 1
                     seeds_downloaded += len(seed_paths)
+                    # 每帖实时更新状态，供前端轮询检测变化
+                    _update_status(
+                        threads_new=threads_new,
+                        seeds_downloaded=seeds_downloaded,
+                    )
                     time.sleep(thread_delay)
             else:
                 # 并发：用线程池下载本页新帖种子
@@ -594,6 +599,11 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
                         if is_new:
                             threads_new += 1
                         seeds_downloaded += len(seed_paths)
+                        # 每帖实时更新状态
+                        _update_status(
+                            threads_new=threads_new,
+                            seeds_downloaded=seeds_downloaded,
+                        )
                 # 并发模式批次间隔
                 if not stop and page < actual_end:
                     time.sleep(thread_delay)

@@ -561,6 +561,13 @@
             }
             options.headers = headers;
             options.credentials = 'same-origin';
+            options.cache = 'no-cache';
+
+            // GET 请求自动加时间戳防缓存
+            if (method === 'GET') {
+                const sep = url.includes('?') ? '&' : '?';
+                url = url + sep + '_t=' + Date.now();
+            }
 
             const resp = await fetch(url, options);
             // 401 未登录：跳转登录页

@@ -1986,6 +1986,17 @@ def baidu_monitor_logs() -> Response:
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/baidu/monitor_dashboard')
+def baidu_monitor_dashboard() -> Response:
+    """获取监控统计仪表盘数据"""
+    try:
+        data = forum_monitor.get_dashboard()
+        return jsonify({'success': True, 'dashboard': data})
+    except Exception as e:
+        logger.error(f'[论坛监控] 仪表盘查询失败: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @app.route('/baidu/monitor_seed_download')
 def baidu_monitor_seed_download() -> Union[Response, Tuple[Response, int]]:
     """下载已保存的种子文件"""

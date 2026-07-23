@@ -845,6 +845,87 @@ def list_recent_logs(limit: int = 20) -> List[Dict[str, Any]]:
         return [dict(r) for r in cur.fetchall()]
 
 
+def get_dashboard() -> Dict[str, Any]:
+    """获取监控统计仪表盘数据
+
+    Returns:
+        {
+            'total_threads': 总帖子数,
+            'threads_with_seeds': 有种子的帖子数,
+            'threads_without_seeds': 无种子的帖子数,
+            'total_seeds': 种子文件总数,
+            'seed_rate': 种子覆盖率百分比,
+            'progress': {'fid', 'forum_name', 'last_page', 'total_pages', 'percent'},
+            'recent_runs': 最近10次运行记录,
+            'daily_stats': 最近7天每日新增帖子和种子数,
+        }
+    """
+    with _get_db() as conn:
+        # 总帖子数和种子统计
+        cur = conn.execute(
+            'SELECT COUNT(*) as total, '
+            'SUM(CASE WHEN seed_count > 0 THEN 1 ELSE 0 END) as with_seeds, '
+            'SUM(CASE WHEN seed_count = 0 THEN 1 ELSE 0 END) as without_seeds, '
+            'SUM(seed_count) as total_seeds '
+            'FROM threads'
+        )
+        row = cur.fetchone()
+        total_threads = row['total'] or 0
+        threads_with_seeds = row['with_seeds'] or 0
+        threads_without_seeds = row['without_seeds'] or 0
+        total_seeds = row['total_seeds'] or 0
+        seed_rate = round(threads_with_seeds / total_threads * 100, 1) if total_threads > 0 else 0
+
+        # 各板块进度
+        cur = conn.execute(
+            'SELECT fid, forum_name, last_page, total_pages, last_crawl_at, mode '
+            'FROM crawl_progress ORDER BY fid'
+        )
+        progress = []
+        for r in cur.fetchall():
+            tp = r['total_pages'] or 0
+            lp = r['last_page'] or 0
+            percent = round(lp / tp * 100, 1) if tp > 0 else 0
+            progress.append({
+                'fid': r['fid'],
+                'forum_name': r['forum_name'],
+                'last_page': lp,
+                'total_pages': tp,
+                'percent': percent,
+                'last_crawl_at': r['last_crawl_at'],
+                'mode': r['mode'],
+            })
+
+        # 最近10次运行记录
+        cur = conn.execute(
+            'SELECT started_at, finished_at, mode, forum_name, pages_crawled, '
+            'threads_new, seeds_downloaded, status '
+            'FROM monitor_log ORDER BY id DESC LIMIT 10'
+        )
+        recent_runs = [dict(r) for r in cur.fetchall()]
+
+        # 最近7天每日统计：按 fetched_at 日期分组
+        cur = conn.execute(
+            "SELECT substr(fetched_at, 1, 10) as day, "
+            "COUNT(*) as threads, SUM(seed_count) as seeds "
+            "FROM threads "
+            "WHERE fetched_at >= date('now', '-7 days', 'localtime') "
+            "GROUP BY substr(fetched_at, 1, 10) ORDER BY day"
+        )
+        daily_stats = [dict(r) for r in cur.fetchall()]
+
+    return {
+        'total_threads': total_threads,
+        'threads_with_seeds': threads_with_seeds,
+        'threads_without_seeds': threads_without_seeds,
+        'total_seeds': total_seeds,
+        'seed_rate': seed_rate,
+        'progress': progress,
+        'recent_runs': recent_runs,
+        'daily_stats': daily_stats,
+    }
+
+
 # 模块加载时初始化数据库
 try:
     _init_db()

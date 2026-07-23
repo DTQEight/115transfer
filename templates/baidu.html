@@ -146,10 +146,15 @@
                     </div>
                 </details>
 
-                <!-- Tab 切换：种子列表 / 板块进度 / 日志 -->
+                <!-- Tab 切换：仪表盘 / 种子列表 / 板块进度 / 日志 -->
                 <ul class="nav nav-tabs" role="tablist">
                     <li class="nav-item">
-                        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabSeeds" type="button">
+                        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabDashboard" type="button">
+                            <i class="bi bi-graph-up me-1"></i>统计仪表盘
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabSeeds" type="button">
                             <i class="bi bi-collection me-1"></i>种子列表
                         </button>
                     </li>
@@ -165,8 +170,14 @@
                     </li>
                 </ul>
                 <div class="tab-content mt-3">
+                    <!-- 统计仪表盘 -->
+                    <div class="tab-pane fade show active" id="tabDashboard" role="tabpanel">
+                        <div id="dashboardContent">
+                            <div class="text-muted text-center py-3">加载中...</div>
+                        </div>
+                    </div>
                     <!-- 种子列表 -->
-                    <div class="tab-pane fade show active" id="tabSeeds" role="tabpanel">
+                    <div class="tab-pane fade" id="tabSeeds" role="tabpanel">
                         <div class="input-group mb-3">
                             <input type="text" id="seedKeyword" class="form-control form-control-sm" placeholder="按标题搜索">
                             <button onclick="loadSeeds(1)" class="btn btn-sm btn-outline-primary">搜索</button>
@@ -606,9 +617,103 @@ var _seedCurrentPage = 1;
 async function initMonitor() {
     await loadMonitorConfig();
     await refreshMonitorStatus();
+    await loadDashboard();
     await loadSeeds(1);
     await loadForumsProgress();
     await loadMonitorLogs();
+}
+
+// 仪表盘数据加载与渲染
+async function loadDashboard() {
+    try {
+        var resp = await apiFetch('/baidu/monitor_dashboard');
+        var data = await resp.json();
+        if (!data.success) {
+            document.getElementById('dashboardContent').innerHTML = '<div class="text-danger">加载失败</div>';
+            return;
+        }
+        renderDashboard(data.dashboard);
+    } catch (e) {
+        document.getElementById('dashboardContent').innerHTML = '<div class="text-danger">加载失败: ' + escapeHtml(e.message) + '</div>';
+    }
+}
+
+function renderDashboard(d) {
+    var html = '';
+
+    // 核心指标卡片
+    html += '<div class="row g-2 mb-3">';
+    html += '<div class="col-6 col-md-3"><div class="card text-center"><div class="card-body py-2">';
+    html += '<div class="text-primary fs-4 fw-bold">' + d.total_threads.toLocaleString() + '</div>';
+    html += '<div class="text-muted small">总帖子数</div>';
+    html += '</div></div></div>';
+    html += '<div class="col-6 col-md-3"><div class="card text-center"><div class="card-body py-2">';
+    html += '<div class="text-success fs-4 fw-bold">' + d.total_seeds.toLocaleString() + '</div>';
+    html += '<div class="text-muted small">种子文件总数</div>';
+    html += '</div></div></div>';
+    html += '<div class="col-6 col-md-3"><div class="card text-center"><div class="card-body py-2">';
+    html += '<div class="text-info fs-4 fw-bold">' + d.threads_with_seeds.toLocaleString() + '</div>';
+    html += '<div class="text-muted small">有种子帖子</div>';
+    html += '</div></div></div>';
+    html += '<div class="col-6 col-md-3"><div class="card text-center"><div class="card-body py-2">';
+    html += '<div class="text-warning fs-4 fw-bold">' + d.threads_without_seeds.toLocaleString() + '</div>';
+    html += '<div class="text-muted small">无种子帖子</div>';
+    html += '</div></div></div>';
+    html += '</div>';
+
+    // 种子覆盖率进度条
+    html += '<div class="mb-3">';
+    html += '<div class="d-flex justify-content-between mb-1"><span class="small">种子覆盖率</span><span class="small text-muted">' + d.seed_rate + '%</span></div>';
+    html += '<div class="progress" style="height: 8px;"><div class="progress-bar bg-success" style="width: ' + d.seed_rate + '%"></div></div>';
+    html += '</div>';
+
+    // 各板块爬取进度
+    if (d.progress && d.progress.length > 0) {
+        html += '<h6 class="mt-3 mb-2"><i class="bi bi-bar-chart me-1"></i>板块爬取进度</h6>';
+        d.progress.forEach(function(p) {
+            html += '<div class="mb-2">';
+            html += '<div class="d-flex justify-content-between mb-1">';
+            html += '<span class="small">' + escapeHtml(p.forum_name || p.fid) + '</span>';
+            html += '<span class="small text-muted">' + p.last_page + ' / ' + p.total_pages + ' 页 (' + p.percent + '%)</span>';
+            html += '</div>';
+            html += '<div class="progress" style="height: 6px;"><div class="progress-bar bg-primary" style="width: ' + Math.min(p.percent, 100) + '%"></div></div>';
+            html += '</div>';
+        });
+    }
+
+    // 最近7天每日统计
+    if (d.daily_stats && d.daily_stats.length > 0) {
+        html += '<h6 class="mt-4 mb-2"><i class="bi bi-calendar-week me-1"></i>最近7天每日统计</h6>';
+        html += '<table class="table table-sm table-hover"><thead><tr><th>日期</th><th>新增帖子</th><th>新增种子</th></tr></thead><tbody>';
+        d.daily_stats.forEach(function(s) {
+            html += '<tr><td>' + s.day + '</td><td>' + (s.threads || 0) + '</td><td>' + (s.seeds || 0) + '</td></tr>';
+        });
+        html += '</tbody></table>';
+    }
+
+    // 最近运行记录
+    if (d.recent_runs && d.recent_runs.length > 0) {
+        html += '<h6 class="mt-4 mb-2"><i class="bi bi-clock-history me-1"></i>最近运行记录</h6>';
+        html += '<div class="table-responsive"><table class="table table-sm table-hover">';
+        html += '<thead><tr><th>开始时间</th><th>模式</th><th>板块</th><th>页/新帖/种子</th><th>状态</th></tr></thead><tbody>';
+        d.recent_runs.forEach(function(r) {
+            var started = r.started_at ? r.started_at.substring(0, 16).replace('T', ' ') : '';
+            var modeBadge = r.mode === 'full' ? '<span class="badge bg-primary">全量</span>' : '<span class="badge bg-info">增量</span>';
+            var statusBadge = r.status === 'success' ? '<span class="badge bg-success">成功</span>' :
+                              (r.status === 'cancelled' ? '<span class="badge bg-warning">取消</span>' : '<span class="badge bg-danger">失败</span>');
+            html += '<tr><td class="small">' + started + '</td><td>' + modeBadge + '</td>';
+            html += '<td class="small">' + escapeHtml(r.forum_name || '') + '</td>';
+            html += '<td class="small">' + r.pages_crawled + '/' + r.threads_new + '/' + r.seeds_downloaded + '</td>';
+            html += '<td>' + statusBadge + '</td></tr>';
+        });
+        html += '</tbody></table></div>';
+    }
+
+    if (d.total_threads === 0) {
+        html = '<div class="text-muted text-center py-4">暂无数据，请先执行全量拉取</div>';
+    }
+
+    document.getElementById('dashboardContent').innerHTML = html;
 }
 
 async function loadMonitorConfig() {
@@ -685,6 +790,7 @@ async function refreshMonitorStatus() {
                 _monitorPollTimer = setInterval(refreshMonitorStatus, 3000);
             }
         } else {
+            var wasRunning = !!_monitorPollTimer;  // 之前是否在轮询（即从运行转停止）
             badge.className = 'badge bg-secondary';
             badge.textContent = '未运行';
             statusBar.style.display = 'none';
@@ -694,6 +800,13 @@ async function refreshMonitorStatus() {
             if (_monitorPollTimer) {
                 clearInterval(_monitorPollTimer);
                 _monitorPollTimer = null;
+            }
+            // 任务刚结束：自动刷新仪表盘和列表
+            if (wasRunning) {
+                loadDashboard();
+                loadSeeds(_seedCurrentPage);
+                loadForumsProgress();
+                loadMonitorLogs();
             }
         }
     } catch (e) {

@@ -178,9 +178,16 @@
                     </div>
                     <!-- 种子列表 -->
                     <div class="tab-pane fade" id="tabSeeds" role="tabpanel">
-                        <div class="input-group mb-3">
-                            <input type="text" id="seedKeyword" class="form-control form-control-sm" placeholder="按标题搜索">
-                            <button onclick="loadSeeds(1)" class="btn btn-sm btn-outline-primary">搜索</button>
+                        <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+                            <div class="btn-group btn-group-sm" role="group" id="seedFilterGroup">
+                                <button type="button" class="btn btn-outline-secondary active" data-seed-filter="" onclick="setSeedFilter('')">全部</button>
+                                <button type="button" class="btn btn-outline-success" data-seed-filter="with_seeds" onclick="setSeedFilter('with_seeds')">有种</button>
+                                <button type="button" class="btn btn-outline-warning" data-seed-filter="no_seeds" onclick="setSeedFilter('no_seeds')">无种</button>
+                            </div>
+                            <div class="input-group input-group-sm flex-grow-1" style="max-width:320px;">
+                                <input type="text" id="seedKeyword" class="form-control form-control-sm" placeholder="按标题搜索">
+                                <button onclick="loadSeeds(1)" class="btn btn-sm btn-outline-primary">搜索</button>
+                            </div>
                         </div>
                         <div id="seedsList" class="table-responsive">
                             <div class="text-muted text-center py-3">点击"刷新"或搜索查看种子</div>
@@ -612,6 +619,7 @@ function fallbackCopy(text) {
 
 var _monitorPollTimer = null;
 var _seedCurrentPage = 1;
+var _seedFilter = '';       // 种子列表筛选：'' 全部 / 'with_seeds' 有种 / 'no_seeds' 无种
 var _lastThreadsNew = 0;    // 上次轮询的新帖数，用于检测变化
 var _lastSeedsDownloaded = 0; // 上次轮询的种子数
 var _autoRefreshing = false;  // 防止自动刷新重入
@@ -776,6 +784,35 @@ async function saveMonitorConfig() {
     }
 }
 
+// 格式化时长（秒 → 友好显示，如 "3小时25分"）
+function formatDuration(sec) {
+    if (!sec || sec < 0 || !isFinite(sec)) return '--';
+    var s = Math.round(sec);
+    var days = Math.floor(s / 86400);
+    var hours = Math.floor((s % 86400) / 3600);
+    var mins = Math.floor((s % 3600) / 60);
+    var secs = s % 60;
+    if (days > 0) return days + '天' + hours + '小时';
+    if (hours > 0) return hours + '小时' + mins + '分';
+    if (mins > 0) return mins + '分' + secs + '秒';
+    return secs + '秒';
+}
+
+// 切换种子列表筛选条件
+function setSeedFilter(filter) {
+    _seedFilter = filter;
+    // 更新按钮激活状态
+    var btns = document.querySelectorAll('#seedFilterGroup button');
+    btns.forEach(function(btn) {
+        if (btn.getAttribute('data-seed-filter') === filter) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+    loadSeeds(1);
+}
+
 async function refreshMonitorStatus() {
     try {
         var resp = await apiFetch('/baidu/monitor_status');
@@ -805,8 +842,27 @@ async function refreshMonitorStatus() {
             btnFull.disabled = true;
             btnInc.disabled = true;
             document.getElementById('monitorStatusText').textContent = st.message || '运行中';
+            // 计算预计剩余时间：基于已爬页数/总页数/已用时间
+            var etaText = '';
+            var tp = st.total_pages || 0;
+            var cp = st.current_page || 0;
+            if (tp > 0 && cp > 0 && st.started_at) {
+                // 已用时间（秒）
+                var startedMs = new Date(st.started_at).getTime();
+                var elapsedSec = (Date.now() - startedMs) / 1000;
+                if (elapsedSec > 5 && cp > 0) {
+                    // 剩余页数 × 每页平均耗时
+                    var remainingPages = tp - cp;
+                    if (remainingPages > 0) {
+                        var avgPerPage = elapsedSec / cp;
+                        var etaSec = remainingPages * avgPerPage;
+                        etaText = ' | 预计剩余' + formatDuration(etaSec);
+                    }
+                }
+                etaText = ' | ' + cp + '/' + tp + '页' + etaText;
+            }
             document.getElementById('monitorProgressText').textContent =
-                st.current_forum + ' 第' + st.current_page + '页 | 新增' + st.threads_new + '帖 | ' + st.seeds_downloaded + '种子';
+                st.current_forum + ' 第' + st.current_page + '页 | 新增' + st.threads_new + '帖 | ' + st.seeds_downloaded + '种子' + etaText;
             // 运行中轮询
             if (!_monitorPollTimer) {
                 _monitorPollTimer = setInterval(refreshMonitorStatus, 3000);
@@ -895,6 +951,7 @@ async function loadSeeds(page) {
         var keyword = document.getElementById('seedKeyword').value.trim();
         var url = '/baidu/monitor_threads?page=' + _seedCurrentPage + '&page_size=30';
         if (keyword) url += '&keyword=' + encodeURIComponent(keyword);
+        if (_seedFilter) url += '&seed_filter=' + encodeURIComponent(_seedFilter);
         var resp = await apiFetch(url);
         var data = await resp.json();
         if (!data.success) {

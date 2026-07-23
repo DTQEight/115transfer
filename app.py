@@ -1940,6 +1940,7 @@ def baidu_monitor_threads() -> Response:
     try:
         fid = request.args.get('fid') or None
         keyword = (request.args.get('keyword') or '').strip()
+        seed_filter = (request.args.get('seed_filter') or '').strip()
         try:
             page = max(1, int(request.args.get('page', 1)))
             page_size = max(1, min(200, int(request.args.get('page_size', 50))))
@@ -1947,7 +1948,8 @@ def baidu_monitor_threads() -> Response:
             page, page_size = 1, 50
         offset = (page - 1) * page_size
         rows, total = forum_monitor.list_threads(fid=fid, keyword=keyword,
-                                                  limit=page_size, offset=offset)
+                                                  limit=page_size, offset=offset,
+                                                  seed_filter=seed_filter)
         return jsonify({
             'success': True,
             'threads': rows,

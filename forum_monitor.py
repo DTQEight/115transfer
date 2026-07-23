@@ -40,6 +40,7 @@ _monitor_status: Dict[str, Any] = {
     'started_at': '',
     'current_forum': '',
     'current_page': 0,
+    'total_pages': 0,      # 当前板块总页数（用于计算预计用时）
     'threads_found': 0,
     'threads_new': 0,
     'seeds_downloaded': 0,
@@ -533,6 +534,8 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
         # 首次解析到 total_pages 后，用实际总页数限制循环（全量模式下 end_page=99999）
         if total_pages > 0:
             actual_end = min(end_page, total_pages) if mode == 'full' else end_page
+            # 更新 total_pages 到状态，供前端计算预计用时
+            _update_status(total_pages=total_pages)
         logger.info(f'[论坛监控] {forum_name} 第{page}页: HTTP {r.status_code}, '
                     f'解析到{len(threads)}帖, 总页数={total_pages}, 爬到第{actual_end}页止')
         if not threads:
@@ -659,7 +662,7 @@ def run_full_crawl() -> Dict[str, Any]:
         cfg = get_monitor_config()
         _monitor_status.update({
             'running': True, 'mode': 'full', 'started_at': started_at,
-            'current_forum': '', 'current_page': 0,
+            'current_forum': '', 'current_page': 0, 'total_pages': 0,
             'threads_found': 0, 'threads_new': 0, 'seeds_downloaded': 0,
             'message': '正在发现板块...'
         })
@@ -731,7 +734,7 @@ def run_incremental() -> Dict[str, Any]:
         cfg = get_monitor_config()
         _monitor_status.update({
             'running': True, 'mode': 'incremental', 'started_at': started_at,
-            'current_forum': '', 'current_page': 0,
+            'current_forum': '', 'current_page': 0, 'total_pages': 0,
             'threads_found': 0, 'threads_new': 0, 'seeds_downloaded': 0,
             'message': '正在发现板块...'
         })
@@ -785,13 +788,16 @@ def run_incremental() -> Dict[str, Any]:
 # ==================== 查询接口 ====================
 
 def list_threads(fid: Optional[str] = None, keyword: str = '',
-                 limit: int = 50, offset: int = 0) -> Tuple[List[Dict[str, Any]], int]:
+                 limit: int = 50, offset: int = 0,
+                 seed_filter: str = '') -> Tuple[List[Dict[str, Any]], int]:
     """查询帖子列表
 
     Args:
         fid: 板块ID过滤，None 表示全部
         keyword: 标题关键词模糊搜索
         limit/offset: 分页
+        seed_filter: 种子筛选，'no_seeds' 只看无种子帖子，'with_seeds' 只看有种子的帖子，
+                     ''（默认）不筛选
 
     Returns:
         (rows, total)
@@ -805,6 +811,10 @@ def list_threads(fid: Optional[str] = None, keyword: str = '',
         if keyword:
             where.append('title LIKE ?')
             params.append(f'%{keyword}%')
+        if seed_filter == 'no_seeds':
+            where.append('seed_count = 0')
+        elif seed_filter == 'with_seeds':
+            where.append('seed_count > 0')
         where_clause = (' WHERE ' + ' AND '.join(where)) if where else ''
 
         cur = conn.execute(f'SELECT COUNT(*) as c FROM threads{where_clause}', params)

@@ -612,6 +612,9 @@ function fallbackCopy(text) {
 
 var _monitorPollTimer = null;
 var _seedCurrentPage = 1;
+var _lastThreadsNew = 0;    // 上次轮询的新帖数，用于检测变化
+var _lastSeedsDownloaded = 0; // 上次轮询的种子数
+var _autoRefreshing = false;  // 防止自动刷新重入
 
 // 页面加载时初始化监控配置和状态
 async function initMonitor() {
@@ -621,6 +624,25 @@ async function initMonitor() {
     await loadSeeds(1);
     await loadForumsProgress();
     await loadMonitorLogs();
+}
+
+// 根据当前激活的Tab自动刷新对应内容（任务运行中实时更新）
+async function autoRefreshActiveTab() {
+    var activeTab = document.querySelector('.tab-pane.active');
+    if (!activeTab) return;
+    var tabId = activeTab.id;
+    if (tabId === 'tabDashboard') {
+        await loadDashboard();
+    } else if (tabId === 'tabSeeds') {
+        // 只在第1页自动刷新，避免用户翻页时打断
+        if (_seedCurrentPage === 1) {
+            await loadSeeds(1);
+        }
+    } else if (tabId === 'tabForums') {
+        await loadForumsProgress();
+    } else if (tabId === 'tabLogs') {
+        await loadMonitorLogs();
+    }
 }
 
 // 仪表盘数据加载与渲染
@@ -788,6 +810,14 @@ async function refreshMonitorStatus() {
             // 运行中轮询
             if (!_monitorPollTimer) {
                 _monitorPollTimer = setInterval(refreshMonitorStatus, 3000);
+            }
+            // 检测新帖/种子数变化，自动刷新当前Tab（实时更新）
+            if (!_autoRefreshing &&
+                (st.threads_new !== _lastThreadsNew || st.seeds_downloaded !== _lastSeedsDownloaded)) {
+                _lastThreadsNew = st.threads_new;
+                _lastSeedsDownloaded = st.seeds_downloaded;
+                _autoRefreshing = true;
+                autoRefreshActiveTab().finally(function() { _autoRefreshing = false; });
             }
         } else {
             var wasRunning = !!_monitorPollTimer;  // 之前是否在轮询（即从运行转停止）

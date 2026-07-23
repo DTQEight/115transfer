@@ -9,10 +9,24 @@ movies_data.xlsx
 data/
 backups/
 
+# 敏感配置文件（含账号密码、cookies、API Key）
+baidu_forum_config.json
+*.config.json
+.env
+
+# 数据库文件
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# 种子文件目录
+forum_seeds/
+
 # 虚拟环境
 venv/
 env/
-.env
 .venv/
 
 # Docker 相关
@@ -24,3 +38,4 @@ Thumbs.db
 
 # 日志文件
 *.log
+

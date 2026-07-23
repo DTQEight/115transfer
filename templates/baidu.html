@@ -842,24 +842,24 @@ async function refreshMonitorStatus() {
             btnFull.disabled = true;
             btnInc.disabled = true;
             document.getElementById('monitorStatusText').textContent = st.message || '运行中';
-            // 计算预计剩余时间：基于已爬页数/总页数/已用时间
+            // 计算预计剩余时间：基于当前板块已爬页数/计划页数/当前板块已用时间
+            // 多板块任务用 forum_started_at 隔离各板块耗时，避免把之前板块耗时算进来
             var etaText = '';
-            var tp = st.total_pages || 0;
+            var planned = st.planned_pages || 0;
             var cp = st.current_page || 0;
-            if (tp > 0 && cp > 0 && st.started_at) {
-                // 已用时间（秒）
-                var startedMs = new Date(st.started_at).getTime();
-                var elapsedSec = (Date.now() - startedMs) / 1000;
-                if (elapsedSec > 5 && cp > 0) {
-                    // 剩余页数 × 每页平均耗时
-                    var remainingPages = tp - cp;
+            var forumStarted = st.forum_started_at || '';
+            if (planned > 0 && cp > 0 && forumStarted) {
+                var forumStartMs = new Date(forumStarted).getTime();
+                var forumElapsedSec = (Date.now() - forumStartMs) / 1000;
+                if (forumElapsedSec > 5 && cp > 0) {
+                    var remainingPages = planned - cp;
                     if (remainingPages > 0) {
-                        var avgPerPage = elapsedSec / cp;
+                        var avgPerPage = forumElapsedSec / cp;
                         var etaSec = remainingPages * avgPerPage;
                         etaText = ' | 预计剩余' + formatDuration(etaSec);
                     }
                 }
-                etaText = ' | ' + cp + '/' + tp + '页' + etaText;
+                etaText = ' | ' + cp + '/' + planned + '页' + etaText;
             }
             document.getElementById('monitorProgressText').textContent =
                 st.current_forum + ' 第' + st.current_page + '页 | 新增' + st.threads_new + '帖 | ' + st.seeds_downloaded + '种子' + etaText;

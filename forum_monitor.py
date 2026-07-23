@@ -41,6 +41,8 @@ _monitor_status: Dict[str, Any] = {
     'current_forum': '',
     'current_page': 0,
     'total_pages': 0,      # 当前板块总页数（用于计算预计用时）
+    'forum_started_at': '',  # 当前板块开始爬取时间（ETA 用，多板块任务隔离计时）
+    'planned_pages': 0,    # 本次计划爬取页数（增量模式用 max_pages，全量用 total_pages）
     'threads_found': 0,
     'threads_new': 0,
     'seeds_downloaded': 0,
@@ -491,6 +493,12 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
     message = ''
     status = 'success'
 
+    # 记录当前板块开始时间（ETA 计算，隔离多板块任务的耗时）
+    _update_status(forum_started_at=_now_iso())
+    # 增量模式：计划爬 max_pages 页；全量模式：计划爬 total_pages 页（解析首页后更新）
+    if mode == 'incremental':
+        _update_status(planned_pages=max_pages)
+
     # 断点续传：全量模式下从上次中断的页码继续，而不是每次都从第1页开始
     start_page = 1
     if mode == 'full':
@@ -536,6 +544,9 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
             actual_end = min(end_page, total_pages) if mode == 'full' else end_page
             # 更新 total_pages 到状态，供前端计算预计用时
             _update_status(total_pages=total_pages)
+            # 全量模式：计划爬 total_pages 页（增量模式在板块开始时已设置 max_pages）
+            if mode == 'full':
+                _update_status(planned_pages=total_pages)
         logger.info(f'[论坛监控] {forum_name} 第{page}页: HTTP {r.status_code}, '
                     f'解析到{len(threads)}帖, 总页数={total_pages}, 爬到第{actual_end}页止')
         if not threads:
@@ -663,6 +674,7 @@ def run_full_crawl() -> Dict[str, Any]:
         _monitor_status.update({
             'running': True, 'mode': 'full', 'started_at': started_at,
             'current_forum': '', 'current_page': 0, 'total_pages': 0,
+            'forum_started_at': '', 'planned_pages': 0,
             'threads_found': 0, 'threads_new': 0, 'seeds_downloaded': 0,
             'message': '正在发现板块...'
         })
@@ -735,6 +747,7 @@ def run_incremental() -> Dict[str, Any]:
         _monitor_status.update({
             'running': True, 'mode': 'incremental', 'started_at': started_at,
             'current_forum': '', 'current_page': 0, 'total_pages': 0,
+            'forum_started_at': '', 'planned_pages': 0,
             'threads_found': 0, 'threads_new': 0, 'seeds_downloaded': 0,
             'message': '正在发现板块...'
         })

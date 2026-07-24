@@ -547,6 +547,7 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
     end_page = max_pages
     actual_end = end_page  # 会在解析首页后用 total_pages 更新
     stop = False
+    empty_pages_count = 0  # 连续空页计数，达到阈值才停止
     while page <= end_page and page <= actual_end and not stop:
         # 检查取消标志
         if not _monitor_status.get('running', False):
@@ -584,12 +585,20 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
         logger.info(f'[论坛监控] {forum_name} 第{page}页: HTTP {r.status_code}, '
                     f'解析到{len(threads)}帖, 总页数={total_pages}, 爬到第{actual_end}页止')
         if not threads:
-            message = f'第{page}页无帖子，结束'
-            # 如果第1页就没帖子，记录 HTML 片段帮助诊断
-            if page == 1:
-                snippet = r.text[:2000] if len(r.text) > 2000 else r.text
-                logger.warning(f'[论坛监控] {forum_name}(fid={fid}) 第1页无帖子，HTML片段:\n{snippet}')
-            break
+            # 单页0帖不立即结束：可能是偶发空页或解析失败
+            # 记录 HTML 片段帮助诊断，连续3页都0帖才认为到了末尾
+            empty_pages_count = empty_pages_count + 1
+            snippet = r.text[:1500] if len(r.text) > 1500 else r.text
+            logger.warning(f'[论坛监控] {forum_name}(fid={fid}) 第{page}页无帖子（连续{empty_pages_count}次），HTML片段:\n{snippet}')
+            if empty_pages_count >= 3:
+                message = f'连续{empty_pages_count}页无帖子，结束'
+                break
+            # 未达阈值则跳过本页继续下一页
+            page += 1
+            time.sleep(page_delay)
+            continue
+        else:
+            empty_pages_count = 0  # 重置连续空页计数
 
         threads_found += len(threads)
 

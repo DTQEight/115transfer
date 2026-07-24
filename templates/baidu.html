@@ -1007,12 +1007,11 @@ async function loadSeeds(page) {
                     }
                 });
                 if (seeds.length > 3) seedHtml += '<span class="text-muted small">+' + (seeds.length - 3) + '</span>';
-                // 有种子：允许二次拉取更新
-                opHtml = '<button class="btn btn-sm btn-outline-secondary" onclick="recheckSeeds([\'' + t.tid + '\'])" title="重新拉取确认">' +
-                    '<i class="bi bi-arrow-repeat"></i></button>';
+                // 有种子：无需二次拉取
+                opHtml = '<span class="text-muted small">-</span>';
             } else {
                 seedHtml = '<span class="text-muted">无</span>';
-                // 无种子：高亮二次拉取按钮
+                // 无种子：显示二次拉取按钮
                 opHtml = '<button class="btn btn-sm btn-outline-warning" onclick="recheckSeeds([\'' + t.tid + '\'])" title="二次拉取确认有无种">' +
                     '<i class="bi bi-arrow-repeat me-1"></i>二次拉取</button>';
             }

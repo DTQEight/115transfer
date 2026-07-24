@@ -156,13 +156,14 @@ def _init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_threads_title ON threads(title);
 
             CREATE TABLE IF NOT EXISTS crawl_progress (
-                fid TEXT PRIMARY KEY,
+                fid TEXT,
                 forum_name TEXT,
                 last_page INTEGER DEFAULT 0,
                 last_tid TEXT,
                 last_crawl_at TEXT,
                 total_pages INTEGER,
-                mode TEXT
+                mode TEXT,
+                PRIMARY KEY (fid, mode)
             );
 
             CREATE TABLE IF NOT EXISTS monitor_log (
@@ -181,6 +182,35 @@ def _init_db() -> None:
                 message TEXT
             );
         ''')
+        # 迁移旧表：旧版 crawl_progress 主键为单 fid，增量和全量共用一行
+        # 导致增量跑完后全量断点续传被污染。检测旧表并重建为 (fid, mode) 复合主键。
+        try:
+            cols = conn.execute("PRAGMA table_info(crawl_progress)").fetchall()
+            pk_cols = [c for c in cols if c['pk'] > 0]
+            # 旧表主键只有1列(fid)，新表应有2列(fid, mode)
+            if len(pk_cols) == 1:
+                logger.info('[论坛监控] 迁移 crawl_progress 表：单主键 → 复合主键(fid, mode)')
+                conn.executescript('''
+                    ALTER TABLE crawl_progress RENAME TO crawl_progress_old;
+                    CREATE TABLE crawl_progress (
+                        fid TEXT,
+                        forum_name TEXT,
+                        last_page INTEGER DEFAULT 0,
+                        last_tid TEXT,
+                        last_crawl_at TEXT,
+                        total_pages INTEGER,
+                        mode TEXT,
+                        PRIMARY KEY (fid, mode)
+                    );
+                    INSERT OR IGNORE INTO crawl_progress
+                        (fid, forum_name, last_page, last_tid, last_crawl_at, total_pages, mode)
+                    SELECT fid, forum_name, last_page, last_tid, last_crawl_at, total_pages, mode
+                    FROM crawl_progress_old;
+                    DROP TABLE crawl_progress_old;
+                ''')
+                logger.info('[论坛监控] crawl_progress 迁移完成')
+        except Exception as e:
+            logger.warning(f'[论坛监控] crawl_progress 迁移检查失败（可忽略）: {e}')
 
 
 # ==================== 配置读写（复用 baidu_forum 配置文件） ====================
@@ -495,25 +525,32 @@ def _get_known_tids(tids: List[str]) -> set:
 
 def _update_progress(fid: str, forum_name: str, last_page: int, last_tid: str,
                      total_pages: int, mode: str) -> None:
-    """更新板块爬取进度"""
+    """更新板块爬取进度（按 fid+mode 隔离，全量和增量各自独立）"""
     with _db_ctx() as conn:
         conn.execute('''
             INSERT INTO crawl_progress (fid, forum_name, last_page, last_tid, last_crawl_at, total_pages, mode)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(fid) DO UPDATE SET
+            ON CONFLICT(fid, mode) DO UPDATE SET
                 forum_name=excluded.forum_name,
                 last_page=excluded.last_page,
                 last_tid=excluded.last_tid,
                 last_crawl_at=excluded.last_crawl_at,
-                total_pages=excluded.total_pages,
-                mode=excluded.mode
+                total_pages=excluded.total_pages
         ''', (fid, forum_name, last_page, last_tid, _now_iso(), total_pages, mode))
 
 
-def _get_progress(fid: str) -> Optional[Dict[str, Any]]:
-    """获取板块爬取进度"""
+def _get_progress(fid: str, mode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """获取板块爬取进度
+
+    Args:
+        mode: 指定模式('full'/'incremental')，返回该模式的独立进度；
+              None 则返回任意一行（兼容旧调用）。
+    """
     with _db_ctx() as conn:
-        cur = conn.execute('SELECT * FROM crawl_progress WHERE fid=?', (fid,))
+        if mode:
+            cur = conn.execute('SELECT * FROM crawl_progress WHERE fid=? AND mode=?', (fid, mode))
+        else:
+            cur = conn.execute('SELECT * FROM crawl_progress WHERE fid=?', (fid,))
         row = cur.fetchone()
         return dict(row) if row else None
 
@@ -626,9 +663,10 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
         update_fn(planned_pages=max_pages)
 
     # 断点续传：全量模式下从上次中断的页码继续，而不是每次都从第1页开始
+    # 只读 mode='full' 的进度，不受增量监控的进度污染
     start_page = 1
     if mode == 'full':
-        prog = _get_progress(fid)
+        prog = _get_progress(fid, 'full')
         if prog and prog.get('last_page') and prog.get('total_pages'):
             # 仅当上次未完成时才断点续传（last_page < total_pages）
             # 上次已完成（last_page >= total_pages）则从第1页重新爬取新帖
@@ -1090,13 +1128,19 @@ def list_threads(fid: Optional[str] = None, keyword: str = '',
 
 
 def list_forums_with_progress() -> List[Dict[str, Any]]:
-    """列出所有板块及其爬取进度"""
+    """列出所有板块及其爬取进度
+
+    复合主键(fid, mode)下每个板块可能有两行（全量+增量），
+    这里按 fid 去重：优先显示全量进度，无全量则显示增量进度。
+    """
     with _db_ctx() as conn:
         cur = conn.execute('''
             SELECT p.fid, p.forum_name, p.last_page, p.last_tid,
                    p.last_crawl_at, p.total_pages, p.mode,
                    (SELECT COUNT(*) FROM threads t WHERE t.fid=p.fid) as thread_count
             FROM crawl_progress p
+            WHERE p.mode='full'
+               OR p.fid NOT IN (SELECT fid FROM crawl_progress WHERE mode='full')
             ORDER BY p.forum_name
         ''')
         return [dict(r) for r in cur.fetchall()]
@@ -1157,10 +1201,12 @@ def get_dashboard() -> Dict[str, Any]:
         total_seeds = row['total_seeds'] or 0
         seed_rate = round(threads_with_seeds / total_threads * 100, 1) if total_threads > 0 else 0
 
-        # 各板块进度
+        # 各板块进度（按 fid 去重，优先全量模式）
         cur = conn.execute(
             'SELECT fid, forum_name, last_page, total_pages, last_crawl_at, mode '
-            'FROM crawl_progress ORDER BY fid'
+            'FROM crawl_progress '
+            "WHERE mode='full' OR fid NOT IN (SELECT fid FROM crawl_progress WHERE mode='full') "
+            'ORDER BY fid'
         )
         progress = []
         for r in cur.fetchall():

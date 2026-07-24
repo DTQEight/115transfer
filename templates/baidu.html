@@ -52,7 +52,12 @@
         <div class="card mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-radar me-2"></i>全论坛监控</span>
-                <span id="monitorStatusBadge" class="badge bg-secondary">未运行</span>
+                <div class="d-flex align-items-center gap-2">
+                    <span class="small text-muted">监控</span>
+                    <span id="monitorIncrementalBadge" class="badge bg-secondary">空闲</span>
+                    <span class="small text-muted ms-2">主任务</span>
+                    <span id="monitorStatusBadge" class="badge bg-secondary">未运行</span>
+                </div>
             </div>
             <div class="card-body">
                 <!-- 监控状态条 -->
@@ -63,6 +68,17 @@
                     </div>
                     <div class="progress" style="height:6px;">
                         <div id="monitorProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" style="width:100%"></div>
+                    </div>
+                </div>
+
+                <!-- 增量监控独立状态条（一直在线，与主任务并发） -->
+                <div id="incrementalStatusBar" class="mb-3" style="display:none;">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span id="incrementalStatusText" class="small text-info"></span>
+                        <span id="incrementalProgressText" class="small text-muted"></span>
+                    </div>
+                    <div class="progress" style="height:4px;">
+                        <div id="incrementalProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-info" style="width:100%"></div>
                     </div>
                 </div>
 
@@ -96,8 +112,11 @@
                     <button onclick="startIncremental()" class="btn btn-outline-info" id="btnIncremental">
                         <i class="bi bi-arrow-repeat me-1"></i>增量监控
                     </button>
-                    <button onclick="cancelMonitor()" class="btn btn-outline-danger" id="btnCancel" style="display:none;">
-                        <i class="bi bi-stop-circle me-1"></i>取消
+                    <button onclick="cancelMonitor('main')" class="btn btn-outline-danger" id="btnCancel" style="display:none;">
+                        <i class="bi bi-stop-circle me-1"></i>取消主任务
+                    </button>
+                    <button onclick="cancelMonitor('incremental')" class="btn btn-outline-danger" id="btnCancelIncremental" style="display:none;">
+                        <i class="bi bi-stop-circle me-1"></i>取消监控
                     </button>
                     <button onclick="refreshMonitorStatus()" class="btn btn-outline-secondary">
                         <i class="bi bi-arrow-clockwise me-1"></i>刷新
@@ -188,8 +207,8 @@
                                 <input type="text" id="seedKeyword" class="form-control form-control-sm" placeholder="按标题搜索">
                                 <button onclick="loadSeeds(1)" class="btn btn-sm btn-outline-primary">搜索</button>
                             </div>
-                            <button id="batchRecheckBtn" onclick="batchRecheckSeeds()" class="btn btn-sm btn-outline-danger" style="display:none;">
-                                <i class="bi bi-arrow-repeat me-1"></i>二次拉取本页无种
+                            <button id="batchRecheckBtn" onclick="startRecheckAll()" class="btn btn-sm btn-outline-danger" style="display:none;">
+                                <i class="bi bi-arrow-repeat me-1"></i>二次拉取全部无种
                             </button>
                         </div>
                         <div id="seedsList" class="table-responsive">
@@ -623,8 +642,10 @@ function fallbackCopy(text) {
 var _monitorPollTimer = null;
 var _seedCurrentPage = 1;
 var _seedFilter = '';       // 种子列表筛选：'' 全部 / 'with_seeds' 有种 / 'no_seeds' 无种
-var _lastThreadsNew = 0;    // 上次轮询的新帖数，用于检测变化
-var _lastSeedsDownloaded = 0; // 上次轮询的种子数
+var _lastThreadsNew = 0;    // 上次轮询的主任务新帖数，用于检测变化
+var _lastSeedsDownloaded = 0; // 上次轮询的主任务种子数
+var _lastIncThreadsNew = 0;   // 增量监控新帖数（独立计数）
+var _lastIncSeedsDownloaded = 0; // 增量监控种子数
 var _autoRefreshing = false;  // 防止自动刷新重入
 
 // 页面加载时初始化监控配置和状态
@@ -830,12 +851,28 @@ function setSeedFilter(filter) {
     loadSeeds(1);
 }
 
+// 计算预计剩余时间文本（复用逻辑：主任务和增量监控都用）
+function _calcEta(statusObj) {
+    var planned = statusObj.planned_pages || 0;
+    var cp = statusObj.current_page || 0;
+    var forumStarted = statusObj.forum_started_at || '';
+    if (!(planned > 0 && cp > 0 && forumStarted)) return '';
+    var forumStartMs = new Date(forumStarted).getTime();
+    var forumElapsedSec = (Date.now() - forumStartMs) / 1000;
+    if (forumElapsedSec <= 5) return '';
+    var remaining = planned - cp;
+    if (remaining <= 0) return '';
+    var avg = forumElapsedSec / cp;
+    return ' | 预计剩余' + formatDuration(remaining * avg);
+}
+
 async function refreshMonitorStatus() {
     try {
         var resp = await apiFetch('/baidu/monitor_status');
         var data = await resp.json();
         if (!data.success) return;
         var st = data.status;
+        var inc = st.incremental || {};  // 增量监控独立状态
         var stats = data.statistics;
         var cfg = data.config;
 
@@ -844,53 +881,41 @@ async function refreshMonitorStatus() {
         document.getElementById('statSeeds').textContent = stats.total_seeds || 0;
         document.getElementById('statForums').textContent = stats.forums_crawled || 0;
 
-        // 状态徽章
+        // ===== 主任务状态（全量/二次拉取）=====
         var badge = document.getElementById('monitorStatusBadge');
         var statusBar = document.getElementById('monitorStatusBar');
         var btnCancel = document.getElementById('btnCancel');
         var btnFull = document.getElementById('btnFullCrawl');
+        // 增量监控按钮独立控制，不受主任务影响
         var btnInc = document.getElementById('btnIncremental');
 
         if (st.running) {
             badge.className = 'badge bg-success';
-            badge.textContent = (st.mode === 'full' ? '全量拉取中' : '增量监控中');
+            var modeText = {full: '全量拉取中', recheck: '二次拉取中'}[st.mode] || '运行中';
+            badge.textContent = modeText;
             statusBar.style.display = '';
             btnCancel.style.display = '';
             btnFull.disabled = true;
-            btnInc.disabled = true;
+            var batchBtn = document.getElementById('batchRecheckBtn');
+            if (batchBtn) batchBtn.disabled = true;
             document.getElementById('monitorStatusText').textContent = st.message || '运行中';
-            // 计算预计剩余时间：基于当前板块已爬页数/计划页数/当前板块已用时间
-            // 多板块任务用 forum_started_at 隔离各板块耗时，避免把之前板块耗时算进来
-            var etaText = '';
-            var planned = st.planned_pages || 0;
+            var unit = st.mode === 'recheck' ? '个' : '页';
+            var etaText = _calcEta(st);
             var cp = st.current_page || 0;
-            var forumStarted = st.forum_started_at || '';
-            if (planned > 0 && cp > 0 && forumStarted) {
-                var forumStartMs = new Date(forumStarted).getTime();
-                var forumElapsedSec = (Date.now() - forumStartMs) / 1000;
-                if (forumElapsedSec > 5 && cp > 0) {
-                    var remainingPages = planned - cp;
-                    if (remainingPages > 0) {
-                        var avgPerPage = forumElapsedSec / cp;
-                        var etaSec = remainingPages * avgPerPage;
-                        etaText = ' | 预计剩余' + formatDuration(etaSec);
-                    }
-                }
-                etaText = ' | ' + cp + '/' + planned + '页' + etaText;
+            var planned = st.planned_pages || 0;
+            var progressLine;
+            if (st.mode === 'recheck') {
+                progressLine = st.current_forum + ' ' + cp + '/' + planned + unit + ' | 发现有种' + st.threads_new + '个' + etaText;
+            } else {
+                progressLine = st.current_forum + ' 第' + cp + unit + ' | 新增' + st.threads_new + '帖 | ' + st.seeds_downloaded + '种子' + etaText;
             }
-            document.getElementById('monitorProgressText').textContent =
-                st.current_forum + ' 第' + st.current_page + '页 | 新增' + st.threads_new + '帖 | ' + st.seeds_downloaded + '种子' + etaText;
-            // 更新进度条宽度（基于当前板块进度 cp/planned）
+            document.getElementById('monitorProgressText').textContent = progressLine;
             var progressBar = document.getElementById('monitorProgressBar');
             if (progressBar) {
                 var pct = (planned > 0 && cp > 0) ? Math.max(0, Math.min(100, cp * 100 / planned)) : 100;
                 progressBar.style.width = pct + '%';
             }
-            // 运行中轮询
-            if (!_monitorPollTimer) {
-                _monitorPollTimer = setInterval(refreshMonitorStatus, 3000);
-            }
-            // 检测新帖/种子数变化，自动刷新当前Tab（实时更新）
+            // 检测主任务新帖/种子数变化，自动刷新当前Tab
             if (!_autoRefreshing &&
                 (st.threads_new !== _lastThreadsNew || st.seeds_downloaded !== _lastSeedsDownloaded)) {
                 _lastThreadsNew = st.threads_new;
@@ -899,23 +924,70 @@ async function refreshMonitorStatus() {
                 autoRefreshActiveTab().finally(function() { _autoRefreshing = false; });
             }
         } else {
-            var wasRunning = !!_monitorPollTimer;  // 之前是否在轮询（即从运行转停止）
+            var wasRunning = !!_monitorPollTimer;
             badge.className = 'badge bg-secondary';
             badge.textContent = '未运行';
             statusBar.style.display = 'none';
             btnCancel.style.display = 'none';
             btnFull.disabled = false;
-            btnInc.disabled = false;
-            if (_monitorPollTimer) {
-                clearInterval(_monitorPollTimer);
-                _monitorPollTimer = null;
-            }
+            var batchBtn2 = document.getElementById('batchRecheckBtn');
+            if (batchBtn2) batchBtn2.disabled = false;
             // 任务刚结束：自动刷新仪表盘和列表
             if (wasRunning) {
                 loadDashboard();
                 loadSeeds(_seedCurrentPage);
                 loadForumsProgress();
                 loadMonitorLogs();
+            }
+        }
+
+        // ===== 增量监控独立状态（一直在线，与主任务并发）=====
+        var incBadge = document.getElementById('monitorIncrementalBadge');
+        var incBar = document.getElementById('incrementalStatusBar');
+        var incCancelBtn = document.getElementById('btnCancelIncremental');
+        // 增量按钮：增量运行时禁用，主任务运行时不影响
+        btnInc.disabled = !!inc.running;
+
+        if (inc.running) {
+            incBadge.className = 'badge bg-info';
+            incBadge.textContent = '监控中';
+            incBar.style.display = '';
+            incCancelBtn.style.display = '';
+            document.getElementById('incrementalStatusText').textContent = inc.message || '增量监控中';
+            var iCp = inc.current_page || 0;
+            var iPlanned = inc.planned_pages || 0;
+            var iEta = _calcEta(inc);
+            document.getElementById('incrementalProgressText').textContent =
+                inc.current_forum + ' 第' + iCp + '页 | 新增' + inc.threads_new + '帖' + iEta;
+            var incProgressBar = document.getElementById('incrementalProgressBar');
+            if (incProgressBar) {
+                var iPct = (iPlanned > 0 && iCp > 0) ? Math.max(0, Math.min(100, iCp * 100 / iPlanned)) : 100;
+                incProgressBar.style.width = iPct + '%';
+            }
+            // 增量监控发现新帖也刷新当前Tab（与主任务计数合并判断）
+            if (!_autoRefreshing &&
+                (inc.threads_new !== _lastIncThreadsNew || inc.seeds_downloaded !== _lastIncSeedsDownloaded)) {
+                _lastIncThreadsNew = inc.threads_new;
+                _lastIncSeedsDownloaded = inc.seeds_downloaded;
+                _autoRefreshing = true;
+                autoRefreshActiveTab().finally(function() { _autoRefreshing = false; });
+            }
+        } else {
+            incBadge.className = 'badge bg-secondary';
+            incBadge.textContent = '空闲';
+            incBar.style.display = 'none';
+            incCancelBtn.style.display = 'none';
+        }
+
+        // 任一任务运行中则保持轮询
+        if (st.running || inc.running) {
+            if (!_monitorPollTimer) {
+                _monitorPollTimer = setInterval(refreshMonitorStatus, 3000);
+            }
+        } else {
+            if (_monitorPollTimer) {
+                clearInterval(_monitorPollTimer);
+                _monitorPollTimer = null;
             }
         }
     } catch (e) {
@@ -956,9 +1028,11 @@ async function startIncremental() {
     }
 }
 
-async function cancelMonitor() {
+async function cancelMonitor(target) {
+    target = target || 'main';
     try {
         var formData = new FormData();
+        formData.append('target', target);
         var resp = await apiFetch('/baidu/monitor_cancel', { method: 'POST', body: formData });
         var data = await resp.json();
         showToast(data.message, data.success ? 'success' : 'danger');
@@ -1116,20 +1190,25 @@ async function recheckSeeds(tids) {
     }
 }
 
-// 批量二次拉取本页所有无种帖子
-async function batchRecheckSeeds() {
-    // 从当前表格中收集所有无种帖子的 tid
-    var tids = [];
-    var btns = document.querySelectorAll('button[onclick^="recheckSeeds"]');
-    btns.forEach(function(btn) {
-        var m = btn.getAttribute('onclick').match(/recheckSeeds\(\['(\d+)'\]\)/);
-        if (m) tids.push(m[1]);
-    });
-    if (tids.length === 0) {
-        showToast('当前页无无种帖子', 'warning');
-        return;
+// 全量二次拉取所有无种帖子（后台异步执行，进度通过监控状态条展示）
+async function startRecheckAll() {
+    if (!confirm('全量二次拉取会重新访问所有无种子帖子页面下载种子，可能耗时较长。确认开始？')) return;
+    try {
+        var resp = await apiFetch('/baidu/monitor_recheck_all', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({delay: 3})
+        });
+        var data = await resp.json();
+        if (data.success) {
+            showToast(data.message, 'success');
+            refreshMonitorStatus();
+        } else {
+            showToast(data.message || '启动失败', 'danger');
+        }
+    } catch (e) {
+        showToast('启动失败: ' + e.message, 'danger');
     }
-    await recheckSeeds(tids);
 }
 
 async function loadForumsProgress() {

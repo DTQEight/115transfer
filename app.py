@@ -1894,8 +1894,9 @@ def baidu_monitor_status() -> Response:
 def baidu_monitor_full() -> Response:
     """手动触发全量拉取（后台异步执行）"""
     try:
+        # 仅检查主任务锁（全量/二次拉取互斥），不阻止增量监控
         if forum_monitor.get_status()['running']:
-            return jsonify({'success': False, 'message': '已有监控任务在运行'})
+            return jsonify({'success': False, 'message': '主任务已在运行（全量/二次拉取），请先取消'})
         import threading as _threading
         t = _threading.Thread(target=forum_monitor.run_full_crawl, daemon=True)
         t.start()
@@ -1907,10 +1908,11 @@ def baidu_monitor_full() -> Response:
 
 @app.route('/baidu/monitor_incremental', methods=['POST'])
 def baidu_monitor_incremental() -> Response:
-    """手动触发增量监控（后台异步执行）"""
+    """手动触发增量监控（后台异步执行，与主任务独立）"""
     try:
-        if forum_monitor.get_status()['running']:
-            return jsonify({'success': False, 'message': '已有监控任务在运行'})
+        # 增量监控独立锁，不检查主任务状态：全量拉取中也可启动增量
+        if forum_monitor.get_status().get('incremental', {}).get('running'):
+            return jsonify({'success': False, 'message': '增量监控已在运行'})
         import threading as _threading
         t = _threading.Thread(target=forum_monitor.run_incremental, daemon=True)
         t.start()
@@ -1922,15 +1924,47 @@ def baidu_monitor_incremental() -> Response:
 
 @app.route('/baidu/monitor_cancel', methods=['POST'])
 def baidu_monitor_cancel() -> Response:
-    """取消正在运行的监控任务"""
+    """取消正在运行的监控任务
+
+    支持参数 target: 'main'(默认) / 'incremental' / 'all'
+    """
     try:
-        cancelled = forum_monitor.cancel()
+        target = (request.form.get('target') or 'main').strip()
+        if target not in ('main', 'incremental', 'all'):
+            target = 'main'
+        cancelled = forum_monitor.cancel(target)
         if cancelled:
-            logger.info('[论坛监控] 用户请求取消监控任务')
+            logger.info(f'[论坛监控] 用户请求取消任务: {target}')
             return jsonify({'success': True, 'message': '已请求取消，任务将在下一次循环检查时停止'})
         return jsonify({'success': False, 'message': '当前没有运行中的监控任务'})
     except Exception as e:
         logger.error(f'[论坛监控] 取消失败: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/baidu/monitor_recheck_all', methods=['POST'])
+def baidu_monitor_recheck_all() -> Response:
+    """全量二次拉取所有无种子帖子（后台异步执行）
+
+    请求体（JSON）: {'delay': 3}  可选帖间延迟，默认3秒
+    """
+    try:
+        if forum_monitor.get_status()['running']:
+            return jsonify({'success': False, 'message': '已有监控任务在运行，请先取消'})
+        delay = 3.0
+        if request.is_json:
+            data = request.get_json() or {}
+            try:
+                delay = float(data.get('delay') or 3)
+            except (ValueError, TypeError):
+                delay = 3.0
+        delay = max(0.5, min(delay, 30))
+        import threading as _threading
+        t = _threading.Thread(target=forum_monitor.run_recheck_all_no_seeds, args=(delay,), daemon=True)
+        t.start()
+        return jsonify({'success': True, 'message': '全量二次拉取已启动，请在状态页查看进度'})
+    except Exception as e:
+        logger.error(f'[论坛监控] 启动全量二次拉取失败: {e}')
         return jsonify({'success': False, 'message': str(e)}), 500
 
 

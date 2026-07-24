@@ -32,18 +32,39 @@ _SEED_DIR: str = os.path.join(_DATA_DIR, 'forum_seeds')
 _CONFIG_KEY: str = 'monitor'
 _BJ_TZ = ZoneInfo("Asia/Shanghai")
 
-# 监控锁：防止全量/增量/手动任务并发执行
-_monitor_lock: threading.Lock = threading.Lock()
-# 监控运行状态（内存中，UI 查询用）
+# 主任务锁：全量拉取 / 二次拉取互斥（耗时大任务）
+_crawl_lock: threading.Lock = threading.Lock()
+# 增量监控锁：独立于主任务，可与全量拉取并发，但自身不可重入
+_incremental_lock: threading.Lock = threading.Lock()
+# 兼容旧引用（部分代码仍用 _monitor_lock 名称）
+_monitor_lock = _crawl_lock
+
+# 主任务运行状态（全量/二次拉取，内存中，UI 查询用）
 _monitor_status: Dict[str, Any] = {
     'running': False,
-    'mode': '',            # 'full' / 'incremental'
+    'mode': '',            # 'full' / 'recheck'
     'started_at': '',
     'current_forum': '',
     'current_page': 0,
     'total_pages': 0,      # 当前板块总页数（用于计算预计用时）
     'forum_started_at': '',  # 当前板块开始爬取时间（ETA 用，多板块任务隔离计时）
     'planned_pages': 0,    # 本次计划爬取页数（增量模式用 max_pages，全量用 total_pages）
+    'threads_found': 0,
+    'threads_new': 0,
+    'seeds_downloaded': 0,
+    'message': '',
+}
+
+# 增量监控独立状态（与主任务并发运行，一直在线）
+_incremental_status: Dict[str, Any] = {
+    'running': False,
+    'mode': 'incremental',
+    'started_at': '',
+    'current_forum': '',
+    'current_page': 0,
+    'total_pages': 0,
+    'forum_started_at': '',
+    'planned_pages': 0,
     'threads_found': 0,
     'threads_new': 0,
     'seeds_downloaded': 0,
@@ -515,21 +536,44 @@ def _insert_log(run_id: str, started_at: str, finished_at: str, mode: str,
 # ==================== 状态管理 ====================
 
 def get_status() -> Dict[str, Any]:
-    """获取监控运行状态"""
-    return dict(_monitor_status)
+    """获取监控运行状态（主任务 + 增量监控）
+
+    返回主任务状态字段，并附带 'incremental' 子字典表示增量监控状态。
+    前端可据此分别渲染两个状态条。
+    """
+    st = dict(_monitor_status)
+    st['incremental'] = dict(_incremental_status)
+    return st
 
 
 def _update_status(**kwargs: Any) -> None:
     _monitor_status.update(kwargs)
 
 
-def cancel() -> bool:
-    """请求取消正在运行的监控任务（非阻塞，实际停止由爬取循环检测 running 标志）"""
-    if _monitor_status.get('running', False):
+def _update_incremental_status(**kwargs: Any) -> None:
+    _incremental_status.update(kwargs)
+
+
+def cancel(target: str = 'main') -> bool:
+    """请求取消正在运行的任务（非阻塞，实际停止由爬取循环检测 running 标志）
+
+    Args:
+        target: 'main' 取消主任务（全量/二次拉取）；
+                'incremental' 取消增量监控；
+                'all' 取消所有运行中的任务。
+    Returns:
+        是否至少取消了一个任务。
+    """
+    cancelled = False
+    if target in ('main', 'all') and _monitor_status.get('running', False):
         _monitor_status['running'] = False
         _monitor_status['message'] = '正在取消...'
-        return True
-    return False
+        cancelled = True
+    if target in ('incremental', 'all') and _incremental_status.get('running', False):
+        _incremental_status['running'] = False
+        _incremental_status['message'] = '正在取消...'
+        cancelled = True
+    return cancelled
 
 
 # ==================== 核心爬取逻辑 ====================
@@ -545,17 +589,28 @@ def _download_seeds_for_thread(thread: Dict[str, str]) -> List[str]:
 def crawl_forum(fid: str, forum_name: str, mode: str,
                 page_delay: float, thread_delay: float,
                 max_pages: int, concurrent_threads: int,
-                run_id: str, started_at: str) -> Dict[str, Any]:
+                run_id: str, started_at: str,
+                status_ref: Optional[Dict[str, Any]] = None,
+                update_fn: Optional[Any] = None) -> Dict[str, Any]:
     """爬取单个板块
 
     Args:
         mode: 'full' 全量 / 'incremental' 增量
         max_pages: 本次最多爬多少页
         concurrent_threads: 每页内新帖种子下载并发数（1=串行）
+        status_ref: 状态字典引用（用于检查 running 标志），默认主任务状态
+        update_fn: 状态更新回调，默认 _update_status（主任务）
+            增量监控传入 _incremental_status / _update_incremental_status，
+            使其与主任务状态隔离、可并发运行。
 
     Returns:
         {'pages_crawled', 'threads_found', 'threads_new', 'seeds_downloaded', 'message', 'status'}
     """
+    if status_ref is None:
+        status_ref = _monitor_status
+    if update_fn is None:
+        update_fn = _update_status
+
     s = baidu_forum._get_session()
     pages_crawled = 0
     threads_found = 0
@@ -565,10 +620,10 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
     status = 'success'
 
     # 记录当前板块开始时间（ETA 计算，隔离多板块任务的耗时）
-    _update_status(forum_started_at=_now_iso())
+    update_fn(forum_started_at=_now_iso())
     # 增量模式：计划爬 max_pages 页；全量模式：计划爬 total_pages 页（解析首页后更新）
     if mode == 'incremental':
-        _update_status(planned_pages=max_pages)
+        update_fn(planned_pages=max_pages)
 
     # 断点续传：全量模式下从上次中断的页码继续，而不是每次都从第1页开始
     start_page = 1
@@ -591,7 +646,7 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
     empty_pages_count = 0  # 连续空页计数，达到阈值才停止
     while page <= end_page and page <= actual_end and not stop:
         # 检查取消标志
-        if not _monitor_status.get('running', False):
+        if not status_ref.get('running', False):
             message = '已被取消'
             status = 'cancelled'
             break
@@ -604,7 +659,7 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
         max_attempts = 6
         for attempt in range(max_attempts):
             # 每次尝试前检查取消标志
-            if not _monitor_status.get('running', False):
+            if not status_ref.get('running', False):
                 message = '已被取消'
                 status = 'cancelled'
                 stop = True
@@ -621,9 +676,9 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
             threads, total_pages = parse_forum_page(r.text, fid, forum_name)
             if total_pages > 0:
                 actual_end = min(end_page, total_pages) if mode == 'full' else end_page
-                _update_status(total_pages=total_pages)
+                update_fn(total_pages=total_pages)
                 if mode == 'full':
-                    _update_status(planned_pages=total_pages)
+                    update_fn(planned_pages=total_pages)
             if threads:
                 logger.info(f'[论坛监控] {forum_name} 第{page}页: HTTP {r.status_code}, '
                             f'解析到{len(threads)}帖, 总页数={total_pages}, 爬到第{actual_end}页止')
@@ -668,7 +723,7 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
             if concurrent_threads <= 1:
                 # 串行：每个帖子后 sleep thread_delay
                 for t in new_threads:
-                    if not _monitor_status.get('running', False):
+                    if not status_ref.get('running', False):
                         message = '已被取消'
                         status = 'cancelled'
                         stop = True
@@ -679,7 +734,7 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
                         threads_new += 1
                     seeds_downloaded += len(seed_paths)
                     # 每帖实时更新状态，供前端轮询检测变化
-                    _update_status(
+                    update_fn(
                         threads_new=threads_new,
                         seeds_downloaded=seeds_downloaded,
                     )
@@ -692,7 +747,7 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
                         for t in new_threads
                     }
                     for fut in as_completed(future_to_thread):
-                        if not _monitor_status.get('running', False):
+                        if not status_ref.get('running', False):
                             message = '已被取消'
                             status = 'cancelled'
                             stop = True
@@ -707,7 +762,7 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
                             threads_new += 1
                         seeds_downloaded += len(seed_paths)
                         # 每帖实时更新状态
-                        _update_status(
+                        update_fn(
                             threads_new=threads_new,
                             seeds_downloaded=seeds_downloaded,
                         )
@@ -717,7 +772,7 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
 
         # 更新进度（记录本页第一个帖子 tid，即本页最新的帖子）
         _update_progress(fid, forum_name, page, threads[0]['tid'], total_pages, mode)
-        _update_status(
+        update_fn(
             current_forum=forum_name,
             current_page=page,
             threads_found=threads_found,
@@ -827,17 +882,21 @@ def run_incremental() -> Dict[str, Any]:
 
     从第1页开始，遇到整页都已爬过则停止该板块。
     限制最多爬 20 页（增量只需覆盖最新帖）。
+
+    使用独立的 _incremental_lock / _incremental_status，与全量拉取/二次拉取
+    互不阻塞：全量拉取进行中时，定时增量仍可正常运行，实现"监控一直在线"。
     """
     run_id = str(uuid.uuid4())[:8]
     started_at = _now_iso()
 
-    if not _monitor_lock.acquire(blocking=False):
-        return {'success': False, 'message': '已有监控任务在运行'}
+    # 独立锁：不与主任务（全量/二次拉取）互斥，仅防止增量自身重入
+    if not _incremental_lock.acquire(blocking=False):
+        return {'success': False, 'message': '增量监控已在运行'}
 
     try:
         _init_db()
         cfg = get_monitor_config()
-        _monitor_status.update({
+        _incremental_status.update({
             'running': True, 'mode': 'incremental', 'started_at': started_at,
             'current_forum': '', 'current_page': 0, 'total_pages': 0,
             'forum_started_at': '', 'planned_pages': 0,
@@ -847,7 +906,7 @@ def run_incremental() -> Dict[str, Any]:
 
         forums = discover_forums()
         if not forums:
-            _monitor_status.update({'running': False, 'message': '未发现任何板块'})
+            _incremental_status.update({'running': False, 'message': '未发现任何板块'})
             return {'success': False, 'message': '未发现任何板块，请检查论坛登录状态'}
 
         # 增量模式最多爬20页
@@ -857,14 +916,16 @@ def run_incremental() -> Dict[str, Any]:
         total_seeds = 0
         forum_results: List[Dict[str, Any]] = []
         for forum in forums:
-            if not _monitor_status.get('running', False):
-                _monitor_status['message'] = '已取消'
+            if not _incremental_status.get('running', False):
+                _incremental_status['message'] = '已取消'
                 break
             result = crawl_forum(
                 forum['fid'], forum['name'], 'incremental',
                 cfg['page_delay'], cfg['thread_delay'],
                 inc_max_pages, cfg['concurrent_threads'],
-                run_id, started_at
+                run_id, started_at,
+                status_ref=_incremental_status,
+                update_fn=_update_incremental_status,
             )
             total_new += result['threads_new']
             total_seeds += result['seeds_downloaded']
@@ -873,10 +934,11 @@ def run_incremental() -> Dict[str, Any]:
         cfg['last_incremental_at'] = _now_iso()
         save_monitor_config(cfg)
 
-        _monitor_status.update({
+        _incremental_status.update({
             'running': False,
             'message': f'增量完成：新增{total_new}帖，下载{total_seeds}种子',
         })
+        logger.info(f'[论坛监控] 增量监控完成：新增{total_new}帖，下载{total_seeds}种子')
         return {
             'success': True,
             'run_id': run_id,
@@ -885,7 +947,100 @@ def run_incremental() -> Dict[str, Any]:
             'total_seeds': total_seeds,
         }
     except Exception as e:
-        _monitor_status.update({'running': False, 'message': f'增量失败: {e}'})
+        _incremental_status.update({'running': False, 'message': f'增量失败: {e}'})
+        logger.error(f'[论坛监控] 增量监控异常: {e}', exc_info=True)
+        return {'success': False, 'message': str(e)}
+    finally:
+        _incremental_lock.release()
+
+
+def run_recheck_all_no_seeds(thread_delay: float = 3.0) -> Dict[str, Any]:
+    """全量二次拉取所有无种子帖子的种子
+
+    查询数据库中所有 seed_count=0 的帖子，逐个重新访问页面下载种子。
+    发现种子则更新数据库记录。异步执行，通过 _monitor_status 汇报进度。
+    复用 _monitor_lock 防止与爬取任务并发。
+    """
+    run_id = str(uuid.uuid4())[:8]
+    started_at = _now_iso()
+
+    if not _monitor_lock.acquire(blocking=False):
+        return {'success': False, 'message': '已有监控任务在运行'}
+
+    try:
+        _init_db()
+        # 查询所有无种子帖子的 tid 和 title
+        with _db_ctx() as conn:
+            cur = conn.execute(
+                'SELECT tid, title, fid FROM threads WHERE seed_count=0 ORDER BY fetched_at ASC'
+            )
+            no_seed_threads = [dict(r) for r in cur.fetchall()]
+
+        total = len(no_seed_threads)
+        if total == 0:
+            return {'success': True, 'message': '没有无种子的帖子', 'total': 0, 'found_seeds': 0}
+
+        _monitor_status.update({
+            'running': True, 'mode': 'recheck', 'started_at': started_at,
+            'current_forum': '全量二次拉取', 'current_page': 0,
+            'total_pages': total, 'planned_pages': total,
+            'forum_started_at': started_at,
+            'threads_found': total, 'threads_new': 0, 'seeds_downloaded': 0,
+            'message': f'二次拉取开始：共{total}个无种帖子',
+        })
+        logger.info(f'[论坛监控] 全量二次拉取开始：共{total}个无种帖子')
+
+        found_count = 0
+        processed = 0
+        for t in no_seed_threads:
+            # 检查取消标志
+            if not _monitor_status.get('running', False):
+                _monitor_status['message'] = f'已取消（{processed}/{total}，发现{found_count}个种子）'
+                logger.info(f'[论坛监控] 二次拉取被取消：{processed}/{total}')
+                break
+
+            processed += 1
+            try:
+                result = recheck_thread_seeds(t['tid'])
+                if result.get('has_seeds'):
+                    found_count += 1
+            except Exception as e:
+                logger.error(f'[论坛监控] 二次拉取 {t["tid"]} 异常: {e}')
+
+            # 实时更新进度
+            _update_status(
+                current_page=processed,
+                threads_new=found_count,
+                seeds_downloaded=found_count,
+                message=f'二次拉取 {processed}/{total}（发现{found_count}个有种）',
+            )
+
+            # 帖间限流（最后一个不等）
+            if processed < total and thread_delay > 0:
+                time.sleep(thread_delay)
+
+        status = 'success' if _monitor_status.get('running', False) else 'cancelled'
+        if status == 'success':
+            msg = f'二次拉取完成：共{total}个，发现种子{found_count}个，仍无种{total - found_count}个'
+        else:
+            msg = _monitor_status.get('message', '已取消')
+
+        _monitor_status.update({
+            'running': False,
+            'message': msg,
+        })
+        logger.info(f'[论坛监控] 全量二次拉取完成：{msg}')
+        return {
+            'success': True,
+            'run_id': run_id,
+            'total': total,
+            'processed': processed,
+            'found_seeds': found_count,
+            'still_empty': total - found_count,
+        }
+    except Exception as e:
+        _monitor_status.update({'running': False, 'message': f'二次拉取失败: {e}'})
+        logger.error(f'[论坛监控] 全量二次拉取异常: {e}', exc_info=True)
         return {'success': False, 'message': str(e)}
     finally:
         _monitor_lock.release()

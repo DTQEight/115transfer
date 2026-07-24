@@ -556,44 +556,53 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
             break
 
         url = baidu_forum.BASE + f'forum.php?mod=forumdisplay&fid={fid}&filter=sortid&sortid=1&page={page}'
-        r = None
-        for attempt in range(2):  # 最多重试1次
+        # 请求+解析合并重试：最多6次尝试（1次原始 + 5次重试）
+        # 请求异常或解析到0帖都算失败，重试。5次重试后仍0帖才跳过本页。
+        threads: List[Dict[str, str]] = []
+        total_pages = 1
+        max_attempts = 6
+        for attempt in range(max_attempts):
+            # 每次尝试前检查取消标志
+            if not _monitor_status.get('running', False):
+                message = '已被取消'
+                status = 'cancelled'
+                stop = True
+                break
+            r = None
             try:
                 r = s.get(url, timeout=(10, 30))
                 r.encoding = 'gbk'
-                break
             except Exception as e:
-                if attempt == 0:
-                    logger.warning(f'[论坛监控] {forum_name} 第{page}页首次请求失败，5秒后重试: {e}')
+                logger.warning(f'[论坛监控] {forum_name} 第{page}页第{attempt+1}/{max_attempts}次请求失败: {e}')
+                if attempt < max_attempts - 1:
                     time.sleep(5)
-                else:
-                    logger.error(f'[论坛监控] {forum_name} 第{page}页重试仍失败，跳过: {e}')
-        if r is None:
-            # 两次都失败，跳过本页继续下一页（不中断整个任务）
-            page += 1
-            continue
-
-        threads, total_pages = parse_forum_page(r.text, fid, forum_name)
-        # 首次解析到 total_pages 后，用实际总页数限制循环（全量模式下 end_page=99999）
-        if total_pages > 0:
-            actual_end = min(end_page, total_pages) if mode == 'full' else end_page
-            # 更新 total_pages 到状态，供前端计算预计用时
-            _update_status(total_pages=total_pages)
-            # 全量模式：计划爬 total_pages 页（增量模式在板块开始时已设置 max_pages）
-            if mode == 'full':
-                _update_status(planned_pages=total_pages)
-        logger.info(f'[论坛监控] {forum_name} 第{page}页: HTTP {r.status_code}, '
-                    f'解析到{len(threads)}帖, 总页数={total_pages}, 爬到第{actual_end}页止')
-        if not threads:
-            # 单页0帖不立即结束：可能是偶发空页或解析失败
-            # 记录 HTML 片段帮助诊断，连续3页都0帖才认为到了末尾
-            empty_pages_count = empty_pages_count + 1
-            snippet = r.text[:1500] if len(r.text) > 1500 else r.text
-            logger.warning(f'[论坛监控] {forum_name}(fid={fid}) 第{page}页无帖子（连续{empty_pages_count}次），HTML片段:\n{snippet}')
-            if empty_pages_count >= 3:
-                message = f'连续{empty_pages_count}页无帖子，结束'
+                continue
+            threads, total_pages = parse_forum_page(r.text, fid, forum_name)
+            if total_pages > 0:
+                actual_end = min(end_page, total_pages) if mode == 'full' else end_page
+                _update_status(total_pages=total_pages)
+                if mode == 'full':
+                    _update_status(planned_pages=total_pages)
+            if threads:
+                logger.info(f'[论坛监控] {forum_name} 第{page}页: HTTP {r.status_code}, '
+                            f'解析到{len(threads)}帖, 总页数={total_pages}, 爬到第{actual_end}页止')
                 break
-            # 未达阈值则跳过本页继续下一页
+            # 0帖：记录 HTML 片段帮助诊断，5秒后重试
+            snippet = r.text[:1500] if len(r.text) > 1500 else r.text
+            logger.warning(f'[论坛监控] {forum_name}(fid={fid}) 第{page}页第{attempt+1}/{max_attempts}次解析到0帖，HTML片段:\n{snippet}')
+            if attempt < max_attempts - 1:
+                logger.info(f'[论坛监控] {forum_name} 第{page}页5秒后第{attempt+2}次重试')
+                time.sleep(5)
+        # 被取消则直接退出主循环
+        if stop:
+            break
+        # 6次尝试后仍0帖：跳过本页（不中断任务），连续3页都失败才结束
+        if not threads:
+            empty_pages_count = empty_pages_count + 1
+            logger.error(f'[论坛监控] {forum_name} 第{page}页{max_attempts}次尝试均无帖子，跳过（连续{empty_pages_count}页失败）')
+            if empty_pages_count >= 3:
+                message = f'连续{empty_pages_count}页{max_attempts}次重试均无帖子，结束'
+                break
             page += 1
             time.sleep(page_delay)
             continue

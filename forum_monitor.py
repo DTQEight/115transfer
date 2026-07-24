@@ -390,6 +390,47 @@ def download_thread_seeds(tid: str, fid: str) -> List[str]:
     return saved
 
 
+def recheck_thread_seeds(tid: str) -> Dict[str, Any]:
+    """二次拉取单个帖子的种子
+
+    用于对无种子帖子重新确认是否有种子。重新访问帖子页面发现附件并下载。
+    若发现种子则更新数据库记录（seed_count、seed_paths、fetched_at）。
+
+    Returns:
+        {'tid': str, 'title': str, 'has_seeds': bool, 'seed_count': int, 'message': str}
+    """
+    # 查询当前帖子记录
+    with _db_ctx() as conn:
+        cur = conn.execute('SELECT tid, title, fid, forum_name FROM threads WHERE tid=?', (tid,))
+        row = cur.fetchone()
+    if not row:
+        return {'tid': tid, 'title': '', 'has_seeds': False, 'seed_count': 0, 'message': '帖子不存在'}
+    thread = dict(row)
+
+    # 重新下载种子
+    try:
+        seed_paths = download_thread_seeds(tid, thread['fid'] or '')
+    except Exception as e:
+        logger.error(f'[论坛监控] 二次拉取 {tid} 失败: {e}')
+        return {'tid': tid, 'title': thread['title'], 'has_seeds': False, 'seed_count': 0,
+                'message': f'下载失败: {e}'}
+
+    # 更新数据库（无论有无种子都更新 fetched_at，记录已二次确认过）
+    with _db_ctx() as conn:
+        conn.execute('''
+            UPDATE threads SET seed_count=?, seed_paths=?, fetched_at=?
+            WHERE tid=?
+        ''', (len(seed_paths), json.dumps(seed_paths, ensure_ascii=False), _now_iso(), tid))
+
+    has_seeds = len(seed_paths) > 0
+    msg = f'发现{len(seed_paths)}个种子' if has_seeds else '仍无种子'
+    logger.info(f'[论坛监控] 二次拉取 {tid}({thread["title"][:30]}): {msg}')
+    return {
+        'tid': tid, 'title': thread['title'],
+        'has_seeds': has_seeds, 'seed_count': len(seed_paths), 'message': msg,
+    }
+
+
 # ==================== 存储操作 ====================
 
 def _upsert_thread(thread: Dict[str, str], seed_paths: List[str]) -> bool:

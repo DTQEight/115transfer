@@ -188,6 +188,9 @@
                                 <input type="text" id="seedKeyword" class="form-control form-control-sm" placeholder="按标题搜索">
                                 <button onclick="loadSeeds(1)" class="btn btn-sm btn-outline-primary">搜索</button>
                             </div>
+                            <button id="batchRecheckBtn" onclick="batchRecheckSeeds()" class="btn btn-sm btn-outline-danger" style="display:none;">
+                                <i class="bi bi-arrow-repeat me-1"></i>二次拉取本页无种
+                            </button>
                         </div>
                         <div id="seedsList" class="table-responsive">
                             <div class="text-muted text-center py-3">点击"刷新"或搜索查看种子</div>
@@ -821,6 +824,9 @@ function setSeedFilter(filter) {
             btn.classList.remove('active');
         }
     });
+    // 仅"无种"筛选时显示批量二次拉取按钮
+    var batchBtn = document.getElementById('batchRecheckBtn');
+    if (batchBtn) batchBtn.style.display = (filter === 'no_seeds') ? '' : 'none';
     loadSeeds(1);
 }
 
@@ -984,12 +990,13 @@ async function loadSeeds(page) {
             return;
         }
         var html = '<table class="table table-sm table-hover align-middle">';
-        html += '<thead><tr><th>标题</th><th class="hide-mobile">板块</th><th>种子</th><th class="hide-mobile">抓取时间</th></tr></thead><tbody>';
+        html += '<thead><tr><th>标题</th><th class="hide-mobile">板块</th><th>种子</th><th class="hide-mobile">抓取时间</th><th>操作</th></tr></thead><tbody>';
         threads.forEach(function(t) {
             var time = t.fetched_at ? t.fetched_at.substring(0, 19).replace('T', ' ') : '';
             var seeds = [];
             try { seeds = JSON.parse(t.seed_paths || '[]'); } catch (e) {}
             var seedHtml = '';
+            var opHtml = '';
             if (seeds.length > 0) {
                 seedHtml = '<span class="badge bg-success me-1">' + seeds.length + '个</span>';
                 seeds.forEach(function(s, i) {
@@ -1000,14 +1007,21 @@ async function loadSeeds(page) {
                     }
                 });
                 if (seeds.length > 3) seedHtml += '<span class="text-muted small">+' + (seeds.length - 3) + '</span>';
+                // 有种子：允许二次拉取更新
+                opHtml = '<button class="btn btn-sm btn-outline-secondary" onclick="recheckSeeds([\'' + t.tid + '\'])" title="重新拉取确认">' +
+                    '<i class="bi bi-arrow-repeat"></i></button>';
             } else {
                 seedHtml = '<span class="text-muted">无</span>';
+                // 无种子：高亮二次拉取按钮
+                opHtml = '<button class="btn btn-sm btn-outline-warning" onclick="recheckSeeds([\'' + t.tid + '\'])" title="二次拉取确认有无种">' +
+                    '<i class="bi bi-arrow-repeat me-1"></i>二次拉取</button>';
             }
             html += '<tr>';
             html += '<td class="fw-medium">' + escapeHtml(t.title) + '</td>';
             html += '<td class="hide-mobile small">' + escapeHtml(t.forum_name || '') + '</td>';
             html += '<td>' + seedHtml + '</td>';
             html += '<td class="hide-mobile small text-muted">' + escapeHtml(time) + '</td>';
+            html += '<td>' + opHtml + '</td>';
             html += '</tr>';
         });
         html += '</tbody></table>';
@@ -1048,6 +1062,75 @@ async function loadSeeds(page) {
     } catch (e) {
         document.getElementById('seedsList').innerHTML = '<div class="text-danger">加载失败: ' + escapeHtml(e.message) + '</div>';
     }
+}
+
+// 二次拉取种子：重新访问帖子页面确认有无种子，有种则更新
+// tids: 数组，支持单条 ['123'] 或批量 ['123','456']
+async function recheckSeeds(tids) {
+    if (!tids || tids.length === 0) {
+        showToast('请选择要拉取的帖子', 'warning');
+        return;
+    }
+    var count = tids.length;
+    var btnText = count === 1 ? '二次拉取' : ('批量拉取' + count + '个');
+    if (!confirm('确认' + btnText + '？将重新访问帖子页面下载种子，可能耗时较长。')) return;
+
+    // 显示进度提示
+    var listEl = document.getElementById('seedsList');
+    var originalHtml = listEl.innerHTML;
+    listEl.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary me-2"></div>' +
+        '<span class="align-middle">' + btnText + '中... 预计每个帖子约10秒，请耐心等待</span></div>';
+
+    try {
+        var resp = await apiFetch('/baidu/monitor_recheck_seeds', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({tids: tids, delay: 3})
+        });
+        var data = await resp.json();
+        if (!data.success) {
+            showToast('二次拉取失败: ' + (data.message || '未知错误'), 'danger');
+            listEl.innerHTML = originalHtml;
+            return;
+        }
+        // 统计结果
+        var found = data.found_seeds || 0;
+        var empty = data.still_empty || 0;
+        var msg = '二次拉取完成：共' + data.total + '个，发现种子' + found + '个，仍无种' + empty + '个';
+        showToast(msg, found > 0 ? 'success' : 'warning');
+
+        // 显示详细结果
+        var html = '<div class="alert alert-info"><i class="bi bi-info-circle me-1"></i>' + msg + '</div>';
+        html += '<table class="table table-sm table-hover"><thead><tr><th>标题</th><th>结果</th></tr></thead><tbody>';
+        (data.results || []).forEach(function(r) {
+            var resBadge = r.has_seeds ?
+                '<span class="badge bg-success">发现' + r.seed_count + '个种子</span>' :
+                '<span class="badge bg-warning text-dark">仍无种子</span>';
+            html += '<tr><td class="small">' + escapeHtml(r.title || r.tid) + '</td><td>' + resBadge + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        html += '<button class="btn btn-sm btn-primary" onclick="loadSeeds(_seedCurrentPage)"><i class="bi bi-arrow-left me-1"></i>返回列表</button>';
+        listEl.innerHTML = html;
+    } catch (e) {
+        showToast('二次拉取异常: ' + e.message, 'danger');
+        listEl.innerHTML = originalHtml;
+    }
+}
+
+// 批量二次拉取本页所有无种帖子
+async function batchRecheckSeeds() {
+    // 从当前表格中收集所有无种帖子的 tid
+    var tids = [];
+    var btns = document.querySelectorAll('button[onclick^="recheckSeeds"]');
+    btns.forEach(function(btn) {
+        var m = btn.getAttribute('onclick').match(/recheckSeeds\(\['(\d+)'\]\)/);
+        if (m) tids.push(m[1]);
+    });
+    if (tids.length === 0) {
+        showToast('当前页无无种帖子', 'warning');
+        return;
+    }
+    await recheckSeeds(tids);
 }
 
 async function loadForumsProgress() {

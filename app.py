@@ -1999,6 +1999,74 @@ def baidu_monitor_dashboard() -> Response:
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/baidu/monitor_recheck_seeds', methods=['POST'])
+def baidu_monitor_recheck_seeds() -> Response:
+    """二次拉取无种子帖子的种子
+
+    支持单个 tid 或批量 tids（JSON 数组）。对每个帖子重新访问页面下载种子，
+    发现种子则更新数据库记录。批量操作内部串行 + 限流，避免压垮论坛。
+
+    请求体（JSON）: {'tids': ['123', '456'], 'delay': 3}
+    或表单: tid=123 （单个）
+    """
+    try:
+        # 解析 tids：优先 JSON，兼容表单单 tid
+        tids: List[str] = []
+        delay = 3.0
+        if request.is_json:
+            data = request.get_json() or {}
+            tids = [str(t) for t in (data.get('tids') or []) if str(t).strip()]
+            if data.get('tid'):
+                tids.insert(0, str(data['tid']))
+            delay = float(data.get('delay') or 3)
+        else:
+            tid = (request.form.get('tid') or '').strip()
+            if tid:
+                tids = [tid]
+            tids_str = (request.form.get('tids') or '').strip()
+            if tids_str:
+                tids.extend([t.strip() for t in tids_str.split(',') if t.strip()])
+            try:
+                delay = float(request.form.get('delay') or 3)
+            except (ValueError, TypeError):
+                delay = 3.0
+
+        # 去重 + 限制批量大小（防止滥用）
+        seen = set()
+        tids = [t for t in tids if not (t in seen or seen.add(t))]
+        if not tids:
+            return jsonify({'success': False, 'message': '缺少 tid 参数'}), 400
+        if len(tids) > 50:
+            return jsonify({'success': False, 'message': '单次最多50个帖子'}), 400
+        delay = max(0.5, min(delay, 30))
+
+        # 监控运行中时禁止二次拉取（避免并发请求压垮论坛）
+        if forum_monitor.get_status().get('running'):
+            return jsonify({'success': False, 'message': '监控任务运行中，请稍后再试'}), 409
+
+        results = []
+        found_count = 0
+        for i, tid in enumerate(tids):
+            r = forum_monitor.recheck_thread_seeds(tid)
+            results.append(r)
+            if r.get('has_seeds'):
+                found_count += 1
+            # 帖间限流（最后一个不等）
+            if i < len(tids) - 1 and delay > 0:
+                time.sleep(delay)
+
+        return jsonify({
+            'success': True,
+            'total': len(tids),
+            'found_seeds': found_count,
+            'still_empty': len(tids) - found_count,
+            'results': results,
+        })
+    except Exception as e:
+        logger.error(f'[论坛监控] 二次拉取失败: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @app.route('/baidu/monitor_seed_download')
 def baidu_monitor_seed_download() -> Union[Response, Tuple[Response, int]]:
     """下载已保存的种子文件"""

@@ -268,6 +268,11 @@ def create_menu(agentid):
             },
             {
                 "type": "click",
+                "name": "论坛进度",
+                "key": "forum_progress"
+            },
+            {
+                "type": "click",
                 "name": "目录",
                 "key": "115_dir"
             }
@@ -325,6 +330,7 @@ def handle_text_message(content):
                 '格式1: 页码 电影名 磁力链接\n'
                 '格式2: 页码\\n电影名\\n磁力链接(可留空)\n'
                 '搜索: 搜索 电影名\n'
+                '论坛进度: 发送"论坛进度"或"进度"\n'
                 '示例:\n'
                 '1 电影名 magnet:?xt=...\n'
                 '1\\n电影名')

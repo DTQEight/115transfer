@@ -1076,6 +1076,26 @@ def wechat_callback():
                     reply = f'创建失败: {msg_text}'
                 with user_states_lock:
                     user_states.pop(from_user, None)
+            elif content in ('论坛进度', '监控进度', '进度', 'forum', 'monitor'):
+                # 主动查询论坛监控进度
+                try:
+                    text = forum_monitor.build_progress_report()
+                    if text:
+                        reply = text
+                    else:
+                        # 没有任务运行时，返回最近的统计快照
+                        dash = forum_monitor.get_dashboard()
+                        total = dash.get('total_threads', 0)
+                        with_seeds = dash.get('threads_with_seeds', 0)
+                        without_seeds = dash.get('threads_without_seeds', 0)
+                        total_seeds = dash.get('total_seeds', 0)
+                        seed_rate = dash.get('seed_rate', 0)
+                        reply = (f'【论坛监控·当前状态】\n'
+                                 f'状态: 空闲\n'
+                                 f'总帖子: {total} | 有种: {with_seeds} | 无种: {without_seeds}\n'
+                                 f'种子文件: {total_seeds} | 覆盖率: {seed_rate}%')
+                except Exception as e:
+                    reply = f'查询进度失败: {e}'
             elif content.startswith('搜索') or content.startswith('search'):
                 keyword = content[2:].strip() if content.startswith('搜索') else content[6:].strip()
                 if not keyword:
@@ -1185,6 +1205,25 @@ def wechat_callback():
                         reply += f'\n回复序号进入子目录\n回复"确认"设置为转存目录\n回复"新建"创建新目录'
                     else:
                         reply = f'获取目录失败: {msg_text}'
+                elif event_key == 'forum_progress':
+                    # 主动查询论坛监控进度
+                    try:
+                        text = forum_monitor.build_progress_report()
+                        if text:
+                            reply = text
+                        else:
+                            dash = forum_monitor.get_dashboard()
+                            total = dash.get('total_threads', 0)
+                            with_seeds = dash.get('threads_with_seeds', 0)
+                            without_seeds = dash.get('threads_without_seeds', 0)
+                            total_seeds = dash.get('total_seeds', 0)
+                            seed_rate = dash.get('seed_rate', 0)
+                            reply = (f'【论坛监控·当前状态】\n'
+                                     f'状态: 空闲\n'
+                                     f'总帖子: {total} | 有种: {with_seeds} | 无种: {without_seeds}\n'
+                                     f'种子文件: {total_seeds} | 覆盖率: {seed_rate}%')
+                    except Exception as e:
+                        reply = f'查询进度失败: {e}'
                 else:
                     reply = '未知操作'
             elif event == 'subscribe':

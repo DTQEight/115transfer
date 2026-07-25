@@ -613,6 +613,110 @@ def cancel(target: str = 'main') -> bool:
     return cancelled
 
 
+def build_progress_report() -> str:
+    """构建可读的进度报告文本（用于微信推送）
+
+    只在主任务或增量监控运行时生成有意义的报告，否则返回空串。
+    """
+    _init_db()
+    lines: List[str] = []
+
+    # 主任务状态
+    mst = _monitor_status
+    ist = _incremental_status
+
+    main_running = mst.get('running', False)
+    inc_running = ist.get('running', False)
+
+    if not main_running and not inc_running:
+        return ''
+
+    # 仪表盘统计数据
+    try:
+        dash = get_dashboard()
+        total = dash.get('total_threads', 0)
+        with_seeds = dash.get('threads_with_seeds', 0)
+        without_seeds = dash.get('threads_without_seeds', 0)
+        total_seeds = dash.get('total_seeds', 0)
+        seed_rate = dash.get('seed_rate', 0)
+        lines.append(f'【论坛监控进度】')
+        lines.append(f'总帖子: {total} | 有种: {with_seeds} | 无种: {without_seeds}')
+        lines.append(f'种子文件: {total_seeds} | 覆盖率: {seed_rate}%')
+        lines.append('')
+    except Exception as e:
+        logger.warning(f'[论坛监控] 进度报告-统计失败: {e}')
+
+    # 主任务进度
+    if main_running:
+        mode = mst.get('mode', '')
+        mode_label = {'full': '全量拉取', 'incremental': '增量监控', 'recheck': '二次拉取'}.get(mode, mode)
+        cur_page = mst.get('current_page', 0)
+        total_pages = mst.get('total_pages', 0) or mst.get('planned_pages', 0) or 0
+        started = mst.get('started_at', '')
+        msg = mst.get('message', '')
+
+        lines.append(f'【主任务·{mode_label}】')
+        if started:
+            # 计算已运行时长
+            try:
+                start_dt = datetime.fromisoformat(started)
+                elapsed = (datetime.now(_BJ_TZ) - start_dt).total_seconds()
+                h = int(elapsed // 3600)
+                m = int((elapsed % 3600) // 60)
+                lines.append(f'已运行: {h}小时{m}分钟')
+            except Exception:
+                pass
+        if total_pages > 0:
+            pct = round(cur_page / total_pages * 100, 1) if total_pages else 0
+            lines.append(f'进度: {cur_page}/{total_pages} ({pct}%)')
+            # 预计剩余时间
+            try:
+                if started and cur_page > 0:
+                    start_dt = datetime.fromisoformat(started)
+                    elapsed = (datetime.now(_BJ_TZ) - start_dt).total_seconds()
+                    if elapsed > 0:
+                        avg_per_page = elapsed / cur_page
+                        remaining_pages = max(0, total_pages - cur_page)
+                        remaining_sec = avg_per_page * remaining_pages
+                        rh = int(remaining_sec // 3600)
+                        rm = int((remaining_sec % 3600) // 60)
+                        lines.append(f'预计剩余: {rh}小时{rm}分钟')
+            except Exception:
+                pass
+        lines.append(f'新帖: {mst.get("threads_new", 0)} | 种子: {mst.get("seeds_downloaded", 0)}')
+        if msg:
+            lines.append(f'状态: {msg}')
+        lines.append('')
+
+    # 增量监控进度
+    if inc_running:
+        cur_page = ist.get('current_page', 0)
+        total_pages = ist.get('total_pages', 0) or ist.get('planned_pages', 0) or 0
+        started = ist.get('started_at', '')
+        msg = ist.get('message', '')
+
+        lines.append(f'【增量监控】')
+        if started:
+            try:
+                start_dt = datetime.fromisoformat(started)
+                elapsed = (datetime.now(_BJ_TZ) - start_dt).total_seconds()
+                h = int(elapsed // 3600)
+                m = int((elapsed % 3600) // 60)
+                lines.append(f'已运行: {h}小时{m}分钟')
+            except Exception:
+                pass
+        if total_pages > 0:
+            pct = round(cur_page / total_pages * 100, 1) if total_pages else 0
+            lines.append(f'进度: {cur_page}/{total_pages} ({pct}%)')
+        lines.append(f'新帖: {ist.get("threads_new", 0)} | 种子: {ist.get("seeds_downloaded", 0)}')
+        if msg:
+            lines.append(f'状态: {msg}')
+        lines.append('')
+
+    lines.append(f'推送时间: {datetime.now(_BJ_TZ).strftime("%Y-%m-%d %H:%M:%S")}')
+    return '\n'.join(lines)
+
+
 # ==================== 核心爬取逻辑 ====================
 
 def _download_seeds_for_thread(thread: Dict[str, str]) -> List[str]:

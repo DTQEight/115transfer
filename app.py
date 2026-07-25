@@ -1813,6 +1813,52 @@ def _do_forum_monitor_auto() -> None:
         logger.error(f'[论坛监控] 定时增量异常: {e}')
 
 
+def _do_forum_monitor_progress_push() -> None:
+    """定时推送论坛监控进度到微信（每2小时触发）
+
+    只在有任务运行时推送，避免无意义的空消息。
+    """
+    try:
+        text = forum_monitor.build_progress_report()
+        if not text:
+            # 没有任务运行，不推送
+            return
+        ok, msg = wechat_work.send_wechat_message(text)
+        if ok:
+            logger.info('[论坛监控] 微信进度推送成功')
+        else:
+            logger.warning(f'[论坛监控] 微信进度推送失败: {msg}')
+    except Exception as e:
+        logger.error(f'[论坛监控] 微信进度推送异常: {e}')
+
+
+def _reschedule_forum_monitor_progress_push() -> None:
+    """注册/刷新"每2小时推送监控进度到微信"的定时任务
+
+    固定 cron: 0 */2 * * *（每2小时整点触发）
+    """
+    global _scheduler
+    if _scheduler is None:
+        return
+    try:
+        _scheduler.remove_job('forum_monitor_progress_push')
+    except Exception:
+        pass
+    try:
+        trigger = CronTrigger(hour='*/2', minute=0, timezone='Asia/Shanghai')
+        _scheduler.add_job(
+            _do_forum_monitor_progress_push,
+            trigger=trigger,
+            id='forum_monitor_progress_push',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info('[论坛监控] 已启用每2小时微信进度推送')
+    except Exception as e:
+        logger.error(f'[论坛监控] 微信进度推送调度失败: {e}')
+
+
 @app.route('/baidu/monitor_config', methods=['GET', 'POST'])
 def baidu_monitor_config() -> Union[Response, Tuple[Response, int]]:
     """读取/配置论坛监控"""
@@ -2882,6 +2928,7 @@ if __name__ == '__main__':
             _scheduler.start()
             _reschedule_auto_sync()
             _reschedule_forum_monitor()
+            _reschedule_forum_monitor_progress_push()
             logger.info('[调度器] APScheduler 已启动')
         except Exception as e:
             logger.error(f'[调度器] 启动失败: {e}')

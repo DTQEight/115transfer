@@ -717,6 +717,55 @@ def build_progress_report() -> str:
     return '\n'.join(lines)
 
 
+def _push_wechat_notice(task_label: str, status: str, message: str,
+                        stats: Optional[Dict[str, Any]] = None) -> None:
+    """任务结束（完成/取消/异常）时推送微信通知
+
+    延迟导入 wechat_work 避免循环依赖。推送失败只记录日志，不影响主流程。
+
+    Args:
+        task_label: 任务标签，如 "全量拉取" / "增量监控" / "二次拉取"
+        status: 状态文本，如 "完成" / "已取消" / "异常中断"
+        message: 详细消息（异常信息或统计摘要）
+        stats: 可选统计字段 {'pages_crawled', 'threads_new', 'seeds_downloaded', ...}
+    """
+    try:
+        # 延迟导入避免循环依赖（wechat_work 不应在模块加载时被引用）
+        import wechat_work
+
+        lines: List[str] = [f'【论坛监控·{task_label}】', f'状态: {status}']
+        if stats:
+            parts: List[str] = []
+            if 'pages_crawled' in stats:
+                parts.append(f"爬取{stats['pages_crawled']}页")
+            if 'threads_found' in stats:
+                parts.append(f"发现{stats['threads_found']}帖")
+            if 'threads_new' in stats:
+                parts.append(f"新增{stats['threads_new']}帖")
+            if 'seeds_downloaded' in stats:
+                parts.append(f"下载{stats['seeds_downloaded']}种子")
+            if 'processed' in stats:
+                parts.append(f"处理{stats['processed']}帖")
+            if 'found_seeds' in stats:
+                parts.append(f"发现有种{stats['found_seeds']}个")
+            if parts:
+                lines.append(' | '.join(parts))
+        if message:
+            # 限制消息长度，避免微信消息过长
+            lines.append(f'详情: {message[:500]}')
+        lines.append(f'时间: {datetime.now(_BJ_TZ).strftime("%Y-%m-%d %H:%M:%S")}')
+
+        text = '\n'.join(lines)
+        ok, err = wechat_work.send_wechat_message(text)
+        if ok:
+            logger.info(f'[论坛监控] 微信通知推送成功（{task_label}-{status}）')
+        else:
+            logger.warning(f'[论坛监控] 微信通知推送失败: {err}')
+    except Exception as e:
+        # 推送失败不影响主流程
+        logger.warning(f'[论坛监控] 微信通知推送异常: {e}')
+
+
 # ==================== 核心爬取逻辑 ====================
 
 def _download_seeds_for_thread(thread: Dict[str, str]) -> List[str]:
@@ -999,11 +1048,26 @@ def run_full_crawl() -> Dict[str, Any]:
         cfg['last_full_crawl_at'] = _now_iso()
         save_monitor_config(cfg)
 
+        # 判断是否被取消（取消时 message 会被爬取循环设为"已取消..."）
+        was_cancelled = '取消' in _monitor_status.get('message', '')
+        if was_cancelled:
+            final_status = '已取消'
+            final_msg = _monitor_status.get('message', '用户取消')
+        else:
+            final_status = '完成'
+            final_msg = f'新增{total_new}帖，下载{total_seeds}种子'
+
         _monitor_status.update({
             'running': False,
-            'message': f'全量完成：新增{total_new}帖，下载{total_seeds}种子',
+            'message': f'全量{final_status}：{final_msg}',
         })
-        logger.info(f'[论坛监控] 全量拉取完成：新增{total_new}帖，下载{total_seeds}种子')
+        logger.info(f'[论坛监控] 全量拉取{final_status}：{final_msg}')
+
+        _push_wechat_notice('全量拉取', final_status, final_msg, {
+            'threads_new': total_new,
+            'seeds_downloaded': total_seeds,
+        })
+
         return {
             'success': True,
             'run_id': run_id,
@@ -1014,6 +1078,7 @@ def run_full_crawl() -> Dict[str, Any]:
     except Exception as e:
         _monitor_status.update({'running': False, 'message': f'全量失败: {e}'})
         logger.error(f'[论坛监控] 全量拉取异常: {e}', exc_info=True)
+        _push_wechat_notice('全量拉取', '异常中断', str(e))
         return {'success': False, 'message': str(e)}
     finally:
         _monitor_lock.release()
@@ -1076,11 +1141,26 @@ def run_incremental() -> Dict[str, Any]:
         cfg['last_incremental_at'] = _now_iso()
         save_monitor_config(cfg)
 
+        # 判断是否被取消
+        was_cancelled = '取消' in _incremental_status.get('message', '')
+        if was_cancelled:
+            final_status = '已取消'
+            final_msg = _incremental_status.get('message', '用户取消')
+        else:
+            final_status = '完成'
+            final_msg = f'新增{total_new}帖，下载{total_seeds}种子'
+
         _incremental_status.update({
             'running': False,
-            'message': f'增量完成：新增{total_new}帖，下载{total_seeds}种子',
+            'message': f'增量{final_status}：{final_msg}',
         })
-        logger.info(f'[论坛监控] 增量监控完成：新增{total_new}帖，下载{total_seeds}种子')
+        logger.info(f'[论坛监控] 增量监控{final_status}：{final_msg}')
+
+        _push_wechat_notice('增量监控', final_status, final_msg, {
+            'threads_new': total_new,
+            'seeds_downloaded': total_seeds,
+        })
+
         return {
             'success': True,
             'run_id': run_id,
@@ -1091,6 +1171,7 @@ def run_incremental() -> Dict[str, Any]:
     except Exception as e:
         _incremental_status.update({'running': False, 'message': f'增量失败: {e}'})
         logger.error(f'[论坛监控] 增量监控异常: {e}', exc_info=True)
+        _push_wechat_notice('增量监控', '异常中断', str(e))
         return {'success': False, 'message': str(e)}
     finally:
         _incremental_lock.release()
@@ -1163,15 +1244,23 @@ def run_recheck_all_no_seeds(thread_delay: float = 3.0) -> Dict[str, Any]:
 
         status = 'success' if _monitor_status.get('running', False) else 'cancelled'
         if status == 'success':
-            msg = f'二次拉取完成：共{total}个，发现种子{found_count}个，仍无种{total - found_count}个'
+            final_status = '完成'
+            msg = f'共{total}个，发现种子{found_count}个，仍无种{total - found_count}个'
         else:
+            final_status = '已取消'
             msg = _monitor_status.get('message', '已取消')
 
         _monitor_status.update({
             'running': False,
-            'message': msg,
+            'message': f'二次拉取{final_status}：{msg}',
         })
-        logger.info(f'[论坛监控] 全量二次拉取完成：{msg}')
+        logger.info(f'[论坛监控] 全量二次拉取{final_status}：{msg}')
+
+        _push_wechat_notice('二次拉取', final_status, msg, {
+            'processed': processed,
+            'found_seeds': found_count,
+        })
+
         return {
             'success': True,
             'run_id': run_id,
@@ -1183,6 +1272,7 @@ def run_recheck_all_no_seeds(thread_delay: float = 3.0) -> Dict[str, Any]:
     except Exception as e:
         _monitor_status.update({'running': False, 'message': f'二次拉取失败: {e}'})
         logger.error(f'[论坛监控] 全量二次拉取异常: {e}', exc_info=True)
+        _push_wechat_notice('二次拉取', '异常中断', str(e))
         return {'success': False, 'message': str(e)}
     finally:
         _monitor_lock.release()

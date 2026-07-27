@@ -438,16 +438,26 @@ async function searchMovies(page) {
             if (r.author) meta += ' · ' + escapeHtml(r.author);
             var tid = parseInt(r.tid, 10);
             if (isNaN(tid)) return;
-            html += '<div class="list-group-item list-group-item-action search-item" data-format="' + escapeHtml(fmt) + '">' +
+            // 检查本地是否已缓存磁力链接
+            var cachedMagnets = (r.magnets && r.magnets.length > 0) ? r.magnets : null;
+            var magnetBtnHtml;
+            if (cachedMagnets) {
+                // 本地已缓存：显示"已缓存"标记，点击直接展示无需远端请求
+                magnetBtnHtml = '<button class="btn btn-sm btn-outline-info" onclick="showCachedMagnet(' + tid + ', this)" title="磁力链接已缓存，点击查看">' +
+                    '<i class="bi bi-magnet"></i><i class="bi bi-check-circle ms-1"></i></button>';
+            } else {
+                // 未缓存：需调远端接口
+                magnetBtnHtml = '<button class="btn btn-sm btn-outline-primary" onclick="getMagnet(' + tid + ', this)" title="获取磁力链接">' +
+                    '<i class="bi bi-magnet"></i></button>';
+            }
+            html += '<div class="list-group-item list-group-item-action search-item" data-format="' + escapeHtml(fmt) + '" data-magnets="' + (cachedMagnets ? escapeHtml(JSON.stringify(cachedMagnets)) : '') + '">' +
                 '<div class="d-flex justify-content-between align-items-start">' +
                     '<div class="me-2 flex-grow-1">' +
                         '<h6 class="mb-1"><span class="badge bg-' + badgeColor + ' me-1">' + escapeHtml(fmt) + '</span>' + title + '</h6>' +
                         '<small class="text-muted">' + escapeHtml(meta) + '</small>' +
                     '</div>' +
                     '<div class="d-flex gap-1 flex-shrink-0">' +
-                        '<button class="btn btn-sm btn-outline-primary" onclick="getMagnet(' + tid + ', this)" title="获取磁力链接">' +
-                            '<i class="bi bi-magnet"></i>' +
-                        '</button>' +
+                        magnetBtnHtml +
                         '<button class="btn btn-sm btn-outline-success" onclick="saveTo115(' + tid + ', this)" title="添加到115离线下载">' +
                             '<i class="bi bi-cloud-plus"></i>' +
                         '</button>' +
@@ -492,22 +502,59 @@ async function batchGetMagnets() {
         showToast('当前没有搜索结果', 'danger');
         return;
     }
-    var tids = currentResults.map(function(r) { return r.tid; });
     var btn = document.getElementById('batchMagnetBtn');
     var statusEl = document.getElementById('batchMagnetStatus');
     btn.disabled = true;
-    btn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>并发获取中...';
-    statusEl.textContent = '正在并发获取 ' + tids.length + ' 个磁力链接，请稍候...';
-    // 先把所有结果项标记为获取中
-    tids.forEach(function(tid) {
+    btn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>处理中...';
+
+    // 优先处理本地已缓存的磁力链接（瞬间完成）
+    var cachedCount = 0;
+    var missingTids = [];
+    currentResults.forEach(function(r) {
+        var tid = parseInt(r.tid, 10);
+        if (isNaN(tid)) return;
         var el = document.getElementById('magnet-' + tid);
-        if (el) el.innerHTML = '<small class="text-muted"><i class="bi bi-arrow-repeat me-1"></i>排队中...</small>';
+        if (!el) return;
+        var magnets = (r.magnets && r.magnets.length > 0) ? r.magnets : null;
+        if (magnets) {
+            // 本地缓存直接渲染
+            cachedCount++;
+            var html = '<small class="text-info mb-1 d-block"><i class="bi bi-lightning-charge me-1"></i>本地缓存</small>';
+            magnets.forEach(function(m, idx) {
+                var magnet = m.magnet || '';
+                var name = m.name || '';
+                if (!magnet) return;
+                html += '<div class="input-group input-group-sm' + (idx > 0 ? ' mt-1' : '') + '">' +
+                    '<input type="text" class="form-control" value="' + escapeHtml(magnet) + '" readonly onclick="this.select()">' +
+                    '<button class="btn btn-outline-secondary" data-magnet="' + escapeHtml(magnet) + '" onclick="copyText(this.dataset.magnet)">复制</button>' +
+                    '<button class="btn btn-outline-success" data-magnet="' + escapeHtml(magnet) + '" data-tid="' + tid + '" onclick="addMagnetTo115(this.dataset.magnet, parseInt(this.dataset.tid))">添加到115</button>' +
+                '</div>' +
+                (name ? '<small class="text-muted mt-1 d-block">' + escapeHtml(name) + '</small>' : '');
+            });
+            el.innerHTML = html;
+        } else {
+            // 未缓存，加入待远端获取列表
+            missingTids.push(tid);
+            el.innerHTML = '<small class="text-muted"><i class="bi bi-arrow-repeat me-1"></i>排队中...</small>';
+        }
     });
+
+    // 全部命中本地缓存：无需远端请求
+    if (missingTids.length === 0) {
+        statusEl.textContent = '完成: 全部 ' + cachedCount + ' 个命中本地缓存（瞬间）';
+        showToast('已展示全部本地缓存的磁力链接', 'success');
+        btn.innerHTML = '<i class="bi bi-lightning-charge me-1"></i>批量获取本页磁力链接';
+        btn.disabled = false;
+        return;
+    }
+
+    // 对未命中的部分调远端接口
+    statusEl.textContent = '本地缓存命中 ' + cachedCount + ' 个，正在远端获取剩余 ' + missingTids.length + ' 个...';
     try {
         var resp = await apiFetch('/baidu/batch_magnets', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'tids=' + tids.join(',')
+            body: 'tids=' + missingTids.join(',')
         });
         var result = await resp.json();
         if (!result.success) {
@@ -516,7 +563,7 @@ async function batchGetMagnets() {
             return;
         }
         // 渲染成功的结果
-        var successCount = 0;
+        var successCount = cachedCount;
         (result.magnets || []).forEach(function(m) {
             successCount++;
             var el = document.getElementById('magnet-' + m.tid);
@@ -537,7 +584,7 @@ async function batchGetMagnets() {
             if (el) el.innerHTML = '<small class="text-danger">获取失败: ' + escapeHtml(f.error) + '</small>';
         });
         var failCount = (result.failed || []).length;
-        statusEl.textContent = '完成: 成功 ' + successCount + ' / 失败 ' + failCount + ' / 耗时 ' + (result.cost || 0) + 's';
+        statusEl.textContent = '完成: 成功 ' + successCount + ' (本地' + cachedCount + '+远端' + (successCount - cachedCount) + ') / 失败 ' + failCount + ' / 远端耗时 ' + (result.cost || 0) + 's';
         showToast('批量获取完成，成功' + successCount + '个', successCount > 0 ? 'success' : 'warning');
     } catch (e) {
         showToast('批量获取失败: ' + e.message, 'danger');
@@ -546,6 +593,47 @@ async function batchGetMagnets() {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-lightning-charge me-1"></i>批量获取本页磁力链接';
     }
+}
+
+function showCachedMagnet(tid, btn) {
+    // 从 data-magnets 属性读取本地缓存的磁力链接，无需远端请求
+    var el = document.getElementById('magnet-' + tid);
+    if (!el) return;
+    // 找到该帖子所在的 list-group-item 元素
+    var item = btn.closest('.list-group-item');
+    var magnetsJson = item ? item.getAttribute('data-magnets') : '';
+    if (!magnetsJson) {
+        // 缓存数据丢失，回退到远端获取
+        return getMagnet(tid, btn);
+    }
+    try {
+        var magnets = JSON.parse(magnetsJson);
+    } catch (e) {
+        return getMagnet(tid, btn);
+    }
+    if (!magnets || magnets.length === 0) {
+        return getMagnet(tid, btn);
+    }
+    // 渲染缓存的磁力链接（可能多个）
+    var html = '';
+    magnets.forEach(function(m, idx) {
+        var magnet = m.magnet || '';
+        var name = m.name || '';
+        if (!magnet) return;
+        html += '<div class="input-group input-group-sm' + (idx > 0 ? ' mt-1' : '') + '">' +
+            '<input type="text" class="form-control" value="' + escapeHtml(magnet) + '" readonly onclick="this.select()">' +
+            '<button class="btn btn-outline-secondary" data-magnet="' + escapeHtml(magnet) + '" onclick="copyText(this.dataset.magnet)">复制</button>' +
+            '<button class="btn btn-outline-success" data-magnet="' + escapeHtml(magnet) + '" data-tid="' + tid + '" onclick="addMagnetTo115(this.dataset.magnet, parseInt(this.dataset.tid))">添加到115</button>' +
+        '</div>' +
+        (name ? '<small class="text-muted mt-1 d-block">' + escapeHtml(name) + '</small>' : '');
+    });
+    if (!html) {
+        el.innerHTML = '<small class="text-danger">缓存数据无效</small>';
+        return;
+    }
+    el.innerHTML = '<small class="text-info mb-1 d-block"><i class="bi bi-lightning-charge me-1"></i>本地缓存（瞬间加载）</small>' + html;
+    // 已展开后，按钮变为隐藏
+    btn.disabled = false;
 }
 
 async function getMagnet(tid, btn) {

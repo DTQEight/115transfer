@@ -1465,22 +1465,25 @@ def search_local_magnets(keyword: str, page: int = 1, page_size: int = 20) -> Di
                 'total_count': 0, 'source': 'local'}
 
     offset = (page - 1) * page_size
+    # 过滤条件：仅返回已缓存磁力链接的帖子（magnet_links 非空且非 []）
+    # 避免返回无种帖子导致用户点击"获取磁链"时得到"未找到附件"
+    magnet_filter = "(magnet_links IS NOT NULL AND magnet_links != '' AND magnet_links != '[]')"
     with _db_ctx() as conn:
-        # 统计匹配总数
+        # 统计匹配总数（仅有种帖子）
         cur = conn.execute(
-            'SELECT COUNT(*) as c FROM threads WHERE title LIKE ?',
-            (f'%{keyword}%',)
+            f'SELECT COUNT(*) as c FROM threads WHERE title LIKE ? AND {magnet_filter}',
+            (f'%{keyword}',)
         )
         total_count = cur.fetchone()['c']
 
-        # 查询当前页结果
+        # 查询当前页结果（仅有种帖子）
         cur = conn.execute(
-            '''SELECT tid, title, fid, forum_name, author, post_date,
-                      seed_count, magnet_links
-               FROM threads
-               WHERE title LIKE ?
-               ORDER BY fetched_at DESC
-               LIMIT ? OFFSET ?''',
+            f'''SELECT tid, title, fid, forum_name, author, post_date,
+                       seed_count, magnet_links
+                FROM threads
+                WHERE title LIKE ? AND {magnet_filter}
+                ORDER BY fetched_at DESC
+                LIMIT ? OFFSET ?''',
             (f'%{keyword}%', page_size, offset)
         )
         rows = [dict(r) for r in cur.fetchall()]

@@ -37,6 +37,7 @@
                 <i class="bi bi-search me-2"></i>搜索电影
             </div>
             <div class="card-body">
+                <div class="form-text mb-2">优先搜索本地已爬取的帖子（附带磁力链接），本地无结果时自动回退到论坛实时搜索</div>
                 <div class="input-group mb-3">
                     <input type="text" id="searchKeyword" class="form-control" placeholder="输入电影名称（中文或英文）" onkeydown="if(event.key==='Enter'){searchMovies();}">
                     <button onclick="searchMovies()" class="btn btn-primary">
@@ -143,19 +144,22 @@
                             <div class="col-md-3 col-6">
                                 <label class="form-label small">页间延迟(秒)</label>
                                 <input type="number" id="monitorPageDelay" class="form-control form-control-sm" min="0.5" step="0.5" value="5">
+                                <div class="form-text">板块内每翻一页的间隔</div>
                             </div>
                             <div class="col-md-3 col-6">
                                 <label class="form-label small">帖间延迟(秒)</label>
                                 <input type="number" id="monitorThreadDelay" class="form-control form-control-sm" min="0" step="0.5" value="3">
+                                <div class="form-text">每个帖子下载种子后的间隔</div>
                             </div>
                             <div class="col-md-3 col-6">
                                 <label class="form-label small">每次最多页数</label>
                                 <input type="number" id="monitorMaxPages" class="form-control form-control-sm" min="1" value="200">
+                                <div class="form-text">增量任务实际硬上限为 20 页</div>
                             </div>
                             <div class="col-md-3 col-6">
                                 <label class="form-label small">并发线程数</label>
                                 <input type="number" id="monitorConcurrent" class="form-control form-control-sm" min="1" max="6" value="1">
-                                <div class="form-text">保守模式建议1</div>
+                                <div class="form-text">每页新帖种子下载并发数，保守模式建议1</div>
                             </div>
                         </div>
                         <button onclick="saveMonitorConfig()" class="btn btn-primary btn-sm mt-3">
@@ -210,6 +214,7 @@
                             <button id="batchRecheckBtn" onclick="startRecheckAll()" class="btn btn-sm btn-outline-danger" style="display:none;">
                                 <i class="bi bi-arrow-repeat me-1"></i>二次拉取全部无种
                             </button>
+                            <span class="form-text small ms-2">二次拉取：重新访问无种帖子页面，对可能延迟上传种子的帖子再次抓取</span>
                         </div>
                         <div id="seedsList" class="table-responsive">
                             <div class="text-muted text-center py-3">点击"刷新"或搜索查看种子</div>
@@ -412,7 +417,13 @@ async function searchMovies(page) {
         currentResults.forEach(function(r) { r._format = detectFormat(r.title); });
         activeFormat = '';
         renderFormatFilter();
-        var html = '<p class="text-muted mb-2">共 ' + totalCount + ' 个结果，当前第 ' + result.page + '/' + result.total_pages + ' 页（每页约30条）</p>';
+        var html = '<p class="text-muted mb-2">共 ' + totalCount + ' 个结果，当前第 ' + result.page + '/' + result.total_pages + ' 页（每页约30条）';
+        if (result.source === 'local') {
+            html += ' · <span class="badge bg-info">来源：本地数据库</span>';
+        } else if (result.source === 'remote') {
+            html += ' · <span class="badge bg-warning text-dark">来源：论坛实时搜索</span>';
+        }
+        html += '</p>';
         html += '<div class="mb-2 d-flex gap-2 flex-wrap">';
         html += '<button class="btn btn-sm btn-warning" onclick="batchGetMagnets()" id="batchMagnetBtn"><i class="bi bi-lightning-charge me-1"></i>批量获取本页磁力链接</button>';
         html += '<span class="text-muted small align-self-center" id="batchMagnetStatus"></span>';

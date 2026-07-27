@@ -1725,8 +1725,15 @@ def baidu_search():
     if not keyword:
         return jsonify({'success': False, 'message': '请输入搜索关键词'})
     try:
+        # 优先使用本地数据库搜索（全量拉取/增量监控已爬取的帖子，附带磁力链接）
+        local_result = forum_monitor.search_local_magnets(keyword, page=page)
+        if local_result.get('total_count', 0) > 0:
+            logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 本地命中:{local_result.get("total_count", 0)}个')
+            return jsonify({'success': True, **local_result})
+        # 本地无结果：回退到论坛实时搜索
         result = baidu_forum.search(keyword, page=page)
-        logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 结果:{result.get("total_count", 0)}个')
+        result.setdefault('source', 'remote')
+        logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 本地无结果，回退论坛:{result.get("total_count", 0)}个')
         return jsonify({'success': True, **result})
     except Exception as e:
         logger.error(f'[搜索] 失败: {keyword} - {str(e)}')

@@ -149,7 +149,8 @@ def _init_db() -> None:
                 post_date TEXT,
                 fetched_at TEXT NOT NULL,
                 seed_count INTEGER DEFAULT 0,
-                seed_paths TEXT
+                seed_paths TEXT,
+                magnet_links TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_threads_fid ON threads(fid);
             CREATE INDEX IF NOT EXISTS idx_threads_fetched ON threads(fetched_at);
@@ -211,6 +212,18 @@ def _init_db() -> None:
                 logger.info('[论坛监控] crawl_progress 迁移完成')
         except Exception as e:
             logger.warning(f'[论坛监控] crawl_progress 迁移检查失败（可忽略）: {e}')
+
+        # 迁移 threads 表：新增 magnet_links 字段（JSON 数组，存每个种子的磁力链接）
+        # 旧表无此字段，需 ALTER TABLE 添加；新表建表时已包含则跳过
+        try:
+            cols = conn.execute("PRAGMA table_info(threads)").fetchall()
+            col_names = [c['name'] for c in cols]
+            if 'magnet_links' not in col_names:
+                logger.info('[论坛监控] 迁移 threads 表：新增 magnet_links 字段')
+                conn.execute('ALTER TABLE threads ADD COLUMN magnet_links TEXT')
+                logger.info('[论坛监控] threads 表迁移完成')
+        except Exception as e:
+            logger.warning(f'[论坛监控] threads 迁移检查失败（可忽略）: {e}')
 
 
 # ==================== 配置读写（复用 baidu_forum 配置文件） ====================
@@ -462,28 +475,41 @@ def _save_seed_file(content: bytes, fid: str, tid: str, aid: str) -> str:
     return os.path.join(safe_fid, filename)
 
 
-def download_thread_seeds(tid: str, fid: str) -> List[str]:
-    """下载帖子所有种子文件
+def download_thread_seeds(tid: str, fid: str) -> Tuple[List[str], List[Dict[str, str]]]:
+    """下载帖子所有种子文件，并计算磁力链接
 
-    复用 baidu_forum 的附件发现 + 下载逻辑，但不转磁力链接。
-    单个附件失败跳过，不影响其他附件。
+    复用 baidu_forum 的附件发现 + 下载逻辑，同步调用 torrent_to_magnet
+    计算每个种子的磁力链接。单个附件失败跳过，不影响其他附件。
 
     Returns:
-        保存的相对路径列表，如 ['12/12345_67890.torrent']
+        (seed_paths, magnet_links)
+        - seed_paths: 保存的相对路径列表，如 ['12/12345_67890.torrent']
+        - magnet_links: 磁力链接信息列表，如 [{'aid', 'magnet', 'name'}, ...]
     """
     s = baidu_forum._get_session()
     attachments = baidu_forum._get_thread_attachments_with_session(s, tid)
     if not attachments:
-        return []
+        return [], []
     saved: List[str] = []
+    magnets: List[Dict[str, str]] = []
     for att in attachments:
         try:
             content, _ = baidu_forum._download_torrent_with_session(s, att['url'])
             rel_path = _save_seed_file(content, fid, tid, att['aid'])
             saved.append(rel_path)
+            # 计算磁力链接（失败不影响种子文件保存）
+            try:
+                m = baidu_forum.torrent_to_magnet(content)
+                magnets.append({
+                    'aid': att['aid'],
+                    'magnet': m['magnet'],
+                    'name': m.get('name', ''),
+                })
+            except Exception as e:
+                logger.warning(f'[论坛监控] 帖子{tid} 附件{att["aid"]} 磁力链接计算失败: {e}')
         except Exception:
             continue  # 非种子附件或下载失败，跳过
-    return saved
+    return saved, magnets
 
 
 def recheck_thread_seeds(tid: str) -> Dict[str, Any]:
@@ -503,9 +529,9 @@ def recheck_thread_seeds(tid: str) -> Dict[str, Any]:
         return {'tid': tid, 'title': '', 'has_seeds': False, 'seed_count': 0, 'message': '帖子不存在'}
     thread = dict(row)
 
-    # 重新下载种子
+    # 重新下载种子（同时计算磁力链接）
     try:
-        seed_paths = download_thread_seeds(tid, thread['fid'] or '')
+        seed_paths, magnet_links = download_thread_seeds(tid, thread['fid'] or '')
     except Exception as e:
         logger.error(f'[论坛监控] 二次拉取 {tid} 失败: {e}')
         return {'tid': tid, 'title': thread['title'], 'has_seeds': False, 'seed_count': 0,
@@ -514,9 +540,14 @@ def recheck_thread_seeds(tid: str) -> Dict[str, Any]:
     # 更新数据库（无论有无种子都更新 fetched_at，记录已二次确认过）
     with _db_ctx() as conn:
         conn.execute('''
-            UPDATE threads SET seed_count=?, seed_paths=?, fetched_at=?
+            UPDATE threads SET seed_count=?, seed_paths=?, magnet_links=?, fetched_at=?
             WHERE tid=?
-        ''', (len(seed_paths), json.dumps(seed_paths, ensure_ascii=False), _now_iso(), tid))
+        ''', (
+            len(seed_paths),
+            json.dumps(seed_paths, ensure_ascii=False),
+            json.dumps(magnet_links, ensure_ascii=False),
+            _now_iso(), tid,
+        ))
 
     has_seeds = len(seed_paths) > 0
     msg = f'发现{len(seed_paths)}个种子' if has_seeds else '仍无种子'
@@ -529,18 +560,25 @@ def recheck_thread_seeds(tid: str) -> Dict[str, Any]:
 
 # ==================== 存储操作 ====================
 
-def _upsert_thread(thread: Dict[str, str], seed_paths: List[str]) -> bool:
+def _upsert_thread(thread: Dict[str, str], seed_paths: List[str],
+                   magnet_links: Optional[List[Dict[str, str]]] = None) -> bool:
     """插入或更新帖子记录
+
+    Args:
+        thread: 帖子元数据
+        seed_paths: 种子文件相对路径列表
+        magnet_links: 磁力链接信息列表（与 seed_paths 一一对应或为空）
 
     Returns:
         True 表示新帖（首次插入），False 表示已存在
     """
+    magnets_json = json.dumps(magnet_links or [], ensure_ascii=False)
     with _db_ctx() as conn:
         cur = conn.execute('SELECT tid FROM threads WHERE tid=?', (thread['tid'],))
         exists = cur.fetchone() is not None
         conn.execute('''
-            INSERT INTO threads (tid, title, fid, forum_name, author, post_date, fetched_at, seed_count, seed_paths)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO threads (tid, title, fid, forum_name, author, post_date, fetched_at, seed_count, seed_paths, magnet_links)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(tid) DO UPDATE SET
                 title=excluded.title,
                 fid=excluded.fid,
@@ -549,11 +587,13 @@ def _upsert_thread(thread: Dict[str, str], seed_paths: List[str]) -> bool:
                 post_date=excluded.post_date,
                 fetched_at=excluded.fetched_at,
                 seed_count=excluded.seed_count,
-                seed_paths=excluded.seed_paths
+                seed_paths=excluded.seed_paths,
+                magnet_links=excluded.magnet_links
         ''', (
             thread['tid'], thread['title'], thread['fid'], thread['forum_name'],
             thread['author'], thread['post_date'], _now_iso(),
-            len(seed_paths), json.dumps(seed_paths, ensure_ascii=False)
+            len(seed_paths), json.dumps(seed_paths, ensure_ascii=False),
+            magnets_json,
         ))
     return not exists
 
@@ -813,12 +853,16 @@ def _push_wechat_notice(task_label: str, status: str, message: str,
 
 # ==================== 核心爬取逻辑 ====================
 
-def _download_seeds_for_thread(thread: Dict[str, str]) -> List[str]:
-    """下载单个帖子的种子（独立函数，便于线程池调用）"""
+def _download_seeds_for_thread(thread: Dict[str, str]) -> Tuple[List[str], List[Dict[str, str]]]:
+    """下载单个帖子的种子（独立函数，便于线程池调用）
+
+    Returns:
+        (seed_paths, magnet_links)，异常时返回 ([], [])
+    """
     try:
         return download_thread_seeds(thread['tid'], thread['fid'])
     except Exception:
-        return []
+        return [], []
 
 
 def crawl_forum(fid: str, forum_name: str, mode: str,
@@ -996,8 +1040,8 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
                         status = 'cancelled'
                         stop = True
                         break
-                    seed_paths = _download_seeds_for_thread(t)
-                    is_new = _upsert_thread(t, seed_paths)
+                    seed_paths, magnet_links = _download_seeds_for_thread(t)
+                    is_new = _upsert_thread(t, seed_paths, magnet_links)
                     if is_new:
                         threads_new += 1
                     seeds_downloaded += len(seed_paths)
@@ -1022,10 +1066,10 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
                             break
                         t = future_to_thread[fut]
                         try:
-                            seed_paths = fut.result()
+                            seed_paths, magnet_links = fut.result()
                         except Exception:
-                            seed_paths = []
-                        is_new = _upsert_thread(t, seed_paths)
+                            seed_paths, magnet_links = [], []
+                        is_new = _upsert_thread(t, seed_paths, magnet_links)
                         if is_new:
                             threads_new += 1
                         seeds_downloaded += len(seed_paths)
@@ -1396,6 +1440,84 @@ def list_threads(fid: Optional[str] = None, keyword: str = '',
         )
         rows = [dict(r) for r in cur.fetchall()]
         return rows, total
+
+
+def search_local_magnets(keyword: str, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
+    """从本地数据库搜索帖子，返回与 baidu_forum.search 兼容的结构并附带磁力链接
+
+    优先使用本地数据库（全量拉取/增量监控已爬取的帖子）。
+    本地无结果时调用方应回退到 baidu_forum.search 实时搜索论坛。
+
+    Args:
+        keyword: 搜索关键词
+        page: 页码（从1开始）
+        page_size: 每页结果数
+
+    Returns:
+        {
+            'results': [{'tid', 'title', 'forum', 'author', 'date',
+                          'replies', 'views', 'magnet', 'magnets', 'source'}, ...],
+            'page', 'total_pages', 'total_count', 'source': 'local'
+        }
+    """
+    if not keyword or page < 1:
+        return {'results': [], 'page': page, 'total_pages': 0,
+                'total_count': 0, 'source': 'local'}
+
+    offset = (page - 1) * page_size
+    with _db_ctx() as conn:
+        # 统计匹配总数
+        cur = conn.execute(
+            'SELECT COUNT(*) as c FROM threads WHERE title LIKE ?',
+            (f'%{keyword}%',)
+        )
+        total_count = cur.fetchone()['c']
+
+        # 查询当前页结果
+        cur = conn.execute(
+            '''SELECT tid, title, fid, forum_name, author, post_date,
+                      seed_count, magnet_links
+               FROM threads
+               WHERE title LIKE ?
+               ORDER BY fetched_at DESC
+               LIMIT ? OFFSET ?''',
+            (f'%{keyword}%', page_size, offset)
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    results: List[Dict[str, Any]] = []
+    for r in rows:
+        # 解析 magnet_links JSON
+        magnets: List[Dict[str, str]] = []
+        if r.get('magnet_links'):
+            try:
+                magnets = json.loads(r['magnet_links']) or []
+            except Exception:
+                magnets = []
+        # 取第一个磁力链接作为 magnet 字段（与 baidu_forum.get_magnet_from_thread 返回结构兼容）
+        first_magnet = magnets[0]['magnet'] if magnets else ''
+
+        results.append({
+            'tid': r['tid'],
+            'title': r['title'],
+            'forum': r.get('forum_name') or '',
+            'replies': '0',     # 本地数据库未存储回复数
+            'views': '0',       # 本地数据库未存储查看数
+            'author': r.get('author') or '',
+            'date': r.get('post_date') or '',
+            'magnet': first_magnet,
+            'magnets': magnets,
+            'source': 'local',
+        })
+
+    total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 0
+    return {
+        'results': results,
+        'page': page,
+        'total_pages': total_pages,
+        'total_count': total_count,
+        'source': 'local',
+    }
 
 
 def list_forums_with_progress() -> List[Dict[str, Any]]:

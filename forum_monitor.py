@@ -241,6 +241,51 @@ def save_monitor_config(monitor_cfg: Dict[str, Any]) -> None:
     baidu_forum.update_config(_mutator)
 
 
+# ==================== 登录态检测 ====================
+
+# 登录页特征：title 包含"用户登录页面"，或页面含 member.php?mod=logging
+_LOGIN_TITLE_RE = re.compile(r'<title>[^<]*用户登录页面', re.IGNORECASE)
+_LOGIN_URL_RE = re.compile(r'member\.php\?mod=logging', re.IGNORECASE)
+
+
+def _is_login_page(html: str) -> bool:
+    """检测 HTML 是否为论坛登录页（session 失效时服务器返回登录页）
+
+    多重特征避免误判：
+    - <title>用户登录页面</title> 是最可靠特征
+    - member.php?mod=logging 是 Discuz 登录跳转特征
+    """
+    if not html:
+        return False
+    if _LOGIN_TITLE_RE.search(html):
+        return True
+    # mod=logging 特征需配合 discuz_uid='0' 才判定，避免误判正常帖子中的链接
+    if _LOGIN_URL_RE.search(html) and "discuz_uid = '0'" in html:
+        return True
+    return False
+
+
+def _relogin_with_notice(task_label: str) -> Any:
+    """重置 session 并重新登录，推送微信通知
+
+    Args:
+        task_label: 任务标签（用于微信通知）
+
+    Returns:
+        新的 session 对象
+
+    Raises:
+        Exception: 重新登录失败时抛出
+    """
+    logger.warning(f'[论坛监控] {task_label} 检测到登录态失效，正在重新登录')
+    _push_wechat_notice(task_label, '登录失效', '论坛 session 过期，正在重新登录...')
+    baidu_forum._reset_session()
+    s = baidu_forum._get_session()  # 会自动用 username/password 重新登录
+    logger.info(f'[论坛监控] {task_label} 重新登录成功，继续爬取')
+    _push_wechat_notice(task_label, '重新登录成功', '已恢复登录态，继续爬取')
+    return s
+
+
 # ==================== 板块发现 ====================
 
 def discover_forums() -> List[Dict[str, str]]:
@@ -808,6 +853,9 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
     seeds_downloaded = 0
     message = ''
     status = 'success'
+    # 重新登录连续失败计数：达到 10 次中断整个任务，避免无限重试
+    relogin_fail_count = 0
+    _RELOGIN_FAIL_LIMIT = 10
 
     # 记录当前板块开始时间（ETA 计算，隔离多板块任务的耗时）
     update_fn(forum_started_at=_now_iso())
@@ -863,6 +911,35 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
                 logger.warning(f'[论坛监控] {forum_name} 第{page}页第{attempt+1}/{max_attempts}次请求失败: {e}')
                 if attempt < max_attempts - 1:
                     time.sleep(5)
+                continue
+            # 登录态失效检测：服务器返回登录页时重置 session、重新登录并推送微信通知
+            if _is_login_page(r.text):
+                logger.warning(f'[论坛监控] {forum_name}(fid={fid}) 第{page}页第{attempt+1}/{max_attempts}次响应为登录页，触发重新登录')
+                try:
+                    s = _relogin_with_notice(f"{forum_name}(fid={fid})")
+                    # 重新登录成功，重置连续失败计数
+                    relogin_fail_count = 0
+                except Exception as e:
+                    relogin_fail_count += 1
+                    logger.error(f'[论坛监控] {forum_name} 重新登录失败({relogin_fail_count}/{_RELOGIN_FAIL_LIMIT}): {e}')
+                    # 连续失败达上限：推送微信通知并中断整个任务
+                    if relogin_fail_count >= _RELOGIN_FAIL_LIMIT:
+                        message = f'重新登录连续失败{relogin_fail_count}次，任务中断: {e}'
+                        status = 'error'
+                        stop = True
+                        logger.error(f'[论坛监控] {forum_name} {message}')
+                        _push_wechat_notice(
+                            f"{forum_name}(fid={fid})",
+                            '登录失败中断',
+                            f'重新登录连续失败{relogin_fail_count}次，任务中断。最后错误: {e}',
+                        )
+                        break
+                    if attempt < max_attempts - 1:
+                        time.sleep(5)
+                    continue
+                # 重新登录成功，重试当前页（不消耗本次 attempt 的解析结果）
+                if attempt < max_attempts - 1:
+                    time.sleep(2)
                 continue
             threads, total_pages = parse_forum_page(r.text, fid, forum_name)
             if total_pages > 0:

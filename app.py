@@ -1780,19 +1780,32 @@ def baidu_search():
     keyword = (request.form.get('keyword') or '').strip()
     page = request.form.get('page', '1').strip()
     page = int(page) if page.isdigit() else 1
+    # source 参数：'local'（仅本地）/ 'remote'（仅论坛）/ 默认本地优先回退论坛
+    source = (request.form.get('source') or '').strip()
     if not keyword:
         return jsonify({'success': False, 'message': '请输入搜索关键词'})
     try:
-        # 优先使用本地数据库搜索（全量拉取/增量监控已爬取的帖子，附带磁力链接）
-        local_result = forum_monitor.search_local_magnets(keyword, page=page)
-        if local_result.get('total_count', 0) > 0:
-            logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 本地命中:{local_result.get("total_count", 0)}个')
+        if source == 'remote':
+            # 强制论坛实时搜索
+            result = baidu_forum.search(keyword, page=page)
+            result.setdefault('source', 'remote')
+            logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 强制论坛:{result.get("total_count", 0)}个')
+            return jsonify({'success': True, **result})
+        elif source == 'local':
+            # 强制本地数据库搜索
+            local_result = forum_monitor.search_local_magnets(keyword, page=page)
+            logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 强制本地:{local_result.get("total_count", 0)}个')
             return jsonify({'success': True, **local_result})
-        # 本地无结果：回退到论坛实时搜索
-        result = baidu_forum.search(keyword, page=page)
-        result.setdefault('source', 'remote')
-        logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 本地无结果，回退论坛:{result.get("total_count", 0)}个')
-        return jsonify({'success': True, **result})
+        else:
+            # 默认：本地优先，无结果回退论坛
+            local_result = forum_monitor.search_local_magnets(keyword, page=page)
+            if local_result.get('total_count', 0) > 0:
+                logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 本地命中:{local_result.get("total_count", 0)}个')
+                return jsonify({'success': True, **local_result})
+            result = baidu_forum.search(keyword, page=page)
+            result.setdefault('source', 'remote')
+            logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 本地无结果，回退论坛:{result.get("total_count", 0)}个')
+            return jsonify({'success': True, **result})
     except Exception as e:
         logger.error(f'[搜索] 失败: {keyword} - {str(e)}')
         return jsonify({'success': False, 'message': str(e)})

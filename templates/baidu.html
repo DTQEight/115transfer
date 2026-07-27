@@ -37,11 +37,14 @@
                 <i class="bi bi-search me-2"></i>搜索电影
             </div>
             <div class="card-body">
-                <div class="form-text mb-2">优先搜索本地已爬取的帖子（附带磁力链接），本地无结果时自动回退到论坛实时搜索</div>
+                <div class="form-text mb-2">本地搜索：从已爬取的帖子数据库查询（毫秒级，附带磁力链接）<br>论坛搜索：实时访问论坛搜索（可能较慢，包含最新帖子）</div>
                 <div class="input-group mb-3">
-                    <input type="text" id="searchKeyword" class="form-control" placeholder="输入电影名称（中文或英文）" onkeydown="if(event.key==='Enter'){searchMovies();}">
-                    <button onclick="searchMovies()" class="btn btn-primary">
-                        <i class="bi bi-search me-1"></i>搜索
+                    <input type="text" id="searchKeyword" class="form-control" placeholder="输入电影名称（中文或英文）" onkeydown="if(event.key==='Enter'){searchMovies('local');}">
+                    <button onclick="searchMovies('local')" class="btn btn-primary" title="从本地数据库搜索（快）">
+                        <i class="bi bi-database me-1"></i>本地搜索
+                    </button>
+                    <button onclick="searchMovies('remote')" class="btn btn-warning" title="实时访问论坛搜索（慢）">
+                        <i class="bi bi-cloud-arrow-down me-1"></i>论坛搜索
                     </button>
                 </div>
                 <div id="formatFilter"></div>
@@ -387,21 +390,38 @@ function filterByFormat(fmt) {
     });
 }
 
-async function searchMovies(page) {
+// 当前搜索模式：'local'（本地数据库）或 'remote'（论坛实时）
+var currentSearchMode = 'local';
+
+async function searchMovies(modeOrPage, page) {
+    // 兼容两种调用方式：
+    //   searchMovies('local') / searchMovies('remote') - 首次搜索
+    //   searchMovies(2) - 翻页（沿用 currentSearchMode）
+    var mode;
+    if (modeOrPage === 'local' || modeOrPage === 'remote') {
+        mode = modeOrPage;
+        currentSearchMode = mode;
+    } else {
+        // modeOrPage 是页码数字
+        mode = currentSearchMode || 'local';
+        if (typeof modeOrPage === 'number') page = modeOrPage;
+    }
+    page = page || 1;
+
     var keyword = document.getElementById('searchKeyword').value.trim();
     if (!keyword && !page) {
         showToast('请输入搜索关键词', 'danger');
         return;
     }
     if (keyword) searchKeyword = keyword;
-    page = page || 1;
     var el = document.getElementById('searchResult');
-    el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>搜索中...</p>';
+    var modeText = mode === 'local' ? '本地数据库' : '论坛实时';
+    el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>正在' + modeText + '搜索...</p>';
     try {
         var resp = await apiFetch('/baidu/search', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'keyword=' + encodeURIComponent(searchKeyword) + '&page=' + page
+            body: 'keyword=' + encodeURIComponent(searchKeyword) + '&page=' + page + '&source=' + mode
         });
         var result = await resp.json();
         if (!result.success) {
@@ -409,7 +429,10 @@ async function searchMovies(page) {
             return;
         }
         if (!result.results || result.results.length === 0) {
-            el.innerHTML = '<div class="alert alert-info">未找到结果</div>';
+            var hint = mode === 'local'
+                ? '本地数据库未找到结果。可尝试点击"论坛搜索"访问论坛实时搜索'
+                : '论坛未找到结果';
+            el.innerHTML = '<div class="alert alert-info">' + hint + '</div>';
             return;
         }
         var totalCount = result.total_count || result.results.length;

@@ -273,6 +273,11 @@ def create_menu(agentid):
             },
             {
                 "type": "click",
+                "name": "增量拉取",
+                "key": "forum_incremental"
+            },
+            {
+                "type": "click",
                 "name": "目录",
                 "key": "115_dir"
             }

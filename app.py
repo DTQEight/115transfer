@@ -967,9 +967,15 @@ def wechat_callback():
                              '页码 - 查看该页电影\n'
                              '搜索 电影名 - 搜索电影\n'
                              '磁力链接 - 转存到115网盘\n\n'
+                             '论坛监控:\n'
+                             '增量 - 启动增量监控（爬新帖）\n'
+                             '全量 - 启动全量拉取（耗时较长）\n'
+                             '进度 - 查看监控进度\n'
+                             '取消增量 / 取消全量 - 停止对应任务\n\n'
                              '菜单功能:\n'
                              '查看电影 - 浏览电影列表\n'
                              '批量转存 - 批量转存到115\n'
+                             '增量拉取 - 一键启动增量监控\n'
                              '目录 - 管理115网盘目录')
             elif content == '取消':
                 if state:
@@ -1096,6 +1102,44 @@ def wechat_callback():
                                  f'种子文件: {total_seeds} | 覆盖率: {seed_rate}%')
                 except Exception as e:
                     reply = f'查询进度失败: {e}'
+            elif content in ('增量', '增量拉取', '增量监控', '开始增量', 'incremental'):
+                # 触发增量监控（后台异步执行，与主任务独立）
+                try:
+                    if forum_monitor.get_status().get('incremental', {}).get('running'):
+                        reply = '增量监控已在运行，回复"进度"查看详情'
+                    else:
+                        import threading as _threading
+                        t = _threading.Thread(target=forum_monitor.run_incremental, daemon=True)
+                        t.start()
+                        reply = '增量监控已启动，将爬取各板块最新帖子\n回复"进度"查看实时进度\n回复"取消增量"可停止'
+                except Exception as e:
+                    reply = f'启动增量监控失败: {e}'
+            elif content in ('全量', '全量拉取', '开始全量', 'full'):
+                # 触发全量拉取（后台异步执行，与二次拉取互斥）
+                try:
+                    if forum_monitor.get_status()['running']:
+                        reply = '主任务已在运行（全量/二次拉取），回复"进度"查看详情'
+                    else:
+                        import threading as _threading
+                        t = _threading.Thread(target=forum_monitor.run_full_crawl, daemon=True)
+                        t.start()
+                        reply = '全量拉取已启动，将遍历所有板块所有页面\n耗时较长，回复"进度"查看实时进度\n回复"取消全量"可停止'
+                except Exception as e:
+                    reply = f'启动全量拉取失败: {e}'
+            elif content in ('取消增量', '停止增量'):
+                # 仅取消增量监控任务
+                try:
+                    cancelled = forum_monitor.cancel('incremental')
+                    reply = '已请求取消增量监控，任务将在下一次循环检查时停止' if cancelled else '增量监控未在运行'
+                except Exception as e:
+                    reply = f'取消增量监控失败: {e}'
+            elif content in ('取消全量', '停止全量'):
+                # 仅取消主任务（全量/二次拉取）
+                try:
+                    cancelled = forum_monitor.cancel('main')
+                    reply = '已请求取消主任务，任务将在下一次循环检查时停止' if cancelled else '当前没有运行中的主任务'
+                except Exception as e:
+                    reply = f'取消主任务失败: {e}'
             elif content.startswith('搜索') or content.startswith('search'):
                 keyword = content[2:].strip() if content.startswith('搜索') else content[6:].strip()
                 if not keyword:
@@ -1224,6 +1268,18 @@ def wechat_callback():
                                      f'种子文件: {total_seeds} | 覆盖率: {seed_rate}%')
                     except Exception as e:
                         reply = f'查询进度失败: {e}'
+                elif event_key == 'forum_incremental':
+                    # 菜单按钮：触发增量监控
+                    try:
+                        if forum_monitor.get_status().get('incremental', {}).get('running'):
+                            reply = '增量监控已在运行，回复"进度"查看详情'
+                        else:
+                            import threading as _threading
+                            t = _threading.Thread(target=forum_monitor.run_incremental, daemon=True)
+                            t.start()
+                            reply = '增量监控已启动，将爬取各板块最新帖子\n回复"进度"查看实时进度\n回复"取消增量"可停止'
+                    except Exception as e:
+                        reply = f'启动增量监控失败: {e}'
                 else:
                     reply = '未知操作'
             elif event == 'subscribe':

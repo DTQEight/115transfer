@@ -257,29 +257,24 @@ def create_menu(agentid):
     menu = {
         "button": [
             {
-                "type": "click",
-                "name": "查看电影",
-                "key": "view_movies"
+                "name": "电影",
+                "sub_button": [
+                    {"type": "click", "name": "查看电影", "key": "view_movies"},
+                    {"type": "click", "name": "批量转存", "key": "batch_transfer"}
+                ]
             },
             {
-                "type": "click",
-                "name": "批量转存",
-                "key": "batch_transfer"
+                "name": "论坛",
+                "sub_button": [
+                    {"type": "click", "name": "论坛进度", "key": "forum_progress"},
+                    {"type": "click", "name": "增量拉取", "key": "forum_incremental"}
+                ]
             },
             {
-                "type": "click",
-                "name": "论坛进度",
-                "key": "forum_progress"
-            },
-            {
-                "type": "click",
-                "name": "增量拉取",
-                "key": "forum_incremental"
-            },
-            {
-                "type": "click",
-                "name": "目录",
-                "key": "115_dir"
+                "name": "网盘",
+                "sub_button": [
+                    {"type": "click", "name": "目录", "key": "115_dir"}
+                ]
             }
         ]
     }

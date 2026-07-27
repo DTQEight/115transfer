@@ -59,6 +59,14 @@ async function clearLogs() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+    // 强制清空关键词搜索框：浏览器（Chrome/Edge）会忽略 autocomplete=off 在 DOMContentLoaded 后自动填充
+    var logKeywordEl = document.getElementById('logKeyword');
+    if (logKeywordEl) { logKeywordEl.value = ''; }
+    // window.load 比 DOMContentLoaded 更晚，覆盖浏览器在页面完全加载后的填充行为
+    window.addEventListener('load', function() {
+        if (logKeywordEl) { logKeywordEl.value = ''; }
+    });
+
     var logContainer = document.getElementById('logContainer');
     var logConnStatus = document.getElementById('logConnStatus');
     var logCountEl = document.getElementById('logCount');

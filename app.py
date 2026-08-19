@@ -386,13 +386,15 @@ def notes_save() -> Response:
 @app.route('/jellyfin/config', methods=['GET'])
 def jellyfin_get_config() -> Response:
     config = jellyfin.load_config()
+    # 掩码显示解密后的真 key 末4位（存的是加密串，直接取末位无意义）
+    decrypted_key = decrypt(config.get('api_key', ''))
     return jsonify({
         'success': True,
         'base_url': config.get('base_url', ''),
-        'api_key_masked': ('****' + config.get('api_key', '')[-4:]) if config.get('api_key') else '',
-        'has_api_key': bool(config.get('api_key')),
+        'api_key_masked': ('****' + decrypted_key[-4:]) if decrypted_key else '',
+        'has_api_key': bool(decrypted_key),
         'library_ids': config.get('library_ids', []),
-        'configured': bool(config.get('base_url') and config.get('api_key')),
+        'configured': bool(config.get('base_url') and decrypted_key),
     })
 
 
@@ -405,14 +407,23 @@ def jellyfin_set_config() -> Response:
     if not base_url or not api_key:
         return jsonify({'success': False, 'message': '地址和API Key不能为空'})
 
+    # 掩码哨兵(用户未重新输入)时用已保存的 key 测试且不覆盖；新 key 正常测试并覆盖
+    key_unchanged = api_key == '****' or api_key.startswith('****')
+    if key_unchanged:
+        test_key = decrypt(jellyfin.load_config().get('api_key', ''))
+        if not test_key:
+            return jsonify({'success': False, 'message': '请重新输入API Key'})
+    else:
+        test_key = api_key
+
     # 先测试连接再保存，避免存入错误配置
-    ok, msg = jellyfin.test_connection(base_url, api_key)
+    ok, msg = jellyfin.test_connection(base_url, test_key)
     if not ok:
         return jsonify({'success': False, 'message': f'连接测试失败: {msg}'})
 
     def _update(cfg):
         cfg['base_url'] = base_url
-        if api_key != '****':  # 掩码回传时不覆盖
+        if not key_unchanged:  # 掩码回传时不覆盖
             cfg['api_key'] = encrypt(api_key)
         cfg['library_ids'] = library_ids
     jellyfin.update_config(_update)
@@ -427,13 +438,10 @@ def jellyfin_libraries() -> Response:
     """获取媒体库列表（配置时选择用，传入临时参数实时测试）"""
     base_url = request.args.get('base_url', '').strip().rstrip('/')
     api_key = request.args.get('api_key', '').strip()
-    if not base_url or not api_key:
-        # 未传参时用已保存配置
+    # 未传参或传入掩码(未改)时用已保存配置
+    if not base_url or not api_key or api_key == '****' or api_key.startswith('****'):
         config = jellyfin.load_config()
-        base_url = config.get('base_url', '')
-        api_key = decrypt(config.get('api_key', ''))
-    if api_key == '****':
-        config = jellyfin.load_config()
+        base_url = base_url or config.get('base_url', '')
         api_key = decrypt(config.get('api_key', ''))
     libs, err = jellyfin.get_libraries(base_url, api_key)
     if err:

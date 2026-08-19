@@ -1266,7 +1266,7 @@
             try {
                 // 有未掩码的临时输入则带参数测试；否则后端用已保存配置
                 let url = '/jellyfin/libraries';
-                if (baseUrl && apiKey && apiKey !== '****') {
+                if (baseUrl && apiKey && !apiKey.startsWith('****')) {
                     url += `?base_url=${encodeURIComponent(baseUrl)}&api_key=${encodeURIComponent(apiKey)}`;
                 }
                 const resp = await apiFetch(url);
@@ -1294,10 +1294,12 @@
             }
             showLoading();
             try {
+                // key 为掩码(未改)时发 '****' 哨兵，后端保留原值；否则发新 key
+                const submitKey = apiKey.startsWith('****') ? '****' : apiKey;
                 const resp = await apiFetch('/jellyfin/config', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: `base_url=${encodeURIComponent(baseUrl)}&api_key=${encodeURIComponent(apiKey)}&library_ids=${encodeURIComponent(libIds.join(','))}`
+                    body: `base_url=${encodeURIComponent(baseUrl)}&api_key=${encodeURIComponent(submitKey)}&library_ids=${encodeURIComponent(libIds.join(','))}`
                 });
                 const result = await resp.json();
                 showToast(result.message, result.success ? 'success' : 'danger');

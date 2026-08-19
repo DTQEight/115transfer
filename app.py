@@ -16,7 +16,7 @@ from typing import List, Dict, Any, Optional, Tuple, Callable, Union
 from logging.handlers import RotatingFileHandler
 
 # 加密工具统一入口：避免在多个模块重复实现加密逻辑
-from crypto_utils import encrypt
+from crypto_utils import encrypt, decrypt
 
 import cloud115
 import wechat_work

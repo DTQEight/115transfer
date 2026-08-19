@@ -63,6 +63,14 @@ def _get_headers():
     }
 
 
+# 豆瓣请求专用会话：直连不走代理。
+# 豆瓣是国内站点，容器配置 HTTP_PROXY 时（如 Clash）豆瓣请求会从代理出口发出，
+# 共享出口IP易触发豆瓣反爬（只开放collect列表前~14页就返回空页）。
+# 与 baidu_forum 的 trust_env=False 策略一致。
+_SESSION = requests.Session()
+_SESSION.trust_env = False
+
+
 def fetch_watched_movies(user_id, start=0, count=15):
     """获取用户看过的电影列表（单页）
     返回: (movie_list, total_count, error_msg)
@@ -83,7 +91,7 @@ def fetch_watched_movies(user_id, start=0, count=15):
     }
 
     try:
-        resp = requests.get(url, params=params, headers=_get_headers(), timeout=15)
+        resp = _SESSION.get(url, params=params, headers=_get_headers(), timeout=15)
         if resp.status_code == 403:
             return [], 0, '豆瓣Cookie已过期，请重新配置'
         if resp.status_code != 200:
@@ -163,7 +171,7 @@ def fetch_movie_chinese_name(subject_url):
         return '', '未配置豆瓣Cookie'
 
     try:
-        resp = requests.get(subject_url, headers=_get_headers(), timeout=15)
+        resp = _SESSION.get(subject_url, headers=_get_headers(), timeout=15)
         if resp.status_code != 200:
             return '', f'请求失败，状态码: {resp.status_code}'
 
@@ -229,7 +237,12 @@ def fetch_all_watched_movies(user_id, max_pages=200):
 
 
 def check_cookie(user_id):
-    """检查豆瓣Cookie是否有效"""
+    """检查豆瓣Cookie是否有效（含深度分页探测）
+
+    仅查第1页是不够的：豆瓣对游客/可疑流量也正常返回第1页。
+    增加深度分页探测（第16页起）：豆瓣对反爬限流的会话只开放
+    collect列表前~14页(约208部)就返回空页，此时全量同步必然不完整。
+    """
     config = load_config()
     cookie = decrypt(config.get('cookie', ''))
     if not cookie:
@@ -238,6 +251,19 @@ def check_cookie(user_id):
     movies, total, err = fetch_watched_movies(user_id, 0, 15)
     if err:
         return False, err
+
+    # 总数超过深度探测阈值时，检查第16页能否访问
+    if total and total > 225:
+        deep, _dt, deep_err = fetch_watched_movies(user_id, 225, 15)
+        if not deep_err and not deep:
+            return True, (f'Cookie有效（第1页正常，页面报告共{total}部），'
+                          f'但豆瓣对当前网络只开放前~14页，深度分页返回空。'
+                          f'全量同步会不完整并中止。'
+                          f'可能原因：容器配置了HTTP_PROXY导致豆瓣请求走代理出口'
+                          f'（新版已改为直连，请更新镜像），或当前IP被豆瓣限流')
+        if deep_err:
+            return True, f'Cookie有效，本页获取到{len(movies)}部电影，页面报告共{total}部；但深度分页探测失败: {deep_err}'
+
     return True, f'Cookie有效，本页获取到{len(movies)}部电影，页面报告共{total}部'
 
 

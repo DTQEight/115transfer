@@ -517,40 +517,7 @@ def search():
         return render_template('search.html', movies=[], keyword=keyword, version=VERSION,
                               error=f'搜索失败，请重试'), 500
 
-@app.route('/add', methods=['POST'])
-def add_movie():
-    page = request.form.get('page')
-    name = request.form.get('name')
-    magnet = request.form.get('magnet', '')
-    
-    if not page or not name:
-        return jsonify({'success': False, 'message': '页码和电影名不能为空'})
-    
-    try:
-        page = int(page)
-    except (ValueError, TypeError):
-        return jsonify({'success': False, 'message': '页码必须是数字'})
-    
-    try:
-        with data_lock:
-            df = load_movies()
-            
-            page_df = df[df['页码'] == page]
-            new_id = int(page_df['序号'].max()) + 1 if not page_df.empty else 1
-            new_movie = {
-                '序号': new_id,
-                '页码': page,
-                '电影名': name,
-                '磁力链接': magnet,
-                '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
-            }
-            
-            df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
-            save_movies(df)
-        
-        return jsonify({'success': True, 'message': '添加成功'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'添加失败: {str(e)}'})
+# 注：原 /add 手动添加电影接口已移除，电影列表严格同步豆瓣"看过"列表
 
 @app.route('/delete/<int:movie_id>', methods=['POST'])
 def delete_movie(movie_id):
@@ -1033,7 +1000,6 @@ def wechat_callback():
                         reply = '回复"帮助"查看使用说明'
                 else:
                     reply = ('使用方法:\n'
-                             '页码 电影名 [磁力链接] - 添加电影（磁力链接可留空）\n'
                              '页码 - 查看该页电影\n'
                              '搜索 电影名 - 搜索本地电影记录\n'
                              '磁力链接 - 转存到115网盘\n'
@@ -1048,7 +1014,9 @@ def wechat_callback():
                              '批量转存 - 批量转存到115\n'
                              '论坛进度 - 查看监控状态\n'
                              '增量拉取 - 一键启动增量监控\n'
-                             '目录 - 管理115网盘目录')
+                             '目录 - 管理115网盘目录\n\n'
+                             '电影列表由豆瓣同步管理，\n'
+                             '请到网页端"豆瓣"页面同步观影记录')
             elif content == '取消':
                 if state:
                     with user_states_lock:
@@ -1246,28 +1214,7 @@ def wechat_callback():
                         magnet = row.get('磁力链接', '无')
                         reply += f'{name}\n{magnet}\n\n'
             else:
-                result = wechat_work.handle_text_message(content)
-
-                if isinstance(result, dict):
-                    try:
-                        with data_lock:
-                            df = load_movies()
-                            page_df = df[df['页码'] == result['page']]
-                            new_id = int(page_df['序号'].max()) + 1 if not page_df.empty else 1
-                            new_movie = {
-                                '序号': new_id,
-                                '页码': result['page'],
-                                '电影名': result['name'],
-                                '磁力链接': result['magnet'],
-                                '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
-                            }
-                            df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
-                            save_movies(df)
-                        reply = f'添加成功\n页码: {result["page"]}\n电影名: {result["name"]}'
-                    except Exception as e:
-                        reply = f'添加失败: {str(e)}'
-                else:
-                    reply = result
+                reply = wechat_work.handle_text_message(content)
 
             reply = wechat_work.truncate_reply(reply)
             logger.info(f'[WeChat Reply] To: {from_user}, Content: {reply[:50]}')
@@ -1375,7 +1322,7 @@ def wechat_callback():
 @app.route('/wechat/proxy', methods=['POST'])
 def wechat_proxy():
     try:
-        # 安全检查：要求共享密钥验证，防止未授权添加电影
+        # 安全检查：要求共享密钥验证，防止未授权调用消息处理
         proxy_token = os.environ.get('WECHAT_PROXY_TOKEN', '')
         if proxy_token:
             provided = request.headers.get('X-Proxy-Token') or request.form.get('proxy_token') or request.args.get('proxy_token', '')
@@ -1400,29 +1347,7 @@ def wechat_proxy():
             return jsonify({'success': False, 'message': '未收到消息内容'}), 400
 
         result = wechat_work.handle_text_message(content)
-
-        if isinstance(result, dict):
-            try:
-                with data_lock:
-                    df = load_movies()
-                    page_df = df[df['页码'] == result['page']]
-                    new_id = int(page_df['序号'].max()) + 1 if not page_df.empty else 1
-                    new_movie = {
-                        '序号': new_id,
-                        '页码': result['page'],
-                        '电影名': result['name'],
-                        '磁力链接': result['magnet'],
-                        '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
-                    }
-                    df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
-                    save_movies(df)
-                reply = f'添加成功\n页码: {result["page"]}\n电影名: {result["name"]}'
-            except Exception as e:
-                reply = f'添加失败: {str(e)}'
-        else:
-            reply = result
-
-        return jsonify({'success': True, 'message': reply})
+        return jsonify({'success': True, 'message': result})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -1435,27 +1360,7 @@ def wechat_test():
     try:
         logger.info(f'[WeChat Test] Received: {content}')
         result = wechat_work.handle_text_message(content)
-
-        if isinstance(result, dict):
-            try:
-                with data_lock:
-                    df = load_movies()
-                    page_df = df[df['页码'] == result['page']]
-                    new_id = int(page_df['序号'].max()) + 1 if not page_df.empty else 1
-                    new_movie = {
-                        '序号': new_id,
-                        '页码': result['page'],
-                        '电影名': result['name'],
-                        '磁力链接': result['magnet'],
-                        '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
-                    }
-                    df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
-                    save_movies(df)
-                return jsonify({'success': True, 'message': f'添加成功\n页码: {result["page"]}\n电影名: {result["name"]}'})
-            except Exception as e:
-                return jsonify({'success': False, 'message': f'添加失败: {str(e)}'})
-        else:
-            return jsonify({'success': True, 'message': result})
+        return jsonify({'success': True, 'message': result})
     except Exception as e:
         logger.error(f'[微信] 测试消息处理失败: {e}')
         return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
@@ -2614,7 +2519,7 @@ def _do_douban_auto_sync():
             # 顺序对齐策略：每次同步都按豆瓣顺序重建列表，保证系统顺序与豆瓣完全一致。
             # - 豆瓣中的电影严格按豆瓣顺序排列（页码 = i//15+1，序号 = i%15+1）
             # - 已存在电影的磁力链接和保存时间会被保留
-            # - 豆瓣中不存在的电影（用户手动添加的）保留并追加到豆瓣电影之后，页码顺延
+            # - 本地存在但豆瓣已不存在的电影（移除标记/手动添加）直接删除，列表严格等于豆瓣
             with data_lock:
                 df = load_movies()
                 added = 0
@@ -2635,15 +2540,13 @@ def _do_douban_auto_sync():
 
                 new_rows: List[Dict[str, Any]] = []
                 seen_names: set = set()  # 防止豆瓣数据重复
-                douban_names: set = set()
 
-                # 第一部分：豆瓣中的电影，严格按豆瓣顺序排列
+                # 严格按豆瓣顺序重建：只保留豆瓣列表中的电影
                 for i, m in enumerate(movies):
                     name = m.get('title', '').strip()
                     if not name or name in seen_names:
                         continue
                     seen_names.add(name)
-                    douban_names.add(name)
 
                     page = (i // per_page) + 1
                     seq = (i % per_page) + 1  # 页内序号从1开始
@@ -2665,36 +2568,16 @@ def _do_douban_auto_sync():
                         '保存时间': save_time,
                     })
 
-                # 第二部分：豆瓣中不存在的电影（用户手动添加的），保留并追加到末尾
-                # 页码从豆瓣最后一页之后的新页开始，保持每页15条
-                douban_count = len(new_rows)
-                if douban_count > 0:
-                    douban_last_page = (douban_count - 1) // per_page + 1
-                else:
-                    douban_last_page = 0
-
-                extra_idx = 0
-                extra_count = 0
-                for name, info in existing_map.items():
-                    if name in douban_names:
-                        continue  # 已在豆瓣列表中
-                    extra_count += 1
-                    # 从豆瓣最后一页之后的新页开始，每页15条
-                    page = douban_last_page + 1 + (extra_idx // per_page)
-                    seq = (extra_idx % per_page) + 1
-                    extra_idx += 1
-                    new_rows.append({
-                        '序号': seq,
-                        '页码': page,
-                        '电影名': name,
-                        '磁力链接': info['磁力链接'],
-                        '保存时间': info['保存时间'],
-                    })
+                # 豆瓣中不存在的本地电影 → 删除（不追加）
+                removed = len(existing_map) - skipped
+                if removed > 0:
+                    removed_names = [n for n in existing_map if n not in seen_names]
+                    logger.info(f'[豆瓣自动同步] 删除{removed}部豆瓣已不存在的电影: {removed_names[:10]}')
 
                 new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间'])
 
-                # 判断是否需要保存：有新增 或 顺序/页码发生变化
-                need_save = added > 0
+                # 判断是否需要保存：有新增/删除 或 顺序/页码发生变化
+                need_save = added > 0 or removed > 0
                 if not need_save and not df.empty:
                     if len(df) != len(new_df):
                         need_save = True
@@ -2706,12 +2589,11 @@ def _do_douban_auto_sync():
 
                 if need_save:
                     save_movies(new_df)
-                    logger.info(f'[豆瓣自动同步] 数据库已重建，共{len(new_rows)}部'
-                                f'（豆瓣{douban_count}部 + 手动添加{extra_count}部）')
+                    logger.info(f'[豆瓣自动同步] 数据库已重建，共{len(new_rows)}部（豆瓣{len(movies)}部，删除{removed}部）')
                 else:
                     logger.info('[豆瓣自动同步] 顺序已一致，无需更新')
 
-            result_msg = f'成功: 新增{added}部，跳过{skipped}部（已存在），共{len(movies)}部'
+            result_msg = f'成功: 新增{added}部，跳过{skipped}部（已存在），删除{removed}部，共{len(movies)}部'
             logger.info(f'[豆瓣自动同步] {result_msg}')
             _auto_sync_status['last_result'] = result_msg
             _auto_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')

@@ -291,43 +291,11 @@ def create_menu(agentid):
 
 
 def handle_text_message(content):
-    import re
+    """处理文本消息（添加电影功能已移除，电影列表统一由豆瓣同步管理）"""
     content = content.strip()
 
-    # 磁力链接匹配：排除空白和常见标点，但不排除点号（磁力链接中可能包含点号）
-    magnet_match = re.search(r'(magnet:\?[^\s,，。！？!?]+)', content, re.IGNORECASE)
-    if magnet_match:
-        magnet = magnet_match.group(1)
-        before_magnet = content[:magnet_match.start()].strip()
-        page_match = re.match(r'^(\d+)\s*(.+)$', before_magnet)
-        if page_match:
-            page = int(page_match.group(1))
-            name = page_match.group(2).strip()
-            return {'page': page, 'name': name, 'magnet': magnet}
-
-    # 单行格式：页码 电影名（无磁力链接）
-    single_match = re.match(r'^(\d+)\s+(.+)$', content)
-    if single_match:
-        page = int(single_match.group(1))
-        name = single_match.group(2).strip()
-        if name:
-            return {'page': page, 'name': name, 'magnet': ''}
-
-    lines = content.split('\n')
-    if len(lines) >= 2:
-        page = lines[0].strip()
-        name = lines[1].strip()
-        magnet = lines[2].strip() if len(lines) >= 3 else ''
-        try:
-            page = int(page)
-        except (ValueError, TypeError):
-            return f'页码必须是数字，收到: {page}'
-        if not name:
-            return '电影名不能为空'
-        return {'page': page, 'name': name, 'magnet': magnet}
-    elif content.lower() in ['帮助', 'help', '?']:
+    if content.lower() in ['帮助', 'help', '?']:
         return ('使用方法:\n'
-                '页码 电影名 [磁力链接] - 添加电影（磁力链接可留空）\n'
                 '页码 - 查看该页电影\n'
                 '搜索 电影名 - 搜索本地电影记录\n'
                 '磁力链接 - 转存到115网盘\n'
@@ -337,8 +305,14 @@ def handle_text_message(content):
                 '全量 - 启动全量拉取（耗时较长）\n'
                 '进度 - 查看监控进度\n'
                 '取消增量 / 取消全量 - 停止对应任务\n\n'
-                '示例:\n'
-                '1 电影名 magnet:?xt=...\n'
-                '1\\n电影名')
-    else:
-        return '格式错误，请按以下格式发送:\n页码 电影名 [磁力链接]\n搜索 电影名\n\n发送"帮助"查看详细说明'
+                '电影列表已改为豆瓣同步管理，\n'
+                '请到网页端"豆瓣"页面添加/同步观影记录')
+
+    # 提示添加电影功能已下线（旧版"页码 电影名"格式的兜底提示）
+    import re
+    if re.match(r'^\d+\s+\S+', content):
+        return ('添加电影功能已移除。\n'
+                '电影列表现在严格同步豆瓣"看过"列表，\n'
+                '请在豆瓣标记想看的电影后到网页端同步。')
+
+    return '无法识别的指令，发送"帮助"查看使用方法'

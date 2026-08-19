@@ -126,15 +126,25 @@
             </div>
         </form>
 
-        <!-- 统计仪表盘 -->
-        <div class="card mb-4">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-graph-up me-2"></i>统计仪表盘</span>
-                <button class="btn btn-sm btn-outline-secondary" onclick="loadDashboard()" title="刷新">
-                    <i class="bi bi-arrow-clockwise"></i>
-                </button>
+        <!-- 统计仪表盘（可展开收起，状态记忆在 localStorage） -->
+        <div class="card mb-4" id="dashboardCard">
+            <div class="card-header d-flex justify-content-between align-items-center"
+                 style="cursor: pointer; user-select: none;"
+                 onclick="toggleDashboard(event)"
+                 title="点击展开/收起">
+                <span>
+                    <i class="bi bi-graph-up me-2"></i>统计仪表盘
+                    <!-- 收起时的摘要行 -->
+                    <span class="text-muted small ms-2 d-none" id="dashboardSummary">共 {{ stats.total }} 部 · 磁链完整度 {{ stats.complete_rate }}%</span>
+                </span>
+                <span class="d-flex align-items-center gap-2">
+                    <i class="bi bi-chevron-down" id="dashboardChevron" style="transition: transform 0.25s;"></i>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="loadDashboard(event)" title="刷新">
+                        <i class="bi bi-arrow-clockwise"></i>
+                    </button>
+                </span>
             </div>
-            <div class="card-body">
+            <div class="card-body" id="dashboardBody">
                 <div class="row g-3 mb-3">
                     <div class="col-6 col-md-3">
                         <div class="border rounded-3 p-2 text-center h-100">
@@ -686,8 +696,30 @@
             }
         }
 
+        // ==================== 仪表盘展开/收起 ====================
+        function toggleDashboard(e) {
+            if (e) e.stopPropagation();
+            var collapsed = document.getElementById('dashboardBody').classList.toggle('d-none');
+            var chevron = document.getElementById('dashboardChevron');
+            chevron.style.transform = collapsed ? 'rotate(-90deg)' : '';
+            document.getElementById('dashboardSummary').classList.toggle('d-none', !collapsed);
+            localStorage.setItem('dashboardCollapsed', collapsed ? '1' : '0');
+        }
+
+        function initDashboardState() {
+            // 恢复上次状态，默认展开
+            var collapsed = localStorage.getItem('dashboardCollapsed') === '1';
+            var body = document.getElementById('dashboardBody');
+            var chevron = document.getElementById('dashboardChevron');
+            var summary = document.getElementById('dashboardSummary');
+            body.classList.toggle('d-none', collapsed);
+            chevron.style.transform = collapsed ? 'rotate(-90deg)' : '';
+            summary.classList.toggle('d-none', !collapsed);
+        }
+
         // 加载统计仪表盘（转存统计+最近记录）
-        async function loadDashboard() {
+        async function loadDashboard(e) {
+            if (e) e.stopPropagation();  // 阻止触发标题栏的展开/收起
             try {
                 var resp = await apiFetch('/history/statistics');
                 if (resp.ok) {
@@ -736,6 +768,7 @@
                 console.error('加载历史失败:', e);
             }
         }
+        initDashboardState();
         loadDashboard();
 
         // 内联保存磁力链接

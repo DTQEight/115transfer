@@ -205,6 +205,47 @@ def fetch_movie_chinese_name(subject_url):
         return '', f'获取失败: {str(e)}'
 
 
+def fetch_movie_meta(subject_url):
+    """访问电影subject页面，提取中文名/上映年份/IMDb编号
+
+    用于 Jellyfin 入库精确匹配：IMDb 编号可与 Jellyfin 条目的 ProviderIds.Imdb
+    直接比对，无需靠片名搜 TMDB（避免系列片/同名片歧义）。
+
+    返回: ({'title', 'year', 'imdb_id'}, error_msg)
+    """
+    if not re.match(r'^https://movie\.douban\.com/subject/\d+/?', subject_url or ''):
+        return {}, 'URL格式不合法，仅支持豆瓣电影页面'
+    config = load_config()
+    cookie = decrypt(config.get('cookie', ''))
+    if not cookie:
+        return {}, '未配置豆瓣Cookie'
+    try:
+        resp = _SESSION.get(subject_url, headers=_get_headers(), timeout=15)
+        if resp.status_code != 200:
+            return {}, f'请求失败，状态码: {resp.status_code}'
+        html = resp.text
+        meta = {'title': '', 'year': '', 'imdb_id': ''}
+        # 片名：<title>X (豆瓣)</title> → og:title 兜底
+        t = re.search(r'<title>\s*([^<]+?)\s*\(豆瓣\)\s*</title>', html)
+        if t:
+            meta['title'] = html_module.unescape(t.group(1).strip())
+        else:
+            og = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', html)
+            if og:
+                meta['title'] = html_module.unescape(og.group(1).strip())
+        # 上映年份：标题旁 <span class="year">(2003)</span>
+        y = re.search(r'class="year">\s*\((\d{4})\)', html)
+        if y:
+            meta['year'] = y.group(1)
+        # IMDb编号：页面信息块里的 ttXXXXXXX（兼容"IMDb:"/"IMDb编号:"等写法）
+        imdb = re.search(r'(tt\d{7,9})', html)
+        if imdb:
+            meta['imdb_id'] = imdb.group(1)
+        return meta, None
+    except Exception as e:
+        return {}, f'获取失败: {str(e)}'
+
+
 def fetch_all_watched_movies(user_id, max_pages=200):
     """获取用户所有看过的电影
 

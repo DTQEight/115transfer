@@ -443,14 +443,17 @@ def jellyfin_libraries() -> Response:
 
 @app.route('/jellyfin/refresh', methods=['POST'])
 def jellyfin_refresh() -> Response:
-    """手动刷新入库状态（同步执行，页面等待结果）
+    """手动刷新入库状态。
 
-    手动刷新会解析缺失的 TMDB_ID（首次较慢，后续复用），自动同步则跳过解析。
+    若存在缺失 IMDB_ID，启动后台线程解析豆瓣详情页（首次较慢，进度见日志），
+    立即返回提示；否则同步比对并返回已入库数量。
     """
-    count = _refresh_jellyfin_status(resolve_tmdb=True)
-    if count < 0:
+    ret = _refresh_jellyfin_status(resolve_imdb=True)
+    if ret == -2:
+        return jsonify({'success': True, 'message': '已在后台解析IMDb编号并匹配（首次较慢，进度见日志，完成后刷新页面查看✓）'})
+    if ret < 0:
         return jsonify({'success': False, 'message': '刷新失败或未配置Jellyfin，请检查配置和日志'})
-    return jsonify({'success': True, 'message': f'刷新完成: {count}部已入库', 'count': count})
+    return jsonify({'success': True, 'message': f'刷新完成: {ret}部已入库', 'count': ret})
 
 
 # ==================== Jellyfin 入库状态 ====================
@@ -458,112 +461,148 @@ def jellyfin_refresh() -> Response:
 _jellyfin_refresh_lock: threading.Lock = threading.Lock()
 
 
-def _refresh_jellyfin_status(resolve_tmdb: bool = False) -> int:
+def _refresh_jellyfin_status(resolve_imdb: bool = False) -> int:
     """拉取Jellyfin库与本地电影比对，写回"已入库"列。返回已入库数量。
 
     未配置Jellyfin时静默返回-1（不报错，不修改数据）。
-    resolve_tmdb=True 时，对缺失 TMDB_ID 的电影用 media.tmdb 批量解析并回写 Excel，
-    随后按 TMDB ID 精确匹配（仍以标题前缀兜底）。仅手动刷新开启，自动同步关闭以避免拖慢。
+    resolve_imdb=True（手动刷新）且存在缺失 IMDB_ID 时，丢后台线程解析豆瓣详情页
+    回填 IMDB_ID 再匹配（避免长请求超时）；返回 -2 表示后台进行中。
+    自动同步走 resolve_imdb=False：用已有 IMDB_ID + 标题前缀立即匹配。
     """
     config = jellyfin.load_config()
     if not config.get('base_url', '').strip() or not decrypt(config.get('api_key', '')):
         return -1
 
-    # 非阻塞锁：避免同步后自动刷新与手动刷新并发写Excel
+    # 手动刷新且有缺失IMDB_ID → 后台解析，立即返回，避免请求超时
+    if resolve_imdb:
+        with data_lock:
+            df = load_movies()
+        if not df.empty and 'IMDB_ID' in df.columns and _has_missing_ids(df, 'IMDB_ID'):
+            threading.Thread(target=_jellyfin_backfill_worker, daemon=True).start()
+            logger.info('[Jellyfin] 检测到缺失IMDB_ID，启动后台解析豆瓣详情页')
+            return -2
+
+    return _jellyfin_match_and_write()
+
+
+def _has_missing_ids(df: pd.DataFrame, col: str) -> bool:
+    if col not in df.columns:
+        return False
+    return any(pd.isna(v) or str(v).strip() == '' for v in df[col])
+
+
+def _jellyfin_backfill_worker() -> None:
+    """后台：解析缺失 IMDB_ID（豆瓣详情页，串行+延迟防反爬）→ 重新匹配写回。
+
+    与手动/自动刷新互斥（_jellyfin_refresh_lock 非阻塞，抢不到即跳过）。
+    """
     if not _jellyfin_refresh_lock.acquire(blocking=False):
-        logger.info('[Jellyfin] 刷新已在进行中，跳过')
-        return -1
+        logger.info('[Jellyfin] 后台解析跳过：已有刷新在进行中')
+        return
     try:
         with data_lock:
             df = load_movies()
         if df.empty:
-            return 0
-
-        # 解析缺失的 TMDB_ID（手动刷新时一次性回填，后续复用）
-        if resolve_tmdb and 'TMDB_ID' in df.columns:
-            df = _backfill_tmdb_ids(df)
-
-        movies = [{
-            'title': str(r['电影名']) if pd.notna(r['电影名']) else '',
-            'url': str(r['豆瓣链接']) if pd.notna(r['豆瓣链接']) else '',
-            'year': '',
-            'tmdb_id': str(r['TMDB_ID']) if 'TMDB_ID' in r.index and pd.notna(r['TMDB_ID']) else '',
-        } for _, r in df.iterrows()]
-        in_lib = jellyfin.refresh_in_library_status(movies)
-        count = 0
-        with data_lock:
-            df = load_movies()  # 重新加载防中途变更（TMDB_ID已由backfill持久化）
-            for idx, row in df.iterrows():
-                url = str(row['豆瓣链接']) if pd.notna(row['豆瓣链接']) else ''
-                val = '是' if (url and url in in_lib) else '否'
-                if val == '是':
-                    count += 1
-                df.at[idx, '已入库'] = val
-            save_movies(df)
-        logger.info(f'[Jellyfin] 入库状态刷新完成: {count}/{len(df)}部已入库')
-        return count
+            return
+        _backfill_imdb_ids(df)
+        _jellyfin_match_and_write()
     except Exception as e:
-        logger.error(f'[Jellyfin] 入库状态刷新失败: {e}')
-        return -1
+        logger.error(f'[Jellyfin] 后台解析匹配失败: {e}')
     finally:
         _jellyfin_refresh_lock.release()
 
 
-def _backfill_tmdb_ids(df: pd.DataFrame) -> pd.DataFrame:
-    """对缺少 TMDB_ID 的电影用 media.tmdb 批量解析并回写 DataFrame。
+def _jellyfin_match_and_write() -> int:
+    """用当前 IMDB_ID/TMDB_ID + 标题前缀 比对 Jellyfin 并写回"已入库"列。"""
+    with data_lock:
+        df = load_movies()
+    if df.empty:
+        return 0
+    movies = [{
+        'title': str(r['电影名']) if pd.notna(r['电影名']) else '',
+        'url': str(r['豆瓣链接']) if pd.notna(r['豆瓣链接']) else '',
+        'year': '',
+        'tmdb_id': str(r['TMDB_ID']) if 'TMDB_ID' in r.index and pd.notna(r['TMDB_ID']) else '',
+        'imdb_id': str(r['IMDB_ID']) if 'IMDB_ID' in r.index and pd.notna(r['IMDB_ID']) else '',
+    } for _, r in df.iterrows()]
+    in_lib = jellyfin.refresh_in_library_status(movies)
+    count = 0
+    with data_lock:
+        df = load_movies()
+        for idx, row in df.iterrows():
+            url = str(row['豆瓣链接']) if pd.notna(row['豆瓣链接']) else ''
+            val = '是' if (url and url in in_lib) else '否'
+            if val == '是':
+                count += 1
+            df.at[idx, '已入库'] = val
+        save_movies(df)
+    logger.info(f'[Jellyfin] 入库状态刷新完成: {count}/{len(df)}部已入库')
+    return count
 
-    解析失败的保留空值，下次刷新再试。TMDB Key 未配置时静默跳过。
+
+def _backfill_imdb_ids(df: pd.DataFrame) -> None:
+    """逐条访问豆瓣详情页解析 IMDb 编号并回写 IMDB_ID 列。
+
+    串行 + 延迟防反爬（豆瓣对高频详情页请求敏感）。已解析的跳过，失败留空下次再试。
+    每50条持久化一次防中途丢失。豆瓣Cookie未配置时静默跳过。
     """
     try:
-        from media.tmdb import identify_batch, get_tmdb_api_key
-    except Exception:
-        return df
-    if not get_tmdb_api_key():
-        logger.info('[Jellyfin] 未配置TMDB API Key，跳过TMDB解析')
-        return df
-    if 'TMDB_ID' not in df.columns:
-        df['TMDB_ID'] = ''
-    # 找出缺失 TMDB_ID 的行（按电影名去重，避免同名重复解析）
-    missing_idx = [i for i, r in df.iterrows()
-                   if (pd.isna(r['TMDB_ID']) or str(r['TMDB_ID']).strip() == '') and not pd.isna(r['电影名'])]
-    if not missing_idx:
-        return df
-    # 按电影名去重提交解析
-    seen = {}
-    to_resolve = []
-    for i in missing_idx:
-        name = str(df.at[i, '电影名']).strip()
-        if name and name not in seen:
-            seen[name] = []
-        seen[name].append(i)
-        if name and name not in [x['name'] for x in to_resolve]:
-            to_resolve.append({'name': name, 'year': None})
-    logger.info(f'[Jellyfin] 开始解析TMDB ID: {len(to_resolve)}个未识别电影名')
-    results = identify_batch(to_resolve, max_workers=5)
-    resolved = {}  # name -> tmdb_id
+        import douban as douban_mod
+    except Exception as e:
+        logger.warning(f'[Jellyfin] 导入豆瓣模块失败，跳过IMDb解析: {e}')
+        return
+    if 'IMDB_ID' not in df.columns:
+        df['IMDB_ID'] = ''
+    # 候选：IMDB_ID 为空且有豆瓣链接的行（按URL去重，同一豆瓣条目只抓一次）
+    seen_url: Dict[str, List[int]] = {}
+    for i, r in df.iterrows():
+        imdb = r['IMDB_ID'] if 'IMDB_ID' in r.index and pd.notna(r['IMDB_ID']) else ''
+        url = str(r['豆瓣链接']) if '豆瓣链接' in r.index and pd.notna(r['豆瓣链接']) else ''
+        if (pd.isna(imdb) or str(imdb).strip() == '') and url:
+            seen_url.setdefault(url, []).append(i)
+    if not seen_url:
+        return
+    urls = list(seen_url.keys())
+    logger.info(f'[Jellyfin] 开始解析IMDb编号: {len(urls)}个豆瓣详情页待抓取')
+    import time as _time
+    resolved = 0
     failed = 0
-    for item, res in zip(to_resolve, results):
-        if res.get('success') and res.get('result', {}).get('tmdb_id'):
-            resolved[item['name']] = str(res['result']['tmdb_id'])
-        else:
+    for n, url in enumerate(urls, 1):
+        meta, err = douban_mod.fetch_movie_meta(url)
+        if err:
             failed += 1
-    # 回写到 df
-    for name, tmdb_id in resolved.items():
-        for i in seen.get(name, []):
-            df.at[i, 'TMDB_ID'] = tmdb_id
-    logger.info(f'[Jellyfin] TMDB解析完成: 成功{len(resolved)}/{len(to_resolve)}，失败{failed}')
-    # 持久化回写的TMDB_ID（在data_lock外调用此函数时由调用方统一save，这里独立save一次防丢失）
+            if 'Cookie' in err:
+                logger.warning(f'[Jellyfin] 豆瓣Cookie失效，中止IMDb解析: {err}')
+                break
+        else:
+            imdb_id = meta.get('imdb_id', '')
+            if imdb_id:
+                for i in seen_url[url]:
+                    df.at[i, 'IMDB_ID'] = imdb_id
+                resolved += 1
+            else:
+                # 豆瓣详情页无IMDb编号（多见于国产片），置占位避免反复抓取
+                for i in seen_url[url]:
+                    df.at[i, 'IMDB_ID'] = 'N/A'
+        if n % 50 == 0:
+            logger.info(f'[Jellyfin] IMDb解析进度: {n}/{len(urls)}（成功{resolved}）')
+            try:
+                with data_lock:
+                    save_movies(df)
+            except Exception as e:
+                logger.warning(f'[Jellyfin] IMDb回写暂存失败: {e}')
+        _time.sleep(0.8)  # 防反爬
+    logger.info(f'[Jellyfin] IMDb解析完成: 成功{resolved}/{len(urls)}，失败{failed}')
     try:
         with data_lock:
             save_movies(df)
     except Exception as e:
-        logger.warning(f'[Jellyfin] TMDB_ID回写持久化失败: {e}')
-    return df
+        logger.warning(f'[Jellyfin] IMDb回写持久化失败: {e}')
 
 
 def load_movies() -> pd.DataFrame:
     if not os.path.exists(EXCEL_FILE):
-        df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'TMDB_ID'])
+        df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'TMDB_ID', 'IMDB_ID'])
         df.to_excel(EXCEL_FILE, index=False)
         return df
 
@@ -583,6 +622,9 @@ def load_movies() -> pd.DataFrame:
     # 兼容旧数据文件：无"TMDB_ID"列时自动补空列（Jellyfin精确匹配用）
     if 'TMDB_ID' not in df.columns:
         df['TMDB_ID'] = ''
+    # 兼容旧数据文件：无"IMDB_ID"列时自动补空列（Jellyfin入库精确匹配主键）
+    if 'IMDB_ID' not in df.columns:
+        df['IMDB_ID'] = ''
     # 过滤掉重复的表头行（序号列为非数字的行）
     if not df.empty:
         try:
@@ -2788,7 +2830,9 @@ def _do_douban_auto_sync():
                         url = str(row['豆瓣链接']) if '豆瓣链接' in row.index and not pd.isna(row['豆瓣链接']) else ''
                         in_lib = '是' if ('已入库' in row.index and not pd.isna(row['已入库']) and str(row['已入库']) == '是') else '否'
                         tmdb_id = str(row['TMDB_ID']) if 'TMDB_ID' in row.index and not pd.isna(row['TMDB_ID']) else ''
-                        rec = {'磁力链接': magnet, '保存时间': save_time, '电影名': name, '已入库': in_lib, 'tmdb_id': tmdb_id}
+                        imdb_id = str(row['IMDB_ID']) if 'IMDB_ID' in row.index and not pd.isna(row['IMDB_ID']) else ''
+                        rec = {'磁力链接': magnet, '保存时间': save_time, '电影名': name, '已入库': in_lib,
+                               'tmdb_id': tmdb_id, 'imdb_id': imdb_id}
                         if url:
                             existing_by_url[url] = rec
                         elif name not in existing_by_name:
@@ -2821,6 +2865,7 @@ def _do_douban_auto_sync():
                         save_time = rec['保存时间']
                         in_lib = rec['已入库']
                         tmdb_id = rec.get('tmdb_id', '')
+                        imdb_id = rec.get('imdb_id', '')
                         if rec['电影名'] != name:
                             name = rec['电影名']  # 保留用户可能改过的电影名
                     elif name in existing_by_name:
@@ -2830,12 +2875,14 @@ def _do_douban_auto_sync():
                         save_time = existing_by_name[name]['保存时间']
                         in_lib = existing_by_name[name]['已入库']
                         tmdb_id = existing_by_name[name].get('tmdb_id', '')
+                        imdb_id = existing_by_name[name].get('imdb_id', '')
                     else:
                         added += 1
                         magnet = ''
                         save_time = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
                         in_lib = '否'
                         tmdb_id = ''
+                        imdb_id = ''
 
                     new_rows.append({
                         '序号': seq,
@@ -2846,6 +2893,7 @@ def _do_douban_auto_sync():
                         '豆瓣链接': url,
                         '已入库': in_lib,
                         'TMDB_ID': tmdb_id,
+                        'IMDB_ID': imdb_id,
                     })
 
                 # 豆瓣中不存在的本地电影 → 删除（不追加）
@@ -2861,7 +2909,7 @@ def _do_douban_auto_sync():
                     ]
                     logger.info(f'[豆瓣自动同步] 删除{removed}部豆瓣已不存在的电影: {removed_items[:10]}')
 
-                new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'TMDB_ID'])
+                new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'TMDB_ID', 'IMDB_ID'])
 
                 # 判断是否需要保存：有新增/删除 或 顺序/页码/URL发生变化
                 need_save = added > 0 or removed > 0

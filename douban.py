@@ -105,6 +105,9 @@ def fetch_watched_movies(user_id, start=0, count=15):
 
         # 解析电影列表
         movies = []
+        # 按URL(subject id)去重：同名不同片必须保留。曾按title去重导致
+        # 一页内同名电影被吞、该页不足15部，翻页逻辑误判"最后一页"提前终止
+        # （全量拉取精确停在208部的根因）
         seen = set()
 
         # 从每个 item 中提取: URL从 nbg 标签，简体名从 <em> 标签
@@ -115,12 +118,12 @@ def fetch_watched_movies(user_id, start=0, count=15):
         )
         for movie_url, em_text in items:
             movie_url = movie_url.strip()
+            if not movie_url or movie_url in seen:
+                continue
+            seen.add(movie_url)
             # <em> 内容格式: "简体名 / 繁体名 / 英文名" 或 "简体名"
             # 取第一个 / 前的部分作为简体中文名
             title = html_module.unescape(em_text.strip().split(' / ')[0].strip())
-            if not title or title in seen:
-                continue
-            seen.add(title)
             movies.append({'title': title, 'url': movie_url, 'year': '', 'rating': ''})
 
         # 备选: 如果 <em> 解析失败，用 <a title="..." class="nbg"> 的 title
@@ -131,9 +134,9 @@ def fetch_watched_movies(user_id, start=0, count=15):
             ):
                 title = html_module.unescape(m.group(1).strip())
                 movie_url = m.group(2).strip()
-                if title in seen:
+                if not movie_url or movie_url in seen:
                     continue
-                seen.add(title)
+                seen.add(movie_url)
                 movies.append({'title': title, 'url': movie_url, 'year': '', 'rating': ''})
         # 从 <li class="intro"> 补充年份信息
         # 每个 item 的结构: <div class="item comment-item">...<li class="intro">日期 / 演员 / ...</li>...</div>
@@ -294,6 +297,7 @@ def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
     pages = 0
     log = logging.getLogger('douban')
     incomplete_reason = None
+    empty_retried = False  # 空页只重试一次
 
     while pages < max_pages:
         movies, count, err = fetch_watched_movies(user_id, start, per_page)
@@ -309,15 +313,25 @@ def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
         if total is None:
             total = count
 
+        # 空页：未拉满总数时可能是豆瓣偶发抽风，重试一次当前页；
+        # 重试仍空（或已拉满）则视为到达末尾
+        if not movies:
+            if not empty_retried and total is not None and len(all_movies) < total:
+                empty_retried = True
+                log.warning(f'[豆瓣] 第{pages+1}页(start={start})为空但未拉满({len(all_movies)}/{total})，重试一次')
+                time.sleep(page_delay * 2)
+                continue  # 不推进start，重试当前页
+            break
+
+        empty_retried = False
         all_movies.extend(movies)
         pages += 1
 
         if total is not None and len(all_movies) >= total:
             break
-        if len(movies) < per_page:
-            break
-        if not movies:
-            break
+        # 注意：不能因"本页不足15部"提前结束——豆瓣页内同名条目/解析
+        # 差异会导致中间页不足额，提前结束会截断列表（208部事故根因）。
+        # 真正的末页由"下一页为空"判定，多一次请求无妨
 
         start += per_page
         time.sleep(page_delay)  # 慢速间隔，防限流

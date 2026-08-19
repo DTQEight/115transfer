@@ -339,10 +339,17 @@ def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
     if incomplete_reason:
         return all_movies, f'拉取不完整(已获取{len(all_movies)}部): {incomplete_reason}'
     if total is not None and len(all_movies) < total:
-        # 拉取量 < 页面报告总数：豆瓣Cookie失效时按游客处理，collect列表
-        # 只给前14页(208部)就返回空页，页面头部仍显示真实总数
-        return all_movies, (f'拉取不完整: 已获取{len(all_movies)}部，豆瓣报告共{total}部。'
-                            f'豆瓣Cookie可能已失效，请到网页端重新配置Cookie')
+        # 允许少量缺口：系统以电影名为唯一键，豆瓣列表内同名电影
+        # （翻拍/重映/同名不同片）按URL全保留后仍会比豆瓣计数少几部
+        # （豆瓣总数含全部标记条目，本系统只取URL去重后的条目）。
+        # 缺口超过5%才判定为真正的拉取异常（如Cookie失效按游客处理
+        # 时只有前~14页数据）
+        gap = total - len(all_movies)
+        if gap > max(5, int(total * 0.05)):
+            return all_movies, (f'拉取不完整: 已获取{len(all_movies)}部，豆瓣报告共{total}部，'
+                                f'缺口{gap}部。可能豆瓣Cookie已失效（游客只能访问前~14页）'
+                                f'或网络异常，请重新配置Cookie后重试')
+        # 少量同名缺口属正常，返回成功（后续按名称去重入库，不影响）
     return all_movies, None
 
 
@@ -465,8 +472,9 @@ def fetch_all_watched_movies_cached(user_id, max_pages=200, page_delay=2.0):
 
     if first_url and first_url == cached_first_url:
         # 首位未变但豆瓣总数明显多于缓存数：缓存缺失中后段内容
-        # （如历史上被豆瓣截断写入的208部缓存），不能当"无变化"用
-        if total and total > len(cached_movies) + 5:
+        # （如历史上被豆瓣截断写入的208部缓存），不能当"无变化"用。
+        # 阈值取5%：豆瓣同名电影按URL去重后天然比总数少几部，属正常
+        if total and total > len(cached_movies) + max(5, int(total * 0.05)):
             log.info('[豆瓣] 首位未变但豆瓣总数(%d)远大于缓存(%d)，缓存不完整，执行全量刷新'
                      % (total, len(cached_movies)))
             return _full_fetch_with_cache(user_id, max_pages, page_delay)
@@ -505,8 +513,9 @@ def fetch_all_watched_movies_cached(user_id, max_pages=200, page_delay=2.0):
             break
 
     result = new_movies + list(cached_movies)
-    # 增量拼接后仍明显少于豆瓣总数：缓存缺失中后段内容，全量刷新兜底
-    if total and len(result) < total - 5:
+    # 增量拼接后仍明显少于豆瓣总数：缓存缺失中后段内容，全量刷新兜底。
+    # 阈值取5%（豆瓣同名电影按URL去重后天然少几部，属正常）
+    if total and len(result) < total - max(5, int(total * 0.05)):
         log.info('[豆瓣] 增量拼接结果(%d部)明显少于豆瓣总数(%d)，缓存不完整，执行全量刷新'
                  % (len(result), total))
         return _full_fetch_with_cache(user_id, max_pages, page_delay)

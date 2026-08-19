@@ -2478,9 +2478,20 @@ def douban_sync():
 
                 save_movies(df)
 
+            # 勾选同步只把新电影追加到页尾，顺序会与豆瓣错位
+            # （豆瓣新增电影后整体后移，本地已有电影不会跟着移动）。
+            # 新增了电影时，后台自动触发一次全量同步，按豆瓣顺序重建列表。
+            # _do_douban_auto_sync 内部有锁保护，若已在运行会自动跳过；
+            # 全量同步失败也不影响本次已添加的数据。
+            if added > 0 and not _auto_sync_status['running']:
+                import threading as _threading
+                _threading.Thread(target=_do_douban_auto_sync, daemon=True).start()
+                logger.info('[豆瓣] 勾选同步新增%d部，已启动后台全量同步对齐顺序' % added)
+
             return jsonify({
                 'success': True,
-                'message': f'同步完成: 新增{added}部，跳过{skipped}部（已存在），页码{page}',
+                'message': f'同步完成: 新增{added}部，跳过{skipped}部（已存在），页码{page}。'
+                           f'正在后台按豆瓣顺序全量对齐，磁力链接和保存时间会保留，稍候自动完成',
                 'added': added,
                 'skipped': skipped,
                 'page': page,
@@ -2520,8 +2531,8 @@ def _do_douban_auto_sync():
                 _auto_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
                 return
 
-            logger.info(f'[豆瓣自动同步] 开始全量拉取用户 {user_id} 的观影记录...')
-            movies, err = douban.fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0)
+            logger.info(f'[豆瓣自动同步] 开始同步用户 {user_id} 的观影记录（优先缓存增量拉取）...')
+            movies, err = douban.fetch_all_watched_movies_cached(user_id, max_pages=200, page_delay=2.0)
             if err:
                 logger.error(f'[豆瓣自动同步] 拉取失败: {err}')
                 _auto_sync_status['last_result'] = f'失败: {err}'
@@ -2841,7 +2852,17 @@ def movies_detail(movie_id: int):
         if df.empty:
             return jsonify({'success': False, 'message': '数据为空'}), 404
 
-        row = df[df['序号'] == movie_id]
+        # 序号是页内序号（每页从1开始），必须配合页码才能唯一定位电影
+        # 兼容旧调用：未传 page 时取第一个匹配（行为同旧版），传了 page 则精确匹配
+        page_param = request.args.get('page', '').strip()
+        if page_param:
+            try:
+                page_num = int(page_param)
+                row = df[(df['序号'] == movie_id) & (df['页码'] == page_num)]
+            except (ValueError, TypeError):
+                row = df[df['序号'] == movie_id]
+        else:
+            row = df[df['序号'] == movie_id]
         if row.empty:
             return jsonify({'success': False, 'message': '电影不存在'}), 404
 

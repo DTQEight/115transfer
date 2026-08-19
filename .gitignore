@@ -8,6 +8,7 @@ __pycache__/
 movies_data.xlsx
 data/
 backups/
+douban_movies_cache.json
 
 # 敏感配置文件（含账号密码、cookies、API Key）
 baidu_forum_config.json

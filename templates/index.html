@@ -331,7 +331,7 @@
                                 </td>
                                 <td class="text-muted">{{ movie.id }}</td>
                                 <td class="hide-mobile"><span class="badge-page">{{ movie.page }}</span></td>
-                                <td class="fw-medium" style="cursor:pointer;" onclick="showMovieDetail({{ movie.id }})" title="点击查看详情">{{ movie.name }}</td>
+                                <td class="fw-medium" style="cursor:pointer;" onclick="showMovieDetail({{ movie.id }}, {{ movie.page }})" title="点击查看详情">{{ movie.name }}</td>
                                 <td>
                                     <input type="text" class="form-control form-control-sm magnet-input {% if movie.is_empty %}border-warning{% endif %}"
                                            value="{{ movie.magnet }}"
@@ -579,7 +579,7 @@
         // ==================== 电影详情侧滑面板 ====================
         var _detailOffcanvas = null;
 
-        async function showMovieDetail(movieId) {
+        async function showMovieDetail(movieId, page) {
             var content = document.getElementById('detailContent');
             if (!content) return;
 
@@ -593,7 +593,8 @@
             _detailOffcanvas.show();
 
             try {
-                var resp = await apiFetch('/movies/detail/' + movieId);
+                // 同时传 movieId 和 page，避免页内序号在不同页码间冲突导致返回错误电影
+                var resp = await apiFetch('/movies/detail/' + movieId + '?page=' + encodeURIComponent(page));
                 var result = await resp.json();
                 if (!result.success) {
                     content.innerHTML = '<div class="alert alert-danger m-3">' + escapeHtml(result.message || '加载失败') + '</div>';

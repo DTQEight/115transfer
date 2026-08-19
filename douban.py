@@ -292,3 +292,150 @@ def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
 
     return all_movies, None
 
+
+# ==================== 观影列表缓存（增量同步防限流） ====================
+
+_CACHE_FILE = os.path.join(
+    os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__))),
+    'douban_movies_cache.json'
+)
+_cache_lock = threading.Lock()
+# 缓存最长有效期：超过后强制全量刷新一次，纠正增量策略无法感知的偏差
+# （如用户在豆瓣移除标记后又新增了同样数量、改标时间导致顺序漂移等）
+_CACHE_FULL_REFRESH_DAYS = 7
+
+
+def _load_movies_cache():
+    """读取观影列表缓存"""
+    with _cache_lock:
+        if os.path.exists(_CACHE_FILE):
+            try:
+                with open(_CACHE_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                logging.getLogger('douban').warning(f'[豆瓣] 缓存文件读取失败: {e}，忽略缓存')
+    return {}
+
+
+def _save_movies_cache(user_id, movies):
+    """保存观影列表缓存"""
+    with _cache_lock:
+        try:
+            os.makedirs(os.path.dirname(_CACHE_FILE), exist_ok=True)
+            with open(_CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'user_id': user_id,
+                    'total': len(movies),
+                    'movies': movies,
+                    'fetched_at': time.time(),
+                }, f, ensure_ascii=False)
+        except (OSError, TypeError) as e:
+            logging.getLogger('douban').warning(f'[豆瓣] 缓存文件保存失败: {e}')
+
+
+def _full_fetch_with_cache(user_id, max_pages, page_delay):
+    """全量拉取（慢速防限流）并写入缓存"""
+    movies, err = fetch_all_watched_movies_slow(user_id, max_pages=max_pages, page_delay=page_delay)
+    if not err and movies:
+        _save_movies_cache(user_id, movies)
+    return movies, err
+
+
+def _is_transient_err(err):
+    """是否为可回退缓存的临时性错误（Cookie 失效类错误不算，必须上抛）"""
+    if not err:
+        return False
+    return 'Cookie' not in err and 'cookie' not in err
+
+
+def fetch_all_watched_movies_cached(user_id, max_pages=200, page_delay=2.0):
+    """带缓存的观影列表同步（防限流）
+
+    豆瓣"看过"列表按标记时间倒序，新标记的电影总是出现在最前面。
+    基于这一特性做增量同步：
+
+    1. 无缓存 / 用户ID变更 / 缓存超过7天      → 全量拉取（写缓存）
+    2. 豆瓣总数少于缓存数（移除过标记）        → 全量拉取（写缓存）
+    3. 第1页首部电影与缓存一致                → 无新增，直接返回缓存（仅1次请求）
+    4. 首部电影在缓存中但位置变了（改标漂移）  → 全量拉取（写缓存）
+    5. 第1页有新电影                          → 逐页拉取，遇到整页都已缓存的页
+                                                 即停，新电影与缓存余量拼接
+                                                 （通常仅2~3次请求）
+
+    Returns:
+        (all_movies, error_msg)
+    """
+    log = logging.getLogger('douban')
+    cache = _load_movies_cache()
+    cached_movies = cache.get('movies') or []
+    cache_usable = bool(cached_movies) and cache.get('user_id') == user_id
+
+    if not cache_usable:
+        log.info('[豆瓣] 无可用缓存，执行全量拉取')
+        return _full_fetch_with_cache(user_id, max_pages, page_delay)
+
+    cache_age = time.time() - (cache.get('fetched_at') or 0)
+    if cache_age > _CACHE_FULL_REFRESH_DAYS * 86400:
+        log.info('[豆瓣] 缓存已超过%d天，执行全量刷新校准' % _CACHE_FULL_REFRESH_DAYS)
+        return _full_fetch_with_cache(user_id, max_pages, page_delay)
+
+    cached_urls = {m.get('url') for m in cached_movies if m.get('url')}
+
+    # 探测第1页
+    first_page, total, err = fetch_watched_movies(user_id, 0, 15)
+    if err:
+        if _is_transient_err(err):
+            # 临时性错误（超时/限流）：回退用缓存，下次同步再校准
+            log.warning(f'[豆瓣] 增量探测失败（{err}），本次回退使用缓存（{len(cached_movies)}部）')
+            return list(cached_movies), None
+        return [], err  # Cookie 失效等错误必须上抛，让用户重新配置
+
+    # 豆瓣总数变少：用户移除过标记，缓存不可信
+    if total < len(cached_movies):
+        log.info('[豆瓣] 豆瓣总数(%d)少于缓存(%d)，执行全量刷新校准' % (total, len(cached_movies)))
+        return _full_fetch_with_cache(user_id, max_pages, page_delay)
+
+    first_url = first_page[0].get('url') if first_page else None
+    cached_first_url = cached_movies[0].get('url') if cached_movies else None
+
+    if first_url and first_url == cached_first_url:
+        # 首位未变：无新增电影，缓存即最新
+        log.info('[豆瓣] 第1页无变化，命中缓存（%d部，本次仅1次请求）' % len(cached_movies))
+        return list(cached_movies), None
+
+    if first_url and first_url in cached_urls:
+        # 首位是旧电影但顺序变了（改标时间等），保守起见全量
+        log.info('[豆瓣] 列表头部顺序变化，执行全量刷新校准')
+        return _full_fetch_with_cache(user_id, max_pages, page_delay)
+
+    # 第1页有新电影：逐页增量拉取，直到整页都已缓存
+    new_movies = []
+    page_movies = first_page
+    start = 0
+    pages = 1
+    while True:
+        page_all_cached = True
+        for m in page_movies:
+            if m.get('url') and m['url'] not in cached_urls:
+                new_movies.append(m)
+                page_all_cached = False
+        if page_all_cached:
+            break  # 整页已缓存，其后内容与缓存一致，拼接缓存即可
+        if not new_movies or len(new_movies) >= total or len(page_movies) < 15:
+            break  # 已到豆瓣末尾
+        start += 15
+        time.sleep(page_delay)
+        pages += 1
+        page_movies, _t, perr = fetch_watched_movies(user_id, start, 15)
+        if perr:
+            if not _is_transient_err(perr):
+                return [], perr
+            log.warning(f'[豆瓣] 增量第{pages}页拉取失败（{perr}），已拉取部分与缓存合并')
+            break
+
+    result = new_movies + list(cached_movies)
+    _save_movies_cache(user_id, result)
+    log.info('[豆瓣] 增量同步完成: 新增%d部，复用缓存%d部，实际请求%d页' % (
+        len(new_movies), len(cached_movies), pages))
+    return result, None
+

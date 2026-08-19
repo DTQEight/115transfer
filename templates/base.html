@@ -439,6 +439,9 @@
                 <button onclick="openWechatSettings()" class="btn btn-settings" title="企业微信设置">
                     <i class="bi bi-chat-dots me-1"></i>企业微信
                 </button>
+                <button onclick="openJellyfinSettings()" class="btn btn-settings" title="Jellyfin入库状态">
+                    <i class="bi bi-collection-play me-1"></i>Jellyfin
+                </button>
                 <button id="themeToggle" class="theme-toggle" title="切换主题">
                     <i class="bi bi-moon"></i>
                 </button>
@@ -658,6 +661,50 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-primary" onclick="saveWechatConfig()">
+                        <i class="bi bi-save me-1"></i>保存
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="jellyfinSettingsModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-collection-play me-2"></i>Jellyfin 入库状态</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="jellyfinStatus" class="mb-3"></div>
+                    <div class="mb-3">
+                        <label class="form-label">服务器地址 (base_url)</label>
+                        <input type="text" id="jellyfinBaseUrl" class="form-control" placeholder="如 http://192.168.1.100:8096">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">API Key</label>
+                        <input type="text" id="jellyfinApiKey" class="form-control" placeholder="Jellyfin 后台 控制台-API密钥 生成">
+                        <div class="form-text">已配置时显示掩码，留空则不修改</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">媒体库</label>
+                        <div class="d-flex gap-2 mb-2">
+                            <button type="button" class="btn btn-outline-primary btn-sm" onclick="testJellyfinLibraries()">
+                                <i class="bi bi-arrow-repeat me-1"></i>测试并获取媒体库
+                            </button>
+                            <span id="jellyfinLibStatus" class="text-muted small align-self-center"></span>
+                        </div>
+                        <div id="jellyfinLibList" class="border rounded p-2" style="max-height:180px;overflow:auto;">
+                            <div class="text-muted small">填写地址和API Key后点击上方按钮获取媒体库列表</div>
+                        </div>
+                        <div class="form-text">不选则比对全部媒体库；电影列表中的 ✓ 表示已入库</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" onclick="refreshJellyfinStatus()">
+                        <i class="bi bi-arrow-clockwise me-1"></i>刷新入库状态
+                    </button>
+                    <button type="button" class="btn btn-primary" onclick="saveJellyfinConfig()">
                         <i class="bi bi-save me-1"></i>保存
                     </button>
                 </div>
@@ -1164,6 +1211,120 @@
             } catch (e) {
                 statusEl.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>请求失败</span>';
             }
+        }
+
+        // ===== Jellyfin 入库状态 =====
+        let _jellyfinSelectedIds = [];
+
+        async function openJellyfinSettings() {
+            document.getElementById('jellyfinStatus').innerHTML = '';
+            document.getElementById('jellyfinLibStatus').innerHTML = '';
+            document.getElementById('jellyfinLibList').innerHTML = '<div class="text-muted small">加载中...</div>';
+            _jellyfinSelectedIds = [];
+            try {
+                const resp = await apiFetch('/jellyfin/config');
+                const result = await resp.json();
+                document.getElementById('jellyfinBaseUrl').value = result.base_url || '';
+                document.getElementById('jellyfinApiKey').value = result.api_key_masked || '';
+                _jellyfinSelectedIds = result.library_ids || [];
+                document.getElementById('jellyfinStatus').innerHTML = result.configured ?
+                    '<span class="text-success"><i class="bi bi-check-circle me-1"></i>已配置</span>' :
+                    '<span class="text-warning"><i class="bi bi-exclamation-circle me-1"></i>未配置</span>';
+                // 已配置时拉取媒体库列表预填
+                if (result.configured) {
+                    await testJellyfinLibraries();
+                } else {
+                    document.getElementById('jellyfinLibList').innerHTML = '<div class="text-muted small">填写地址和API Key后点击上方按钮获取媒体库列表</div>';
+                }
+            } catch (e) {
+                document.getElementById('jellyfinStatus').innerHTML = '<span class="text-danger"><i class="bi bi-x-circle me-1"></i>配置读取失败</span>';
+            }
+            new bootstrap.Modal(document.getElementById('jellyfinSettingsModal')).show();
+        }
+
+        function renderJellyfinLibraries(libs, selectedIds) {
+            const listEl = document.getElementById('jellyfinLibList');
+            if (!libs || libs.length === 0) {
+                listEl.innerHTML = '<div class="text-muted small">未获取到媒体库</div>';
+                return;
+            }
+            const sel = new Set(selectedIds || []);
+            listEl.innerHTML = libs.map(lib => `
+                <div class="form-check">
+                    <input class="form-check-input jellyfin-lib-cb" type="checkbox" value="${escapeHtml(lib.id)}" id="jfLib-${escapeHtml(lib.id)}" ${sel.has(lib.id) ? 'checked' : ''}>
+                    <label class="form-check-label" for="jfLib-${escapeHtml(lib.id)}">${escapeHtml(lib.name || lib.id)}</label>
+                </div>
+            `).join('');
+        }
+
+        async function testJellyfinLibraries() {
+            const baseUrl = document.getElementById('jellyfinBaseUrl').value.trim();
+            const apiKey = document.getElementById('jellyfinApiKey').value.trim();
+            const statusEl = document.getElementById('jellyfinLibStatus');
+            const listEl = document.getElementById('jellyfinLibList');
+            statusEl.innerHTML = '<span class="text-info">获取中...</span>';
+            try {
+                // 有未掩码的临时输入则带参数测试；否则后端用已保存配置
+                let url = '/jellyfin/libraries';
+                if (baseUrl && apiKey && apiKey !== '****') {
+                    url += `?base_url=${encodeURIComponent(baseUrl)}&api_key=${encodeURIComponent(apiKey)}`;
+                }
+                const resp = await apiFetch(url);
+                const result = await resp.json();
+                if (!result.success) {
+                    statusEl.innerHTML = `<span class="text-danger">${escapeHtml(result.message)}</span>`;
+                    listEl.innerHTML = '<div class="text-muted small">获取失败</div>';
+                    return;
+                }
+                statusEl.innerHTML = `<span class="text-success">共 ${result.libraries.length} 个媒体库</span>`;
+                renderJellyfinLibraries(result.libraries, _jellyfinSelectedIds);
+            } catch (e) {
+                statusEl.innerHTML = '<span class="text-danger">请求失败</span>';
+                listEl.innerHTML = '<div class="text-muted small">获取失败</div>';
+            }
+        }
+
+        async function saveJellyfinConfig() {
+            const baseUrl = document.getElementById('jellyfinBaseUrl').value.trim().replace(/\/+$/, '');
+            const apiKey = document.getElementById('jellyfinApiKey').value.trim();
+            const libIds = Array.from(document.querySelectorAll('.jellyfin-lib-cb:checked')).map(cb => cb.value);
+            if (!baseUrl || !apiKey) {
+                showToast('地址和API Key不能为空', 'danger');
+                return;
+            }
+            showLoading();
+            try {
+                const resp = await apiFetch('/jellyfin/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `base_url=${encodeURIComponent(baseUrl)}&api_key=${encodeURIComponent(apiKey)}&library_ids=${encodeURIComponent(libIds.join(','))}`
+                });
+                const result = await resp.json();
+                showToast(result.message, result.success ? 'success' : 'danger');
+                if (result.success) {
+                    _jellyfinSelectedIds = libIds;
+                    bootstrap.Modal.getInstance(document.getElementById('jellyfinSettingsModal')).hide();
+                }
+            } catch (e) {
+                showToast('保存失败', 'danger');
+            }
+            hideLoading();
+        }
+
+        async function refreshJellyfinStatus() {
+            showLoading();
+            try {
+                const resp = await apiFetch('/jellyfin/refresh', { method: 'POST' });
+                const result = await resp.json();
+                showToast(result.message, result.success ? 'success' : 'danger');
+                if (result.success) {
+                    // 刷新当前页以更新 ✓ 标记
+                    setTimeout(() => window.location.reload(), 800);
+                }
+            } catch (e) {
+                showToast('刷新失败', 'danger');
+            }
+            hideLoading();
         }
 
         let currentDirId = '0';

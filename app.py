@@ -2516,6 +2516,25 @@ def _do_douban_auto_sync():
 
             logger.info(f'[豆瓣自动同步] 拉取到 {len(movies)} 部电影，开始按豆瓣顺序重建数据库...')
 
+            # sanity check：拉取数量相对现有库骤降时中止重建。
+            # 防止豆瓣限流/解析异常返回残缺列表导致误删本地电影
+            # （正常使用中豆瓣"看过"列表只会缓慢变化，不会一夜少一半）
+            try:
+                with data_lock:
+                    _existing_df = load_movies()
+                existing_count = 0 if _existing_df.empty else len(_existing_df)
+            except Exception:
+                existing_count = 0
+            if existing_count > 100 and len(movies) < existing_count * 0.5:
+                msg = (f'拉取数量异常: 豆瓣返回{len(movies)}部，本地有{existing_count}部，'
+                       f'疑似豆瓣限流或数据不完整，本次同步中止（未做任何修改）。'
+                       f'如确属豆瓣大幅删除标记，请手动清理 data/movies_data.xlsx 后重试')
+                logger.error(f'[豆瓣自动同步] {msg}')
+                _auto_sync_status['last_result'] = msg
+                _auto_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+                return
+
+
             # 顺序对齐策略：每次同步都按豆瓣顺序重建列表，保证系统顺序与豆瓣完全一致。
             # - 豆瓣中的电影严格按豆瓣顺序排列（页码 = i//15+1，序号 = i%15+1）
             # - 已存在电影的磁力链接和保存时间会被保留

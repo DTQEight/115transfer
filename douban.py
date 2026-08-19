@@ -265,12 +265,17 @@ def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
     per_page = 15
     total = None
     pages = 0
+    log = logging.getLogger('douban')
+    incomplete_reason = None
 
     while pages < max_pages:
         movies, count, err = fetch_watched_movies(user_id, start, per_page)
         if err:
             if all_movies:
-                logging.getLogger('douban').warning(f'[豆瓣自动同步] 第{pages+1}页出错但已有{len(all_movies)}条，提前返回: {err}')
+                # 拉取中断：返回部分数据但必须标记不完整，
+                # 否则上层会把残缺列表当完整数据写入缓存并误删本地电影
+                incomplete_reason = f'第{pages+1}页出错: {err}'
+                log.warning(f'[豆瓣] 全量拉取中断: 已获取{len(all_movies)}部, {incomplete_reason}')
                 break
             return [], err
 
@@ -290,6 +295,10 @@ def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
         start += per_page
         time.sleep(page_delay)  # 慢速间隔，防限流
 
+    if incomplete_reason:
+        return all_movies, f'拉取不完整(已获取{len(all_movies)}部): {incomplete_reason}'
+    if total is not None and len(all_movies) < total and pages >= max_pages:
+        return all_movies, f'达到最大页数{max_pages}，列表可能不完整(已获取{len(all_movies)}/{total}部)'
     return all_movies, None
 
 
@@ -303,15 +312,23 @@ _cache_lock = threading.Lock()
 # 缓存最长有效期：超过后强制全量刷新一次，纠正增量策略无法感知的偏差
 # （如用户在豆瓣移除标记后又新增了同样数量、改标时间导致顺序漂移等）
 _CACHE_FULL_REFRESH_DAYS = 7
+# 缓存结构版本：增量策略/缓存格式变更时递增，旧版本缓存自动失效并全量刷新。
+# v2: 修复拉取中断时把残缺列表写入缓存的bug（曾导致208部缓存覆盖1242部真实列表）
+_CACHE_VERSION = 2
 
 
 def _load_movies_cache():
-    """读取观影列表缓存"""
+    """读取观影列表缓存（版本不匹配视为无缓存）"""
     with _cache_lock:
         if os.path.exists(_CACHE_FILE):
             try:
                 with open(_CACHE_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    cache = json.load(f)
+                if cache.get('version') != _CACHE_VERSION:
+                    logging.getLogger('douban').info(
+                        f'[豆瓣] 缓存版本不匹配(v{cache.get("version")})，将全量刷新')
+                    return {}
+                return cache
             except (json.JSONDecodeError, IOError) as e:
                 logging.getLogger('douban').warning(f'[豆瓣] 缓存文件读取失败: {e}，忽略缓存')
     return {}
@@ -324,6 +341,7 @@ def _save_movies_cache(user_id, movies):
             os.makedirs(os.path.dirname(_CACHE_FILE), exist_ok=True)
             with open(_CACHE_FILE, 'w', encoding='utf-8') as f:
                 json.dump({
+                    'version': _CACHE_VERSION,
                     'user_id': user_id,
                     'total': len(movies),
                     'movies': movies,

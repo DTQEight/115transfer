@@ -620,8 +620,10 @@
         <div class="offcanvas offcanvas-end" tabindex="-1" id="movieDetailOffcanvas" style="width: 420px;">
             <button type="button" class="btn-close btn-close-white detail-close-btn" data-bs-dismiss="offcanvas" title="关闭"></button>
             <div class="offcanvas-body p-0">
-                <div id="detailContent" class="d-flex justify-content-center align-items-center" style="min-height: 200px;">
-                    <div class="spinner-border spinner-border-sm text-primary me-2"></div>加载中...
+                <div id="detailContent">
+                    <div class="d-flex justify-content-center align-items-center" style="min-height: 200px;">
+                        <div class="spinner-border spinner-border-sm text-primary me-2"></div>加载中...
+                    </div>
                 </div>
             </div>
         </div>
@@ -802,7 +804,9 @@
             var content = document.getElementById('detailContent');
             if (!content) return;
 
-            // 显示加载中
+            // 显示加载中（容器临时用flex居中，渲染详情时移除）
+            content.className = 'd-flex justify-content-center align-items-center';
+            content.style.minHeight = '200px';
             content.innerHTML = '<div class="spinner-border spinner-border-sm text-primary me-2"></div>加载中...';
 
             // 打开侧滑面板
@@ -818,17 +822,25 @@
                 var resp = await apiFetch('/movies/detail/' + movieId + '?' + qs);
                 var result = await resp.json();
                 if (!result.success) {
+                    content.className = '';
+                    content.style.minHeight = '';
                     content.innerHTML = '<div class="alert alert-danger m-3">' + escapeHtml(result.message || '加载失败') + '</div>';
                     return;
                 }
                 renderMovieDetail(result);
             } catch (e) {
+                content.className = '';
+                content.style.minHeight = '';
                 content.innerHTML = '<div class="alert alert-danger m-3">加载失败: ' + escapeHtml(e.message) + '</div>';
             }
         }
 
         function renderMovieDetail(data) {
             var content = document.getElementById('detailContent');
+            // 关键：移除加载态的flex居中类——否则各区块变成横向flex子项，
+            // 布局挤压错乱、海报被压扁
+            content.className = '';
+            content.style.minHeight = '';
             var m = data.movie || {};
             var tmdb = data.tmdb || null;
             var history = data.history || [];

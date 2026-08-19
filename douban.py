@@ -105,18 +105,24 @@ def fetch_watched_movies(user_id, start=0, count=15):
 
         # 解析电影列表：按 item 块切分后逐块提取。
         # 旧版单一正则要求锚点属性顺序严格为 title→href→class，属性顺序不同
-        # 的条目整条丢失（1198的列表只解析出1190的根因）；且 DOTALL 跨条目
-        # 匹配可能把解析失败的条目"吞进"下一条。逐块解析彻底规避这两个问题。
+        # 的条目整条丢失；且 DOTALL 跨条目匹配可能把解析失败的条目"吞进"下一条。
+        # 逐块解析彻底规避这两个问题。
         movies = []
         seen = set()
-        for block in re.split(r'<div\s+class="item', html)[1:]:
+        no_url_blocks = []
+        dup_in_page = 0
+        blocks = re.split(r'<div\s+class="item', html)[1:]
+        for block in blocks:
             url_m = re.search(r'href="(https://movie\.douban\.com/subject/(\d+)/?)"', block)
             if not url_m:
+                # 无条目链接的块：通常是豆瓣已删除条目的占位（计数含它但无链接）
+                no_url_blocks.append(re.sub(r'<[^>]+>', ' ', block)[:100].strip())
                 continue
             movie_url = url_m.group(1)
             if not movie_url.endswith('/'):
                 movie_url += '/'
             if movie_url in seen:
+                dup_in_page += 1
                 continue
             # 标题提取链：<em>简体名</em> → 锚点 title 属性 → title li 链接文本
             title = ''
@@ -142,6 +148,14 @@ def fetch_watched_movies(user_id, start=0, count=15):
                     year = y_m.group(1)
             seen.add(movie_url)
             movies.append({'title': title, 'url': movie_url, 'year': year, 'rating': ''})
+
+        # 诊断日志：块数与解析数的差值暴露丢条目原因
+        log = logging.getLogger('douban')
+        if no_url_blocks:
+            log.warning(f'[豆瓣] 本页{len(blocks)}块中有{len(no_url_blocks)}块无条目链接（疑似豆瓣已删除条目占位），'
+                        f'内容片段: {no_url_blocks[:3]}')
+        if dup_in_page:
+            log.warning(f'[豆瓣] 本页有{dup_in_page}个页内重复URL条目被去重')
 
         # 获取总数: <h1>我看过的影视(1192)</h1>
         total_match = re.search(r'<h1>[^<]*[\(（](\d+)[\)）]</h1>', html)
@@ -308,6 +322,10 @@ def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
         if total is None:
             total = count
 
+        # 逐页诊断：非满页记录（末页除外都值得注意，用于定位丢条目的页）
+        if len(movies) != per_page:
+            log.info(f'[豆瓣] 第{pages+1}页(start={start})返回{len(movies)}部（非满页{per_page}）')
+
         # 空页：未拉满总数时可能是豆瓣偶发抽风，重试一次当前页；
         # 重试仍空（或已拉满）则视为到达末尾
         if not movies:
@@ -367,7 +385,9 @@ _CACHE_FULL_REFRESH_DAYS = 7
 #     新增总数校验，且v2缓存一律作废重拉
 # v4: 旧解析正则要求锚点属性顺序固定，8条属性顺序不同的条目整条丢失
 #     （1198只解析出1190且写入v3缓存）。解析改为按item块切分后，v3缓存作废重拉
-_CACHE_VERSION = 4
+# v5: 新解析器全量拉取仍为1190/1198，加入逐页诊断日志定位8部缺口；
+#     v4缓存（1190条）作废，部署后带诊断全量重拉
+_CACHE_VERSION = 5
 
 
 def _load_movies_cache():

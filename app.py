@@ -76,6 +76,16 @@ sh.setLevel(logging.INFO)
 sh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
 logger.addHandler(sh)
 
+# 模块logger接入同一管道：douban等模块的INFO/WARNING此前传播到root
+# logger（无handler）被丢弃，诊断日志从未出现在日志文件/页面
+for _mod_name in ('douban', 'crypto_utils', 'baidu_forum', 'forum_monitor'):
+    _mod_logger = logging.getLogger(_mod_name)
+    _mod_logger.setLevel(logging.INFO)
+    _mod_logger.addHandler(fh)
+    _mod_logger.addHandler(ch)
+    _mod_logger.addHandler(sh)
+    _mod_logger.propagate = False
+
 user_states: Dict[str, Dict[str, Any]] = {}
 user_states_lock: threading.Lock = threading.Lock()
 

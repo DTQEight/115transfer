@@ -24,6 +24,245 @@
     }
 }
 
+/* ==================== 电影详情侧滑面板 ==================== */
+/* 悬浮关闭按钮（覆盖在hero上） */
+.detail-close-btn {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    z-index: 5;
+    filter: drop-shadow(0 1px 4px rgba(0,0,0,0.6));
+}
+/* 渐变头图：海报沉浸式背景 */
+.detail-hero {
+    position: relative;
+    padding: 1.5rem 1.25rem 1rem;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    overflow: hidden;
+}
+[data-bs-theme="dark"] .detail-hero {
+    background: linear-gradient(135deg, #2b3170 0%, #4a2b5e 100%);
+}
+.detail-hero .hero-poster-bg {
+    position: absolute;
+    inset: 0;
+    background-size: cover;
+    background-position: center top;
+    filter: blur(22px) brightness(0.45) saturate(1.4);
+    transform: scale(1.25);
+    z-index: 0;
+}
+.detail-hero .hero-content {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    gap: 1rem;
+}
+.detail-hero .hero-poster {
+    width: 110px;
+    height: 165px;
+    object-fit: cover;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    background: rgba(255,255,255,0.15);
+    flex-shrink: 0;
+}
+.detail-hero .hero-poster-fallback {
+    width: 110px;
+    height: 165px;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    background: rgba(255,255,255,0.18);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-align: center;
+    padding: 8px;
+    flex-shrink: 0;
+    backdrop-filter: blur(4px);
+}
+.detail-hero .hero-title {
+    color: #fff;
+    font-weight: 700;
+    font-size: 1.15rem;
+    line-height: 1.3;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    margin-bottom: 0.5rem;
+    word-break: break-all;
+}
+.detail-hero .hero-rating {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(0,0,0,0.35);
+    backdrop-filter: blur(4px);
+    color: #ffd43b;
+    font-weight: 700;
+    font-size: 0.85rem;
+    padding: 3px 10px;
+    border-radius: 999px;
+    margin-bottom: 0.5rem;
+}
+.detail-hero .hero-meta {
+    color: rgba(255,255,255,0.92);
+    font-size: 0.78rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 0.6rem;
+}
+.detail-hero .hero-meta .meta-chip {
+    background: rgba(255,255,255,0.18);
+    backdrop-filter: blur(4px);
+    padding: 2px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+}
+.detail-hero .hero-douban-link {
+    color: rgba(255,255,255,0.95);
+    font-size: 0.8rem;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(255,255,255,0.14);
+    padding: 3px 10px;
+    border-radius: 999px;
+    transition: background 0.2s;
+}
+.detail-hero .hero-douban-link:hover {
+    background: rgba(255,255,255,0.28);
+    color: #fff;
+}
+/* 操作按钮区 */
+.detail-actions {
+    padding: 0.85rem 1.25rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+[data-bs-theme="dark"] .detail-actions {
+    border-bottom-color: rgba(255,255,255,0.08);
+}
+.detail-actions .btn {
+    border-radius: 999px;
+    font-size: 0.8rem;
+    padding: 4px 14px;
+}
+/* 分区标题 */
+.detail-section {
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+[data-bs-theme="dark"] .detail-section {
+    border-bottom-color: rgba(255,255,255,0.08);
+}
+.detail-section:last-child {
+    border-bottom: none;
+}
+.detail-section-title {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--bs-secondary-color, #6c757d);
+    margin-bottom: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+/* 磁链状态行 */
+.detail-magnet-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+}
+.detail-magnet-status .magnet-text {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.72rem;
+    color: var(--bs-secondary-color, #6c757d);
+    word-break: break-all;
+    flex: 1;
+}
+/* 简介折叠 */
+.detail-overview {
+    font-size: 0.85rem;
+    line-height: 1.7;
+    color: var(--bs-body-color, #212529);
+    max-height: 7em;
+    overflow: hidden;
+    position: relative;
+    transition: max-height 0.3s ease;
+}
+.detail-overview.expanded {
+    max-height: 40em;
+}
+.detail-overview-toggle {
+    background: none;
+    border: none;
+    color: #667eea;
+    font-size: 0.78rem;
+    padding: 4px 0;
+    cursor: pointer;
+}
+[data-bs-theme="dark"] .detail-overview-toggle {
+    color: #9ba3f8;
+}
+/* 转存历史时间线 */
+.detail-timeline {
+    position: relative;
+    padding-left: 18px;
+}
+.detail-timeline::before {
+    content: '';
+    position: absolute;
+    left: 5px;
+    top: 6px;
+    bottom: 6px;
+    width: 2px;
+    background: var(--bs-border-color, #dee2e6);
+    border-radius: 1px;
+}
+.detail-timeline-item {
+    position: relative;
+    padding-bottom: 14px;
+}
+.detail-timeline-item:last-child {
+    padding-bottom: 0;
+}
+.detail-timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -18px;
+    top: 5px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #fff;
+    border: 2px solid var(--bs-border-color, #dee2e6);
+}
+.detail-timeline-item.success::before {
+    border-color: #198754;
+    background: #d1e7dd;
+}
+.detail-timeline-item.fail::before {
+    border-color: #dc3545;
+    background: #f8d7da;
+}
+.detail-timeline-item .tl-time {
+    font-size: 0.72rem;
+    color: var(--bs-secondary-color, #6c757d);
+}
+.detail-timeline-item .tl-msg {
+    font-size: 0.78rem;
+    word-break: break-all;
+}
+
 /* 封面墙视图样式 */
 .poster-card {
     position: relative;
@@ -379,10 +618,7 @@
 
         <!-- 电影详情侧滑面板 -->
         <div class="offcanvas offcanvas-end" tabindex="-1" id="movieDetailOffcanvas" style="width: 420px;">
-            <div class="offcanvas-header border-bottom">
-                <h5 class="offcanvas-title"><i class="bi bi-info-circle me-2"></i>电影详情</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
-            </div>
+            <button type="button" class="btn-close btn-close-white detail-close-btn" data-bs-dismiss="offcanvas" title="关闭"></button>
             <div class="offcanvas-body p-0">
                 <div id="detailContent" class="d-flex justify-content-center align-items-center" style="min-height: 200px;">
                     <div class="spinner-border spinner-border-sm text-primary me-2"></div>加载中...
@@ -598,89 +834,112 @@
             var history = data.history || [];
 
             var html = '';
+            var posterUrl = (tmdb && tmdb.url) ? tmdb.url : '';
 
-            // 顶部：海报+基本信息
-            html += '<div class="p-3 border-bottom">';
-            html += '<div class="d-flex gap-3">';
-            // 海报
-            if (tmdb && tmdb.url) {
-                html += '<img src="' + escapeHtml(tmdb.url) + '" style="width:90px;height:135px;object-fit:cover;border-radius:4px;" alt="海报" onerror="this.style.display=\'none\'">';
+            // ===== 顶部：沉浸式头图（海报作模糊背景） =====
+            html += '<div class="detail-hero">';
+            if (posterUrl) {
+                html += '<div class="hero-poster-bg" style="background-image:url(\'' + escapeHtml(posterUrl) + '\')"></div>';
+            }
+            html += '<div class="hero-content">';
+            if (posterUrl) {
+                // onerror：隐藏海报并显示片名占位块
+                html += '<img class="hero-poster" src="' + escapeHtml(posterUrl) + '" alt="' + escapeHtml(m.name) + '" onerror="posterFail(this)">';
             } else {
-                html += '<div style="width:90px;height:135px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:4px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.7rem;text-align:center;padding:4px;">' + escapeHtml(m.name) + '</div>';
+                html += '<div class="hero-poster-fallback">' + escapeHtml(m.name) + '</div>';
             }
-            // 信息
-            html += '<div class="flex-grow-1">';
-            html += '<h5 class="mb-1">' + escapeHtml(m.name) + '</h5>';
-            if (tmdb && tmdb.year) {
-                html += '<div class="text-muted small mb-1">年份: ' + escapeHtml(tmdb.year) + '</div>';
-            }
+            html += '<div class="flex-grow-1" style="min-width:0">';
+            html += '<div class="hero-title">' + escapeHtml(m.name) + '</div>';
+            // 评分徽章
             if (tmdb && tmdb.rating && tmdb.rating !== '0' && tmdb.rating !== '0.0') {
-                html += '<div class="small mb-1"><span class="badge bg-warning text-dark">★ ' + escapeHtml(tmdb.rating) + '</span></div>';
+                html += '<div class="hero-rating mb-2"><i class="bi bi-star-fill"></i>' + escapeHtml(tmdb.rating) + '</div>';
             }
-            html += '<div class="text-muted small mb-1">页码: 第' + escapeHtml(m.page) + '页 / 序号: ' + escapeHtml(m.id) + '</div>';
-            html += '<div class="text-muted small mb-1">保存时间: ' + escapeHtml(m.save_time) + '</div>';
+            // 元信息 chips
+            html += '<div class="hero-meta">';
+            if (tmdb && tmdb.year) html += '<span class="meta-chip">' + escapeHtml(tmdb.year) + '</span>';
+            html += '<span class="meta-chip">第' + escapeHtml(m.page) + '页 #' + escapeHtml(m.id) + '</span>';
+            html += '</div>';
             if (m.douban_url) {
-                html += '<div class="small mb-1"><a href="' + escapeHtml(m.douban_url) + '" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right me-1"></i>豆瓣页面</a></div>';
+                html += '<a href="' + escapeHtml(m.douban_url) + '" target="_blank" rel="noopener" class="hero-douban-link"><i class="bi bi-box-arrow-up-right"></i>豆瓣页面</a>';
             }
             html += '</div>';
             html += '</div>';
-
-            // 磁链状态徽章
-            if (m.is_empty) {
-                html += '<span class="badge bg-warning text-dark mt-2">未填磁链</span>';
-            } else {
-                html += '<span class="badge bg-success mt-2">已填磁链</span>';
-            }
             html += '</div>';
 
-            // 操作按钮区
-            html += '<div class="p-3 border-bottom">';
-            html += '<div class="d-flex flex-wrap gap-2">';
+            // ===== 操作按钮 =====
+            html += '<div class="detail-actions">';
             var urlArg = m.douban_url ? ", '" + escapeHtml(m.douban_url).replace(/'/g, "\\'") + "'" : '';
-            html += '<button class="btn btn-sm btn-outline-primary" onclick="showEditModal(' + m.id + ', ' + m.page + ', \'' + escapeHtml(m.name).replace(/'/g, "\\'") + '\', \'' + escapeHtml(m.magnet).replace(/'/g, "\\'") + '\'' + urlArg + ')"><i class="bi bi-pencil me-1"></i>编辑</button>';
-            html += '<button class="btn btn-sm btn-outline-info" onclick="searchMagnetForDetail(' + m.id + ', ' + m.page + ', \'' + escapeHtml(m.name).replace(/'/g, "\\'") + '\')"><i class="bi bi-magnet me-1"></i>搜索磁链</button>';
+            var nameArg = "'" + escapeHtml(m.name).replace(/'/g, "\\'") + "'";
             if (!m.is_empty) {
-                html += '<button class="btn btn-sm btn-outline-success" onclick="transferTo115(' + m.id + ', ' + m.page + ')"><i class="bi bi-cloud-upload me-1"></i>转存115</button>';
-                html += '<button class="btn btn-sm btn-outline-secondary" onclick="copyDetailMagnet(' + m.id + ', ' + m.page + ')"><i class="bi bi-clipboard me-1"></i>复制磁链</button>';
+                html += '<button class="btn btn-sm btn-success" onclick="transferTo115(' + m.id + ', ' + m.page + ')"><i class="bi bi-cloud-upload me-1"></i>转存115</button>';
+                html += '<button class="btn btn-sm btn-outline-success" onclick="copyDetailMagnet(' + m.id + ', ' + m.page + ')"><i class="bi bi-clipboard me-1"></i>复制磁链</button>';
             }
+            html += '<button class="btn btn-sm btn-outline-primary" onclick="searchMagnetForDetail(' + m.id + ', ' + m.page + ', ' + nameArg + ')"><i class="bi bi-magnet me-1"></i>搜索磁链</button>';
+            html += '<button class="btn btn-sm btn-outline-secondary" onclick="showEditModal(' + m.id + ', ' + m.page + ', ' + nameArg + ', \'' + escapeHtml(m.magnet).replace(/'/g, "\\'") + '\'' + urlArg + ')"><i class="bi bi-pencil me-1"></i>编辑</button>';
             html += '<button class="btn btn-sm btn-outline-danger" onclick="deleteMovie(' + m.id + ', ' + m.page + urlArg + ')"><i class="bi bi-trash me-1"></i>删除</button>';
             html += '</div>';
+
+            // ===== 磁链状态 =====
+            html += '<div class="detail-section">';
+            html += '<div class="detail-section-title"><i class="bi bi-link-45deg"></i>磁力链接</div>';
+            html += '<div class="detail-magnet-status">';
+            if (m.is_empty) {
+                html += '<span class="badge bg-warning text-dark">未填</span>';
+                html += '<span class="magnet-text">点击"搜索磁链"自动获取，或在列表中直接粘贴</span>';
+            } else {
+                html += '<span class="badge bg-success">已填</span>';
+                html += '<span class="magnet-text">' + escapeHtml(m.magnet_display || m.magnet) + '</span>';
+            }
+            html += '</div>';
             html += '</div>';
 
-            // 剧情简介
+            // ===== 剧情简介（可折叠） =====
             if (tmdb && tmdb.overview) {
-                html += '<div class="p-3 border-bottom">';
-                html += '<h6 class="small text-muted mb-2"><i class="bi bi-card-text me-1"></i>剧情简介</h6>';
-                html += '<div class="small" style="max-height:120px;overflow-y:auto;">' + escapeHtml(tmdb.overview) + '</div>';
+                html += '<div class="detail-section">';
+                html += '<div class="detail-section-title"><i class="bi bi-card-text"></i>剧情简介</div>';
+                html += '<div class="detail-overview" id="detailOverview">' + escapeHtml(tmdb.overview) + '</div>';
+                if (tmdb.overview.length > 100) {
+                    html += '<button class="detail-overview-toggle" onclick="toggleDetailOverview(this)">展开全部 <i class="bi bi-chevron-down"></i></button>';
+                }
                 html += '</div>';
             }
 
-            // 转存历史
-            html += '<div class="p-3">';
-            html += '<h6 class="small text-muted mb-2"><i class="bi bi-clock-history me-1"></i>转存历史 (' + history.length + ')</h6>';
+            // ===== 转存历史（时间线） =====
+            html += '<div class="detail-section">';
+            html += '<div class="detail-section-title"><i class="bi bi-clock-history"></i>转存历史 <span class="badge bg-secondary-subtle text-secondary ms-1">' + history.length + '</span></div>';
             if (history.length === 0) {
                 html += '<div class="text-muted small">暂无转存记录</div>';
             } else {
-                html += '<ul class="list-group list-group-flush">';
+                html += '<div class="detail-timeline">';
                 history.forEach(function(r) {
                     var time = r.time ? r.time.substring(0, 19).replace('T', ' ') : '';
-                    var badge = r.success ? '<span class="badge bg-success">成功</span>' : '<span class="badge bg-danger">失败</span>';
-                    var source = r.source ? '<span class="badge bg-secondary">' + escapeHtml(r.source) + '</span>' : '';
-                    html += '<li class="list-group-item px-0 py-2 small">';
-                    html += '<div class="d-flex justify-content-between align-items-center mb-1">';
-                    html += '<span>' + badge + ' ' + source + '</span>';
-                    html += '<span class="text-muted">' + escapeHtml(time) + '</span>';
-                    html += '</div>';
+                    var cls = r.success ? 'success' : 'fail';
+                    html += '<div class="detail-timeline-item ' + cls + '">';
+                    html += '<div class="tl-time">' + escapeHtml(time) + ' · ' + (r.success ? '成功' : '失败') + (r.source ? ' · ' + escapeHtml(r.source) : '') + '</div>';
                     if (r.message) {
-                        html += '<div class="text-muted text-truncate" title="' + escapeHtml(r.message) + '">' + escapeHtml(r.message) + '</div>';
+                        html += '<div class="tl-msg text-muted">' + escapeHtml(r.message) + '</div>';
                     }
-                    html += '</li>';
+                    html += '</div>';
                 });
-                html += '</ul>';
+                html += '</div>';
             }
             html += '</div>';
 
             content.innerHTML = html;
+        }
+
+        function toggleDetailOverview(btn) {
+            var el = document.getElementById('detailOverview');
+            var expanded = el.classList.toggle('expanded');
+            btn.innerHTML = expanded ? '收起 <i class="bi bi-chevron-up"></i>' : '展开全部 <i class="bi bi-chevron-down"></i>';
+        }
+
+        // 海报加载失败：替换为片名占位块
+        function posterFail(img) {
+            var fb = document.createElement('div');
+            fb.className = 'hero-poster-fallback';
+            fb.textContent = img.alt || '无海报';
+            img.replaceWith(fb);
         }
 
         // 详情面板的辅助操作

@@ -2572,6 +2572,8 @@ def _do_douban_auto_sync():
                 df = load_movies()
                 added = 0
                 skipped = 0
+                url_matched = 0
+                name_matched = 0
                 per_page = 15
 
                 # 建立现有电影映射：豆瓣URL → {磁力链接, 保存时间, 电影名}；
@@ -2614,12 +2616,14 @@ def _do_douban_auto_sync():
                     rec = existing_by_url.get(url)
                     if rec is not None:
                         skipped += 1
+                        url_matched += 1
                         magnet = rec['磁力链接']
                         save_time = rec['保存时间']
                         if rec['电影名'] != name:
                             name = rec['电影名']  # 保留用户可能改过的电影名
                     elif name in existing_by_name:
                         skipped += 1
+                        name_matched += 1
                         magnet = existing_by_name[name]['磁力链接']
                         save_time = existing_by_name[name]['保存时间']
                     else:
@@ -2637,7 +2641,8 @@ def _do_douban_auto_sync():
                     })
 
                 # 豆瓣中不存在的本地电影 → 删除（不追加）
-                removed = (len(existing_by_url) + len(existing_by_name)) - skipped
+                # 按实际匹配数分桶计算（之前用 skipped 总数扣减会出现 -1 这类错值）
+                removed = (len(existing_by_url) - url_matched) + (len(existing_by_name) - name_matched)
                 if removed > 0:
                     kept_urls = seen_urls
                     kept_names = {r['电影名'] for r in new_rows}

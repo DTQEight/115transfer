@@ -103,50 +103,45 @@ def fetch_watched_movies(user_id, start=0, count=15):
         if '登录' in html and '异常请求' in html:
             return [], 0, '豆瓣Cookie无效或已过期'
 
-        # 解析电影列表
+        # 解析电影列表：按 item 块切分后逐块提取。
+        # 旧版单一正则要求锚点属性顺序严格为 title→href→class，属性顺序不同
+        # 的条目整条丢失（1198的列表只解析出1190的根因）；且 DOTALL 跨条目
+        # 匹配可能把解析失败的条目"吞进"下一条。逐块解析彻底规避这两个问题。
         movies = []
-        # 按URL(subject id)去重：同名不同片必须保留。曾按title去重导致
-        # 一页内同名电影被吞、该页不足15部，翻页逻辑误判"最后一页"提前终止
-        # （全量拉取精确停在208部的根因）
         seen = set()
-
-        # 从每个 item 中提取: URL从 nbg 标签，简体名从 <em> 标签
-        # <em>简体名 / 繁体名 / 英文名</em> 取第一个 / 前的部分
-        items = re.findall(
-            r'<a\s+title="[^"]*"\s+href="(https://movie\.douban\.com/subject/\d+/)"\s+class="nbg">.*?<em>([^<]+)</em>',
-            html, re.DOTALL
-        )
-        for movie_url, em_text in items:
-            movie_url = movie_url.strip()
-            if not movie_url or movie_url in seen:
+        for block in re.split(r'<div\s+class="item', html)[1:]:
+            url_m = re.search(r'href="(https://movie\.douban\.com/subject/(\d+)/?)"', block)
+            if not url_m:
                 continue
+            movie_url = url_m.group(1)
+            if not movie_url.endswith('/'):
+                movie_url += '/'
+            if movie_url in seen:
+                continue
+            # 标题提取链：<em>简体名</em> → 锚点 title 属性 → title li 链接文本
+            title = ''
+            em_m = re.search(r'<em>([^<]+)</em>', block)
+            if em_m:
+                title = html_module.unescape(em_m.group(1).strip().split(' / ')[0].strip())
+            if not title:
+                t_m = re.search(r'\stitle="([^"]+)"', block)
+                if t_m:
+                    title = html_module.unescape(t_m.group(1).strip().split(' / ')[0].strip())
+            if not title:
+                a_m = re.search(r'class="title"[^>]*>\s*<a[^>]*>([^<]+)</a>', block)
+                if a_m:
+                    title = html_module.unescape(a_m.group(1).strip())
+            if not title:
+                title = 'subject_' + url_m.group(2)  # 兜底：subject id 占位
+            # 年份：块内 intro li 的观看日期
+            year = ''
+            intro_m = re.search(r'<li class="intro">([^<]+)</li>', block)
+            if intro_m:
+                y_m = re.search(r'(\d{4})-\d{2}-\d{2}', intro_m.group(1))
+                if y_m:
+                    year = y_m.group(1)
             seen.add(movie_url)
-            # <em> 内容格式: "简体名 / 繁体名 / 英文名" 或 "简体名"
-            # 取第一个 / 前的部分作为简体中文名
-            title = html_module.unescape(em_text.strip().split(' / ')[0].strip())
-            movies.append({'title': title, 'url': movie_url, 'year': '', 'rating': ''})
-
-        # 备选: 如果 <em> 解析失败，用 <a title="..." class="nbg"> 的 title
-        if not movies:
-            for m in re.finditer(
-                r'<a\s+title="([^"]+)"\s+href="(https://movie\.douban\.com/subject/\d+/)"\s+class="nbg"',
-                html
-            ):
-                title = html_module.unescape(m.group(1).strip())
-                movie_url = m.group(2).strip()
-                if not movie_url or movie_url in seen:
-                    continue
-                seen.add(movie_url)
-                movies.append({'title': title, 'url': movie_url, 'year': '', 'rating': ''})
-        # 从 <li class="intro"> 补充年份信息
-        # 每个 item 的结构: <div class="item comment-item">...<li class="intro">日期 / 演员 / ...</li>...</div>
-        # 注意：intros 和 movies 的数量可能不一致，仅按 movies 的索引安全补充
-        intros = re.findall(r'<li class="intro">([^<]+)</li>', html)
-        for i, intro in enumerate(intros):
-            if i < len(movies):
-                year_m = re.search(r'(\d{4})-\d{2}-\d{2}', intro)
-                if year_m:
-                    movies[i]['year'] = year_m.group(1)
+            movies.append({'title': title, 'url': movie_url, 'year': year, 'rating': ''})
 
         # 获取总数: <h1>我看过的影视(1192)</h1>
         total_match = re.search(r'<h1>[^<]*[\(（](\d+)[\)）]</h1>', html)
@@ -349,7 +344,9 @@ def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
             return all_movies, (f'拉取不完整: 已获取{len(all_movies)}部，豆瓣报告共{total}部，'
                                 f'缺口{gap}部。可能豆瓣Cookie已失效（游客只能访问前~14页）'
                                 f'或网络异常，请重新配置Cookie后重试')
-        # 少量同名缺口属正常，返回成功（后续按名称去重入库，不影响）
+        # 少量缺口属正常：豆瓣计数含已删除/不可见条目或结构差异，记录备查
+        log.info(f'[豆瓣] 拉取{len(all_movies)}部，页面报告共{total}部，差{gap}部'
+                 f'（豆瓣计数含列表未展示的条目，属正常）')
     return all_movies, None
 
 
@@ -368,7 +365,9 @@ _CACHE_FULL_REFRESH_DAYS = 7
 # v3: v2仍可能包含截断数据——豆瓣第14页不满15部时提前break绕过了旧版完整性
 #     校验(pages>=max_pages)，208部被当完整结果写入v2缓存。缓存命中路径
 #     新增总数校验，且v2缓存一律作废重拉
-_CACHE_VERSION = 3
+# v4: 旧解析正则要求锚点属性顺序固定，8条属性顺序不同的条目整条丢失
+#     （1198只解析出1190且写入v3缓存）。解析改为按item块切分后，v3缓存作废重拉
+_CACHE_VERSION = 4
 
 
 def _load_movies_cache():

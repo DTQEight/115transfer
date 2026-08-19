@@ -736,7 +736,12 @@ def search():
         if not keyword or df.empty:
             return redirect(url_for('index'))
 
-        mask = df['电影名'].str.lower().str.contains(keyword.lower(), na=False, regex=False)
+        kw = keyword.lower()
+        name_mask = df['电影名'].astype(str).str.lower().str.contains(kw, na=False, regex=False)
+        magnet_mask = pd.Series([False] * len(df))
+        if '磁力链接' in df.columns:
+            magnet_mask = df['磁力链接'].astype(str).str.lower().str.contains(kw, na=False, regex=False)
+        mask = name_mask | magnet_mask
         result_df = df[mask]
         movies = build_movie_list(result_df)
 

@@ -2546,19 +2546,30 @@ def _do_douban_auto_sync():
                 per_page = 15
 
                 # 建立现有电影映射：电影名 → {磁力链接, 保存时间}
-                # 用于保留已转存电影的磁力链接等信息
+                # 用于保留已转存电影的磁力链接等信息。
+                # 同名多条时保留有磁力链接的那条；都有/都没有则保留最新（保存时间大）
                 existing_map: Dict[str, Dict[str, str]] = {}
                 if not df.empty:
                     for _, row in df.iterrows():
                         name = str(row['电影名']) if not pd.isna(row['电影名']) else ''
-                        if not name or name in existing_map:
+                        if not name:
                             continue
                         magnet = str(row['磁力链接']) if not pd.isna(row['磁力链接']) else ''
                         save_time = str(row['保存时间']) if not pd.isna(row['保存时间']) else ''
-                        existing_map[name] = {'磁力链接': magnet, '保存时间': save_time}
+                        old = existing_map.get(name)
+                        if old is None:
+                            existing_map[name] = {'磁力链接': magnet, '保存时间': save_time}
+                        else:
+                            # 合并：优先保留磁力链接；两边都有磁链则保留保存时间新的
+                            if not old['磁力链接'] and magnet:
+                                existing_map[name] = {'磁力链接': magnet, '保存时间': save_time}
+                            elif old['磁力链接'] and magnet and save_time > old['保存时间']:
+                                existing_map[name] = {'磁力链接': magnet, '保存时间': save_time}
+                            elif not old['磁力链接'] and not magnet and save_time > old['保存时间']:
+                                existing_map[name] = {'磁力链接': magnet, '保存时间': save_time}
 
                 new_rows: List[Dict[str, Any]] = []
-                seen_names: set = set()  # 防止豆瓣数据重复
+                seen_names: set = set()  # 豆瓣同名条目只入库一次（合并到最新标记的那条）
 
                 # 严格按豆瓣顺序重建：只保留豆瓣列表中的电影
                 for i, m in enumerate(movies):
@@ -2572,6 +2583,8 @@ def _do_douban_auto_sync():
 
                     if name in existing_map:
                         skipped += 1
+                        # 磁力链接/保存时间用合并后的记录；
+                        # 该记录无磁链时（用户从没填过），由最新豆瓣条目覆盖
                         magnet = existing_map[name]['磁力链接']
                         save_time = existing_map[name]['保存时间']
                     else:

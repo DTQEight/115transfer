@@ -22,6 +22,7 @@ import cloud115
 import wechat_work
 import douban
 import transfer_history
+import jellyfin
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -78,7 +79,7 @@ logger.addHandler(sh)
 
 # 模块logger接入同一管道：douban等模块的INFO/WARNING此前传播到root
 # logger（无handler）被丢弃，诊断日志从未出现在日志文件/页面
-for _mod_name in ('douban', 'crypto_utils', 'baidu_forum', 'forum_monitor'):
+for _mod_name in ('douban', 'crypto_utils', 'baidu_forum', 'forum_monitor', 'jellyfin'):
     _mod_logger = logging.getLogger(_mod_name)
     _mod_logger.setLevel(logging.INFO)
     _mod_logger.addHandler(fh)
@@ -380,9 +381,123 @@ def notes_save() -> Response:
         return jsonify({'success': False, 'message': f'保存失败: {e}'}), 500
 
 
+# ==================== Jellyfin 路由 ====================
+
+@app.route('/jellyfin/config', methods=['GET'])
+def jellyfin_get_config() -> Response:
+    config = jellyfin.load_config()
+    return jsonify({
+        'success': True,
+        'base_url': config.get('base_url', ''),
+        'api_key_masked': ('****' + config.get('api_key', '')[-4:]) if config.get('api_key') else '',
+        'has_api_key': bool(config.get('api_key')),
+        'library_ids': config.get('library_ids', []),
+        'configured': bool(config.get('base_url') and config.get('api_key')),
+    })
+
+
+@app.route('/jellyfin/config', methods=['POST'])
+def jellyfin_set_config() -> Response:
+    base_url = request.form.get('base_url', '').strip().rstrip('/')
+    api_key = request.form.get('api_key', '').strip()
+    library_ids = [x.strip() for x in request.form.get('library_ids', '').split(',') if x.strip()]
+
+    if not base_url or not api_key:
+        return jsonify({'success': False, 'message': '地址和API Key不能为空'})
+
+    # 先测试连接再保存，避免存入错误配置
+    ok, msg = jellyfin.test_connection(base_url, api_key)
+    if not ok:
+        return jsonify({'success': False, 'message': f'连接测试失败: {msg}'})
+
+    def _update(cfg):
+        cfg['base_url'] = base_url
+        if api_key != '****':  # 掩码回传时不覆盖
+            cfg['api_key'] = encrypt(api_key)
+        cfg['library_ids'] = library_ids
+    jellyfin.update_config(_update)
+    # 保存成功后立即后台刷新入库状态
+    import threading as _threading
+    _threading.Thread(target=_refresh_jellyfin_status, daemon=True).start()
+    return jsonify({'success': True, 'message': f'配置保存成功。{msg}，正在后台比对入库状态'})
+
+
+@app.route('/jellyfin/libraries', methods=['GET'])
+def jellyfin_libraries() -> Response:
+    """获取媒体库列表（配置时选择用，传入临时参数实时测试）"""
+    base_url = request.args.get('base_url', '').strip().rstrip('/')
+    api_key = request.args.get('api_key', '').strip()
+    if not base_url or not api_key:
+        # 未传参时用已保存配置
+        config = jellyfin.load_config()
+        base_url = config.get('base_url', '')
+        api_key = decrypt(config.get('api_key', ''))
+    if api_key == '****':
+        config = jellyfin.load_config()
+        api_key = decrypt(config.get('api_key', ''))
+    libs, err = jellyfin.get_libraries(base_url, api_key)
+    if err:
+        return jsonify({'success': False, 'message': err})
+    return jsonify({'success': True, 'libraries': libs})
+
+
+@app.route('/jellyfin/refresh', methods=['POST'])
+def jellyfin_refresh() -> Response:
+    """手动刷新入库状态（同步执行，页面等待结果）"""
+    count = _refresh_jellyfin_status()
+    if count < 0:
+        return jsonify({'success': False, 'message': '刷新失败或未配置Jellyfin，请检查配置和日志'})
+    return jsonify({'success': True, 'message': f'刷新完成: {count}部已入库', 'count': count})
+
+
+# ==================== Jellyfin 入库状态 ====================
+
+_jellyfin_refresh_lock: threading.Lock = threading.Lock()
+
+
+def _refresh_jellyfin_status() -> int:
+    """拉取Jellyfin库与本地电影比对，写回"已入库"列。返回已入库数量。
+
+    未配置Jellyfin时静默返回-1（不报错，不修改数据）。
+    """
+    config = jellyfin.load_config()
+    if not config.get('base_url', '').strip() or not decrypt(config.get('api_key', '')):
+        return -1
+
+    # 非阻塞锁：避免同步后自动刷新与手动刷新并发写Excel
+    if not _jellyfin_refresh_lock.acquire(blocking=False):
+        logger.info('[Jellyfin] 刷新已在进行中，跳过')
+        return -1
+    try:
+        with data_lock:
+            df = load_movies()
+        if df.empty:
+            return 0
+        movies = [{'title': str(r['电影名']), 'url': str(r['豆瓣链接']) if pd.notna(r['豆瓣链接']) else '',
+                   'year': ''} for _, r in df.iterrows()]
+        in_lib = jellyfin.refresh_in_library_status(movies)
+        count = 0
+        with data_lock:
+            df = load_movies()  # 重新加载防中途变更
+            for idx, row in df.iterrows():
+                url = str(row['豆瓣链接']) if pd.notna(row['豆瓣链接']) else ''
+                val = '是' if (url and url in in_lib) else '否'
+                if val == '是':
+                    count += 1
+                df.at[idx, '已入库'] = val
+            save_movies(df)
+        logger.info(f'[Jellyfin] 入库状态刷新完成: {count}/{len(df)}部已入库')
+        return count
+    except Exception as e:
+        logger.error(f'[Jellyfin] 入库状态刷新失败: {e}')
+        return -1
+    finally:
+        _jellyfin_refresh_lock.release()
+
+
 def load_movies() -> pd.DataFrame:
     if not os.path.exists(EXCEL_FILE):
-        df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接'])
+        df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库'])
         df.to_excel(EXCEL_FILE, index=False)
         return df
 
@@ -396,6 +511,9 @@ def load_movies() -> pd.DataFrame:
     # 兼容旧数据文件：无"豆瓣链接"列时自动补空列（同名电影独立入库的关键）
     if '豆瓣链接' not in df.columns:
         df['豆瓣链接'] = ''
+    # 兼容旧数据文件：无"已入库"列时自动补空列（Jellyfin入库状态）
+    if '已入库' not in df.columns:
+        df['已入库'] = '否'
     # 过滤掉重复的表头行（序号列为非数字的行）
     if not df.empty:
         try:
@@ -446,6 +564,7 @@ def build_movie_list(df: pd.DataFrame) -> List[Dict[str, Any]]:
             'is_empty': is_empty,
             'save_time': row['保存时间'],
             'douban_url': str(row['豆瓣链接']) if '豆瓣链接' in row.index and not pd.isna(row['豆瓣链接']) else '',
+            'in_library': ('是' == str(row['已入库'])) if '已入库' in row.index and not pd.isna(row['已入库']) else False,
         })
     return movies
 
@@ -2598,7 +2717,8 @@ def _do_douban_auto_sync():
                         magnet = str(row['磁力链接']) if not pd.isna(row['磁力链接']) else ''
                         save_time = str(row['保存时间']) if not pd.isna(row['保存时间']) else ''
                         url = str(row['豆瓣链接']) if '豆瓣链接' in row.index and not pd.isna(row['豆瓣链接']) else ''
-                        rec = {'磁力链接': magnet, '保存时间': save_time, '电影名': name}
+                        in_lib = '是' if ('已入库' in row.index and not pd.isna(row['已入库']) and str(row['已入库']) == '是') else '否'
+                        rec = {'磁力链接': magnet, '保存时间': save_time, '电影名': name, '已入库': in_lib}
                         if url:
                             existing_by_url[url] = rec
                         elif name not in existing_by_name:
@@ -2629,6 +2749,7 @@ def _do_douban_auto_sync():
                         url_matched += 1
                         magnet = rec['磁力链接']
                         save_time = rec['保存时间']
+                        in_lib = rec['已入库']
                         if rec['电影名'] != name:
                             name = rec['电影名']  # 保留用户可能改过的电影名
                     elif name in existing_by_name:
@@ -2636,10 +2757,12 @@ def _do_douban_auto_sync():
                         name_matched += 1
                         magnet = existing_by_name[name]['磁力链接']
                         save_time = existing_by_name[name]['保存时间']
+                        in_lib = existing_by_name[name]['已入库']
                     else:
                         added += 1
                         magnet = ''
                         save_time = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+                        in_lib = '否'
 
                     new_rows.append({
                         '序号': seq,
@@ -2648,6 +2771,7 @@ def _do_douban_auto_sync():
                         '磁力链接': magnet,
                         '保存时间': save_time,
                         '豆瓣链接': url,
+                        '已入库': in_lib,
                     })
 
                 # 豆瓣中不存在的本地电影 → 删除（不追加）
@@ -2663,7 +2787,7 @@ def _do_douban_auto_sync():
                     ]
                     logger.info(f'[豆瓣自动同步] 删除{removed}部豆瓣已不存在的电影: {removed_items[:10]}')
 
-                new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接'])
+                new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库'])
 
                 # 判断是否需要保存：有新增/删除 或 顺序/页码/URL发生变化
                 need_save = added > 0 or removed > 0
@@ -2695,6 +2819,15 @@ def _do_douban_auto_sync():
                 }))
             except Exception:
                 pass
+
+            # 豆瓣同步完成后刷新 Jellyfin 入库状态（已配置时）
+            # 失败不影响同步结果
+            try:
+                jf_count = _refresh_jellyfin_status()
+                if jf_count >= 0:
+                    logger.info(f'[豆瓣自动同步] Jellyfin入库状态已刷新: {jf_count}部已入库')
+            except Exception as jf_err:
+                logger.warning(f'[豆瓣自动同步] Jellyfin状态刷新失败（不影响同步）: {jf_err}')
 
         except Exception as e:
             logger.error(f'[豆瓣自动同步] 异常: {e}', exc_info=True)

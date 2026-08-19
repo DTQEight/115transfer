@@ -549,7 +549,9 @@
                                 </td>
                                 <td class="text-muted">{{ movie.id }}</td>
                                 <td class="hide-mobile"><span class="badge-page">{{ movie.page }}</span></td>
-                                <td class="fw-medium" style="cursor:pointer;" onclick="showMovieDetail({{ movie.id }}, {{ movie.page }}, '{{ movie.douban_url }}')" title="点击查看详情">{{ movie.name }}</td>
+                                <td class="fw-medium" style="cursor:pointer;" onclick="showMovieDetail({{ movie.id }}, {{ movie.page }}, '{{ movie.douban_url }}')" title="点击查看详情">{{ movie.name }}
+                                    {% if movie.in_library %}<i class="bi bi-check-circle-fill text-success ms-1" title="已入Jellyfin库"></i>{% endif %}
+                                </td>
                                 <td>
                                     <input type="text" class="form-control form-control-sm magnet-input {% if movie.is_empty %}border-warning{% endif %}"
                                            value="{{ movie.magnet }}"

@@ -513,7 +513,7 @@ def _jellyfin_backfill_worker() -> None:
 
 
 def _jellyfin_match_and_write() -> int:
-    """用当前 IMDB_ID/TMDB_ID + 标题前缀 比对 Jellyfin 并写回"已入库"列。"""
+    """用当前 IMDB_ID 比对 Jellyfin 并写回"已入库"列（仅按IMDb编号精确匹配）。"""
     with data_lock:
         df = load_movies()
     if df.empty:
@@ -522,7 +522,6 @@ def _jellyfin_match_and_write() -> int:
         'title': str(r['电影名']) if pd.notna(r['电影名']) else '',
         'url': str(r['豆瓣链接']) if pd.notna(r['豆瓣链接']) else '',
         'year': '',
-        'tmdb_id': str(r['TMDB_ID']) if 'TMDB_ID' in r.index and pd.notna(r['TMDB_ID']) else '',
         'imdb_id': str(r['IMDB_ID']) if 'IMDB_ID' in r.index and pd.notna(r['IMDB_ID']) else '',
     } for _, r in df.iterrows()]
     in_lib = jellyfin.refresh_in_library_status(movies)
@@ -602,7 +601,7 @@ def _backfill_imdb_ids(df: pd.DataFrame) -> None:
 
 def load_movies() -> pd.DataFrame:
     if not os.path.exists(EXCEL_FILE):
-        df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'TMDB_ID', 'IMDB_ID'])
+        df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'IMDB_ID'])
         df.to_excel(EXCEL_FILE, index=False)
         return df
 
@@ -619,9 +618,6 @@ def load_movies() -> pd.DataFrame:
     # 兼容旧数据文件：无"已入库"列时自动补空列（Jellyfin入库状态）
     if '已入库' not in df.columns:
         df['已入库'] = '否'
-    # 兼容旧数据文件：无"TMDB_ID"列时自动补空列（Jellyfin精确匹配用）
-    if 'TMDB_ID' not in df.columns:
-        df['TMDB_ID'] = ''
     # 兼容旧数据文件：无"IMDB_ID"列时自动补空列（Jellyfin入库精确匹配主键）
     if 'IMDB_ID' not in df.columns:
         df['IMDB_ID'] = ''
@@ -2829,10 +2825,9 @@ def _do_douban_auto_sync():
                         save_time = str(row['保存时间']) if not pd.isna(row['保存时间']) else ''
                         url = str(row['豆瓣链接']) if '豆瓣链接' in row.index and not pd.isna(row['豆瓣链接']) else ''
                         in_lib = '是' if ('已入库' in row.index and not pd.isna(row['已入库']) and str(row['已入库']) == '是') else '否'
-                        tmdb_id = str(row['TMDB_ID']) if 'TMDB_ID' in row.index and not pd.isna(row['TMDB_ID']) else ''
                         imdb_id = str(row['IMDB_ID']) if 'IMDB_ID' in row.index and not pd.isna(row['IMDB_ID']) else ''
                         rec = {'磁力链接': magnet, '保存时间': save_time, '电影名': name, '已入库': in_lib,
-                               'tmdb_id': tmdb_id, 'imdb_id': imdb_id}
+                               'imdb_id': imdb_id}
                         if url:
                             existing_by_url[url] = rec
                         elif name not in existing_by_name:
@@ -2864,7 +2859,6 @@ def _do_douban_auto_sync():
                         magnet = rec['磁力链接']
                         save_time = rec['保存时间']
                         in_lib = rec['已入库']
-                        tmdb_id = rec.get('tmdb_id', '')
                         imdb_id = rec.get('imdb_id', '')
                         if rec['电影名'] != name:
                             name = rec['电影名']  # 保留用户可能改过的电影名
@@ -2874,14 +2868,12 @@ def _do_douban_auto_sync():
                         magnet = existing_by_name[name]['磁力链接']
                         save_time = existing_by_name[name]['保存时间']
                         in_lib = existing_by_name[name]['已入库']
-                        tmdb_id = existing_by_name[name].get('tmdb_id', '')
                         imdb_id = existing_by_name[name].get('imdb_id', '')
                     else:
                         added += 1
                         magnet = ''
                         save_time = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
                         in_lib = '否'
-                        tmdb_id = ''
                         imdb_id = ''
 
                     new_rows.append({
@@ -2892,7 +2884,6 @@ def _do_douban_auto_sync():
                         '保存时间': save_time,
                         '豆瓣链接': url,
                         '已入库': in_lib,
-                        'TMDB_ID': tmdb_id,
                         'IMDB_ID': imdb_id,
                     })
 
@@ -2909,7 +2900,7 @@ def _do_douban_auto_sync():
                     ]
                     logger.info(f'[豆瓣自动同步] 删除{removed}部豆瓣已不存在的电影: {removed_items[:10]}')
 
-                new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'TMDB_ID', 'IMDB_ID'])
+                new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'IMDB_ID'])
 
                 # 判断是否需要保存：有新增/删除 或 顺序/页码/URL发生变化
                 need_save = added > 0 or removed > 0

@@ -5,9 +5,7 @@
 2. 拉取指定媒体库（或全部）的电影/剧集条目
 3. 按标题（+年份可选）与本地电影匹配，生成"已入库"状态
 """
-import re
 import threading
-import unicodedata
 import requests
 import logging
 
@@ -65,16 +63,6 @@ def update_config(mutator):
         _save_unlocked(config)
 
 
-def _normalize_title(title):
-    """标题标准化：NFKC统一全角/半角 + 去空格/标点/大小写，用于宽松匹配"""
-    if not title:
-        return ''
-    t = unicodedata.normalize('NFKC', title)
-    t = t.lower()
-    t = re.sub(r'[\s·・:：!！?？.。,，\-—_\'"()\[\]【】<>《》/\\|]+', '', t)
-    return t
-
-
 def get_library_items(base_url, api_key, library_ids=None):
     """拉取 Jellyfin 影视库全部影片条目
 
@@ -85,20 +73,17 @@ def get_library_items(base_url, api_key, library_ids=None):
 
     Returns:
         (items, error_msg)
-        items: [{'title', 'year', 'normalized', 'tmdb_id'}, ...]
+        items: [{'title', 'year', 'imdb_id'}, ...]
     """
     if not base_url or not api_key:
         return [], '未配置Jellyfin'
 
     def _parse_item(it):
         provider_ids = it.get('ProviderIds') or {}
-        tmdb_id = provider_ids.get('Tmdb') or ''
         imdb_id = provider_ids.get('Imdb') or ''
         return {
             'title': it.get('Name', ''),
             'year': str(it.get('ProductionYear') or ''),
-            'normalized': _normalize_title(it.get('Name', '')),
-            'tmdb_id': str(tmdb_id) if tmdb_id else '',
             'imdb_id': str(imdb_id) if imdb_id else '',
         }
 
@@ -183,80 +168,37 @@ def test_connection(base_url, api_key):
     return True, f'连接成功，共{len(libs)}个媒体库: ' + '、'.join(l['name'] for l in libs)
 
 
-def build_in_library_set(movies, jellyfin_items, match_year=True):
+def build_in_library_set(movies, jellyfin_items):
     """比对本地电影与 Jellyfin 条目，返回已入库的豆瓣URL集合
 
-    匹配策略（按优先级）：
-    1. IMDb 编号命中——本地 imdb_id ∈ Jellyfin 条目 ProviderIds.Imdb 集合（最权威，无歧义）
-    2. TMDB ID 命中——本地 tmdb_id ∈ Jellyfin 条目 ProviderIds.Tmdb 集合
-    3. 标题标准化后精确匹配；同名多条时若带年份则校验年份
-    4. 前缀匹配回退（任一方为另一方前缀，短者≥4字）
-       ——应对豆瓣短名 vs Jellyfin 完整 installment 名（如"加勒比海盗" vs "加勒比海盗1：黑珍珠号的诅咒"）
+    仅按 IMDb 编号精确匹配（豆瓣详情页 IMDb ↔ Jellyfin 条目 ProviderIds.Imdb）。
+    不做标题/前缀模糊匹配——避免系列片、同名片误判（宁缺毋滥）。
+    本地或 Jellyfin 任一侧缺 IMDb 编号即判未入库，待 IMDB_ID 回填后再刷新。
 
     Args:
-        movies: [{'title', 'url', 'year', 'tmdb_id'(可选), 'imdb_id'(可选)}, ...] 本地电影
+        movies: [{'title', 'url', 'imdb_id'(可选)}, ...] 本地电影
         jellyfin_items: get_library_items 的返回
-        match_year: 是否在同名多版本时校验年份
 
     Returns:
         set of 豆瓣URL
     """
-    # Jellyfin IMDb / TMDB 编号集合
     jf_imdb_ids = {it['imdb_id'] for it in jellyfin_items if it.get('imdb_id')}
-    jf_tmdb_ids = {it['tmdb_id'] for it in jellyfin_items if it.get('tmdb_id')}
-    # Jellyfin 条目按标准化标题分组：{norm: [year1, year2...]}
-    jf_map = {}
-    for it in jellyfin_items:
-        if it['normalized']:
-            jf_map.setdefault(it['normalized'], []).append(it['year'])
-    jf_norms = list(jf_map.keys())
-
-    PREFIX_MIN_LEN = 4  # 前缀匹配要求短的一方至少4字，避免"蚁"匹配"蚁人"之类误伤
 
     in_lib = set()
-    imdb_n = tmdb_n = exact_n = prefix_n = 0
+    imdb_n = 0
     unmatched = []
     for m in movies:
-        norm = _normalize_title(m.get('title', ''))
         m_imdb = str(m.get('imdb_id') or '').strip()
-        m_tmdb = str(m.get('tmdb_id') or '').strip()
-        # 1. IMDb 编号命中
         if m_imdb and m_imdb in jf_imdb_ids:
-            in_lib.add(m.get('url', '')); imdb_n += 1
-            continue
-        # 2. TMDB ID 命中
-        if m_tmdb and m_tmdb in jf_tmdb_ids:
-            in_lib.add(m.get('url', '')); tmdb_n += 1
-            continue
-        if not norm:
-            unmatched.append((m.get('title', ''), '')); continue
-        # 3. 精确匹配
-        if norm in jf_map:
-            years = jf_map[norm]
-            if match_year and len(years) > 1 and m.get('year'):
-                if m['year'] in years:
-                    in_lib.add(m.get('url', '')); exact_n += 1
-                else:
-                    unmatched.append((m.get('title', ''), norm))
-            else:
-                in_lib.add(m.get('url', '')); exact_n += 1
-            continue
-        # 4. 前缀回退
-        hit = False
-        for jf_norm in jf_norms:
-            if len(norm) >= PREFIX_MIN_LEN and jf_norm.startswith(norm):
-                hit = True; break
-            if len(jf_norm) >= PREFIX_MIN_LEN and norm.startswith(jf_norm):
-                hit = True; break
-        if hit:
-            in_lib.add(m.get('url', '')); prefix_n += 1
+            in_lib.add(m.get('url', ''))
+            imdb_n += 1
         else:
-            unmatched.append((m.get('title', ''), norm))
+            unmatched.append((m.get('title', ''), m_imdb))
 
-    logger.info(f'[Jellyfin] 匹配完成：IMDb{imdb_n} TMDB{tmdb_n} 精确{exact_n} 前缀{prefix_n} 未匹配{len(unmatched)}/{len(movies)}'
-                + (f'（Jellyfin有IMDb {len(jf_imdb_ids)}条/TMDB {len(jf_tmdb_ids)}条）' if (jf_imdb_ids or jf_tmdb_ids) else '（Jellyfin条目无IMDb/TMDB，仅按标题匹配）'))
-    for title, norm in unmatched[:20]:
-        logger.info(f'[Jellyfin] 未匹配: 本地="{title}" 标准化="{norm}"')
+    logger.info(f'[Jellyfin] 匹配完成：IMDb{imdb_n} 未匹配{len(unmatched)}/{len(movies)}'
+                + (f'（Jellyfin有IMDb {len(jf_imdb_ids)}条）' if jf_imdb_ids else '（Jellyfin条目无IMDb编号）'))
+    for title, imdb in unmatched[:20]:
+        logger.info(f'[Jellyfin] 未匹配: 本地="{title}" IMDb="{imdb or "无"}"')
     return in_lib
 
 

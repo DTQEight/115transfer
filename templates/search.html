@@ -75,6 +75,13 @@
                                                 class="btn btn-outline-danger action-btn">
                                             <i class="bi bi-trash"></i>
                                         </button>
+                                        <button class="btn btn-outline-info action-btn search-magnet-btn"
+                                                data-name="{{ movie.name }}"
+                                                data-id="{{ movie.id }}"
+                                                data-page="{{ movie.page }}"
+                                                title="搜索磁力链接">
+                                            <i class="bi bi-magnet"></i>
+                                        </button>
                                         {% if not movie.is_empty %}
                                         <button onclick="transferTo115({{ movie.id }}, {{ movie.page }})" 
                                                 class="btn btn-outline-success action-btn" title="转存到115网盘">

@@ -263,6 +263,7 @@ def check_cookie(user_id):
                           f'（新版已改为直连，请更新镜像），或当前IP被豆瓣限流')
         if deep_err:
             return True, f'Cookie有效，本页获取到{len(movies)}部电影，页面报告共{total}部；但深度分页探测失败: {deep_err}'
+        return True, f'Cookie有效，本页获取到{len(movies)}部电影，页面报告共{total}部，深度分页正常（第16页可访问）'
 
     return True, f'Cookie有效，本页获取到{len(movies)}部电影，页面报告共{total}部'
 
@@ -343,7 +344,10 @@ _cache_lock = threading.Lock()
 _CACHE_FULL_REFRESH_DAYS = 7
 # 缓存结构版本：增量策略/缓存格式变更时递增，旧版本缓存自动失效并全量刷新。
 # v2: 修复拉取中断时把残缺列表写入缓存的bug（曾导致208部缓存覆盖1242部真实列表）
-_CACHE_VERSION = 2
+# v3: v2仍可能包含截断数据——豆瓣第14页不满15部时提前break绕过了旧版完整性
+#     校验(pages>=max_pages)，208部被当完整结果写入v2缓存。缓存命中路径
+#     新增总数校验，且v2缓存一律作废重拉
+_CACHE_VERSION = 3
 
 
 def _load_movies_cache():
@@ -446,6 +450,12 @@ def fetch_all_watched_movies_cached(user_id, max_pages=200, page_delay=2.0):
     cached_first_url = cached_movies[0].get('url') if cached_movies else None
 
     if first_url and first_url == cached_first_url:
+        # 首位未变但豆瓣总数明显多于缓存数：缓存缺失中后段内容
+        # （如历史上被豆瓣截断写入的208部缓存），不能当"无变化"用
+        if total and total > len(cached_movies) + 5:
+            log.info('[豆瓣] 首位未变但豆瓣总数(%d)远大于缓存(%d)，缓存不完整，执行全量刷新'
+                     % (total, len(cached_movies)))
+            return _full_fetch_with_cache(user_id, max_pages, page_delay)
         # 首位未变：无新增电影，缓存即最新
         log.info('[豆瓣] 第1页无变化，命中缓存（%d部，本次仅1次请求）' % len(cached_movies))
         return list(cached_movies), None
@@ -481,6 +491,11 @@ def fetch_all_watched_movies_cached(user_id, max_pages=200, page_delay=2.0):
             break
 
     result = new_movies + list(cached_movies)
+    # 增量拼接后仍明显少于豆瓣总数：缓存缺失中后段内容，全量刷新兜底
+    if total and len(result) < total - 5:
+        log.info('[豆瓣] 增量拼接结果(%d部)明显少于豆瓣总数(%d)，缓存不完整，执行全量刷新'
+                 % (len(result), total))
+        return _full_fetch_with_cache(user_id, max_pages, page_delay)
     _save_movies_cache(user_id, result)
     log.info('[豆瓣] 增量同步完成: 新增%d部，复用缓存%d部，实际请求%d页' % (
         len(new_movies), len(cached_movies), pages))

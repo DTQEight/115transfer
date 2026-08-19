@@ -67,10 +67,11 @@
                                                 data-id="{{ movie.id }}"
                                                 data-page="{{ movie.page }}"
                                                 data-name="{{ movie.name }}"
-                                                data-magnet="{{ movie.magnet }}">
+                                                data-magnet="{{ movie.magnet }}"
+                                                data-url="{{ movie.douban_url }}">
                                             <i class="bi bi-pencil"></i>
                                         </button>
-                                        <button onclick="deleteMovie({{ movie.id }}, {{ movie.page }})" 
+                                        <button onclick="deleteMovie({{ movie.id }}, {{ movie.page }}, '{{ movie.douban_url }}')"
                                                 class="btn btn-outline-danger action-btn">
                                             <i class="bi bi-trash"></i>
                                         </button>

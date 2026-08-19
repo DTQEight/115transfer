@@ -500,6 +500,7 @@
                 <div class="modal-body">
                     <form id="editForm">
                         <input type="hidden" id="editId">
+                        <input type="hidden" id="editUrl">
                         <div class="mb-3">
                             <label class="form-label">页码</label>
                             <input type="number" id="editPage" class="form-control">
@@ -910,11 +911,12 @@
             themeToggle.innerHTML = theme === 'light' ? '<i class="bi bi-moon"></i>' : '<i class="bi bi-sun"></i>';
         }
 
-        async function deleteMovie(id, page) {
+        async function deleteMovie(id, page, doubanUrl) {
             if (confirm('确定要删除这部电影吗？')) {
                 showLoading();
                 try {
-                    const url = page ? `/delete/${id}?page=${page}` : `/delete/${id}`;
+                    let url = page ? `/delete/${id}?page=${page}` : `/delete/${id}`;
+                    if (doubanUrl) url += `&url=${encodeURIComponent(doubanUrl)}`;
                     const response = await apiFetch(url, { method: 'POST' });
                     const result = await response.json();
                     showToast(result.message, result.success ? 'success' : 'danger');
@@ -929,11 +931,12 @@
             }
         }
 
-        function showEditModal(id, page, name, magnet) {
+        function showEditModal(id, page, name, magnet, doubanUrl) {
             document.getElementById('editId').value = id;
             document.getElementById('editPage').value = page;
             document.getElementById('editName').value = name;
             document.getElementById('editMagnet').value = magnet;
+            document.getElementById('editUrl').value = doubanUrl || '';
             new bootstrap.Modal(document.getElementById('editModal')).show();
         }
 
@@ -942,8 +945,8 @@
             tbodyEl.addEventListener('click', (e) => {
                 const btn = e.target.closest('.edit-btn');
                 if (btn) {
-                    const { id, page, name, magnet } = btn.dataset;
-                    showEditModal(id, page, name, magnet);
+                    const { id, page, name, magnet, url } = btn.dataset;
+                    showEditModal(id, page, name, magnet, url);
                 }
             });
         }
@@ -953,13 +956,16 @@
             const page = document.getElementById('editPage').value;
             const name = document.getElementById('editName').value;
             const magnet = document.getElementById('editMagnet').value;
+            const doubanUrl = document.getElementById('editUrl').value;
 
             showLoading();
             try {
+                const body = `page=${page}&name=${encodeURIComponent(name)}&magnet=${encodeURIComponent(magnet)}` +
+                    (doubanUrl ? `&url=${encodeURIComponent(doubanUrl)}` : '');
                 const response = await apiFetch(`/update/${id}`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: `page=${page}&name=${encodeURIComponent(name)}&magnet=${encodeURIComponent(magnet)}`
+                    body: body
                 });
                 const result = await response.json();
                 showToast(result.message, result.success ? 'success' : 'danger');

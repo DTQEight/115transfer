@@ -372,7 +372,7 @@ def notes_save() -> Response:
 
 def load_movies() -> pd.DataFrame:
     if not os.path.exists(EXCEL_FILE):
-        df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间'])
+        df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接'])
         df.to_excel(EXCEL_FILE, index=False)
         return df
 
@@ -383,6 +383,9 @@ def load_movies() -> pd.DataFrame:
         return _movie_cache['data'].copy()
 
     df = pd.read_excel(EXCEL_FILE)
+    # 兼容旧数据文件：无"豆瓣链接"列时自动补空列（同名电影独立入库的关键）
+    if '豆瓣链接' not in df.columns:
+        df['豆瓣链接'] = ''
     # 过滤掉重复的表头行（序号列为非数字的行）
     if not df.empty:
         try:
@@ -431,7 +434,8 @@ def build_movie_list(df: pd.DataFrame) -> List[Dict[str, Any]]:
             'magnet': magnet,
             'magnet_display': magnet_display,
             'is_empty': is_empty,
-            'save_time': row['保存时间']
+            'save_time': row['保存时间'],
+            'douban_url': str(row['豆瓣链接']) if '豆瓣链接' in row.index and not pd.isna(row['豆瓣链接']) else '',
         })
     return movies
 
@@ -522,15 +526,19 @@ def search():
 @app.route('/delete/<int:movie_id>', methods=['POST'])
 def delete_movie(movie_id):
     page = request.args.get('page', type=int)
+    # 豆瓣URL精确定位（同名电影独立入库后，(序号,页码)可能撞车）
+    url_param = (request.args.get('url', '') or request.form.get('url', '')).strip()
     try:
         with data_lock:
             df = load_movies()
-            
-            if page is not None:
+
+            if url_param and '豆瓣链接' in df.columns:
+                mask = df['豆瓣链接'].astype(str) == url_param
+            elif page is not None:
                 mask = (df['序号'] == movie_id) & (df['页码'] == page)
             else:
                 mask = df['序号'] == movie_id
-            
+
             if not mask.any():
                 return jsonify({'success': False, 'message': '电影记录不存在'})
             
@@ -549,20 +557,27 @@ def update_movie(movie_id):
     page = request.form.get('page', '').strip()
     name = request.form.get('name')
     magnet = request.form.get('magnet')
-    
+    # 豆瓣URL精确定位（同名电影独立入库后，(序号,页码)可能撞车）
+    url_param = request.form.get('url', '').strip()
+
     try:
         with data_lock:
             df = load_movies()
-            
-            if not page:
+
+            if not page and not url_param:
                 return jsonify({'success': False, 'message': '页码不能为空'})
-            
+
             try:
-                page_int = int(page)
+                page_int = int(page) if page else None
             except (ValueError, TypeError):
                 return jsonify({'success': False, 'message': '页码必须是数字'})
-            
-            mask = (df['序号'] == movie_id) & (df['页码'] == page_int)
+
+            if url_param and '豆瓣链接' in df.columns:
+                mask = df['豆瓣链接'].astype(str) == url_param
+            elif page_int is not None:
+                mask = (df['序号'] == movie_id) & (df['页码'] == page_int)
+            else:
+                mask = df['序号'] == movie_id
             if not mask.any():
                 return jsonify({'success': False, 'message': '电影记录不存在'})
             
@@ -2424,14 +2439,23 @@ def douban_sync():
                 page = douban_page
                 added = 0
                 skipped = 0
+                # 已存在判断：优先按豆瓣URL（唯一键，同名独立）；旧数据无URL回退按名字
+                existing_urls = set()
+                existing_names_set = set()
+                if not df.empty:
+                    if '豆瓣链接' in df.columns:
+                        existing_urls = {str(u) for u in df['豆瓣链接'].dropna() if str(u).strip()}
+                    existing_names_set = {str(n) for n in df['电影名'].dropna() if str(n).strip()}
 
                 for m in movies:
                     name = m.get('title', '').strip()
+                    url = (m.get('url') or '').strip()
                     if not name:
                         continue
 
-                    # 检查是否已存在
-                    if not df.empty and name in df['电影名'].values:
+                    # 检查是否已存在（URL优先；无URL数据按名字，同名会跳过——
+                    # 后台全量同步会按URL重新独立入库）
+                    if (url and url in existing_urls) or (not url and name in existing_names_set):
                         skipped += 1
                         continue
 
@@ -2447,8 +2471,12 @@ def douban_sync():
                         '电影名': name,
                         '磁力链接': '',
                         '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S'),
+                        '豆瓣链接': url,
                     }
                     df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
+                    if url:
+                        existing_urls.add(url)
+                    existing_names_set.add(name)
                     added += 1
 
                 save_movies(df)
@@ -2539,16 +2567,17 @@ def _do_douban_auto_sync():
             # - 豆瓣中的电影严格按豆瓣顺序排列（页码 = i//15+1，序号 = i%15+1）
             # - 已存在电影的磁力链接和保存时间会被保留
             # - 本地存在但豆瓣已不存在的电影（移除标记/手动添加）直接删除，列表严格等于豆瓣
+            # - 唯一键为豆瓣subject URL：同名电影（翻拍/重映/同名不同片）独立入库互不覆盖
             with data_lock:
                 df = load_movies()
                 added = 0
                 skipped = 0
                 per_page = 15
 
-                # 建立现有电影映射：电影名 → {磁力链接, 保存时间}
-                # 用于保留已转存电影的磁力链接等信息。
-                # 同名多条时保留有磁力链接的那条；都有/都没有则保留最新（保存时间大）
-                existing_map: Dict[str, Dict[str, str]] = {}
+                # 建立现有电影映射：豆瓣URL → {磁力链接, 保存时间, 电影名}；
+                # 旧数据无URL的按电影名建回退映射（名字→第一条记录），本次同步后即全部有URL
+                existing_by_url: Dict[str, Dict[str, str]] = {}
+                existing_by_name: Dict[str, Dict[str, str]] = {}
                 if not df.empty:
                     for _, row in df.iterrows():
                         name = str(row['电影名']) if not pd.isna(row['电影名']) else ''
@@ -2556,37 +2585,43 @@ def _do_douban_auto_sync():
                             continue
                         magnet = str(row['磁力链接']) if not pd.isna(row['磁力链接']) else ''
                         save_time = str(row['保存时间']) if not pd.isna(row['保存时间']) else ''
-                        old = existing_map.get(name)
-                        if old is None:
-                            existing_map[name] = {'磁力链接': magnet, '保存时间': save_time}
-                        else:
-                            # 合并：优先保留磁力链接；两边都有磁链则保留保存时间新的
-                            if not old['磁力链接'] and magnet:
-                                existing_map[name] = {'磁力链接': magnet, '保存时间': save_time}
-                            elif old['磁力链接'] and magnet and save_time > old['保存时间']:
-                                existing_map[name] = {'磁力链接': magnet, '保存时间': save_time}
-                            elif not old['磁力链接'] and not magnet and save_time > old['保存时间']:
-                                existing_map[name] = {'磁力链接': magnet, '保存时间': save_time}
+                        url = str(row['豆瓣链接']) if '豆瓣链接' in row.index and not pd.isna(row['豆瓣链接']) else ''
+                        rec = {'磁力链接': magnet, '保存时间': save_time, '电影名': name}
+                        if url:
+                            existing_by_url[url] = rec
+                        elif name not in existing_by_name:
+                            # 同名旧数据（无URL）：优先保留有磁链的，否则保留最新的
+                            old = existing_by_name.get(name)
+                            if old is None or (not old['磁力链接'] and magnet) or \
+                               (not old['磁力链接'] and not magnet and save_time > old['保存时间']):
+                                existing_by_name[name] = rec
 
                 new_rows: List[Dict[str, Any]] = []
-                seen_names: set = set()  # 豆瓣同名条目只入库一次（合并到最新标记的那条）
+                seen_urls: set = set()
 
-                # 严格按豆瓣顺序重建：只保留豆瓣列表中的电影
+                # 严格按豆瓣顺序重建：同名独立入库（每条豆瓣标记一个条目）
                 for i, m in enumerate(movies):
+                    url = (m.get('url') or '').strip()
                     name = m.get('title', '').strip()
-                    if not name or name in seen_names:
+                    if not url or url in seen_urls:
                         continue
-                    seen_names.add(name)
+                    seen_urls.add(url)
 
                     page = (i // per_page) + 1
                     seq = (i % per_page) + 1  # 页内序号从1开始
 
-                    if name in existing_map:
+                    # 优先按URL匹配（新数据）；回退按名字匹配（旧数据迁移，一次性）
+                    rec = existing_by_url.get(url)
+                    if rec is not None:
                         skipped += 1
-                        # 磁力链接/保存时间用合并后的记录；
-                        # 该记录无磁链时（用户从没填过），由最新豆瓣条目覆盖
-                        magnet = existing_map[name]['磁力链接']
-                        save_time = existing_map[name]['保存时间']
+                        magnet = rec['磁力链接']
+                        save_time = rec['保存时间']
+                        if rec['电影名'] != name:
+                            name = rec['电影名']  # 保留用户可能改过的电影名
+                    elif name in existing_by_name:
+                        skipped += 1
+                        magnet = existing_by_name[name]['磁力链接']
+                        save_time = existing_by_name[name]['保存时间']
                     else:
                         added += 1
                         magnet = ''
@@ -2598,17 +2633,24 @@ def _do_douban_auto_sync():
                         '电影名': name,
                         '磁力链接': magnet,
                         '保存时间': save_time,
+                        '豆瓣链接': url,
                     })
 
                 # 豆瓣中不存在的本地电影 → 删除（不追加）
-                removed = len(existing_map) - skipped
+                removed = (len(existing_by_url) + len(existing_by_name)) - skipped
                 if removed > 0:
-                    removed_names = [n for n in existing_map if n not in seen_names]
-                    logger.info(f'[豆瓣自动同步] 删除{removed}部豆瓣已不存在的电影: {removed_names[:10]}')
+                    kept_urls = seen_urls
+                    kept_names = {r['电影名'] for r in new_rows}
+                    removed_items = [
+                        f"{v['电影名']}" for k, v in existing_by_url.items() if k not in kept_urls
+                    ] + [
+                        f"{v['电影名']}(旧数据)" for k, v in existing_by_name.items() if k not in kept_names
+                    ]
+                    logger.info(f'[豆瓣自动同步] 删除{removed}部豆瓣已不存在的电影: {removed_items[:10]}')
 
-                new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间'])
+                new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接'])
 
-                # 判断是否需要保存：有新增/删除 或 顺序/页码发生变化
+                # 判断是否需要保存：有新增/删除 或 顺序/页码/URL发生变化
                 need_save = added > 0 or removed > 0
                 if not need_save and not df.empty:
                     if len(df) != len(new_df):
@@ -2836,16 +2878,21 @@ def movies_detail(movie_id: int):
         if df.empty:
             return jsonify({'success': False, 'message': '数据为空'}), 404
 
-        # 序号是页内序号（每页从1开始），必须配合页码才能唯一定位电影
-        # 兼容旧调用：未传 page 时取第一个匹配（行为同旧版），传了 page 则精确匹配
+        # 定位优先级：豆瓣URL（唯一键，同名不串）> (序号,页码) > 序号
+        # 序号是页内序号（每页从1开始），同名独立入库后仅靠(序号,页码)仍可能撞车，
+        # 前端已传 douban_url 时优先按URL精确定位
+        url_param = request.args.get('url', '').strip()
         page_param = request.args.get('page', '').strip()
-        if page_param:
+        row = pd.DataFrame()
+        if url_param and '豆瓣链接' in df.columns:
+            row = df[df['豆瓣链接'].astype(str) == url_param]
+        if row.empty and page_param:
             try:
                 page_num = int(page_param)
                 row = df[(df['序号'] == movie_id) & (df['页码'] == page_num)]
             except (ValueError, TypeError):
                 row = df[df['序号'] == movie_id]
-        else:
+        if row.empty and not url_param:
             row = df[df['序号'] == movie_id]
         if row.empty:
             return jsonify({'success': False, 'message': '电影不存在'}), 404
@@ -2864,6 +2911,7 @@ def movies_detail(movie_id: int):
             'magnet_display': (magnet_str[:50] + '...') if len(magnet_str) > 50 else magnet_str,
             'is_empty': is_empty,
             'save_time': str(r['保存时间']) if not pd.isna(r['保存时间']) else '',
+            'douban_url': str(r['豆瓣链接']) if '豆瓣链接' in r.index and not pd.isna(r['豆瓣链接']) else '',
         }
 
         # 转存历史

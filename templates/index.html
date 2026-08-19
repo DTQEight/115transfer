@@ -304,18 +304,19 @@
                         </thead>
                         <tbody>
                             {% for movie in movies %}
-                            <tr class="movie-row" data-id="{{ movie.id }}">
+                            <tr class="movie-row" data-id="{{ movie.id }}" data-url="{{ movie.douban_url }}">
                                 <td class="drag-handle text-center hide-mobile" style="cursor:grab;">
                                     <i class="bi bi-grip-vertical"></i>
                                 </td>
                                 <td class="text-muted">{{ movie.id }}</td>
                                 <td class="hide-mobile"><span class="badge-page">{{ movie.page }}</span></td>
-                                <td class="fw-medium" style="cursor:pointer;" onclick="showMovieDetail({{ movie.id }}, {{ movie.page }})" title="点击查看详情">{{ movie.name }}</td>
+                                <td class="fw-medium" style="cursor:pointer;" onclick="showMovieDetail({{ movie.id }}, {{ movie.page }}, '{{ movie.douban_url }}')" title="点击查看详情">{{ movie.name }}</td>
                                 <td>
                                     <input type="text" class="form-control form-control-sm magnet-input {% if movie.is_empty %}border-warning{% endif %}"
                                            value="{{ movie.magnet }}"
                                            data-id="{{ movie.id }}"
                                            data-page="{{ movie.page }}"
+                                           data-url="{{ movie.douban_url }}"
                                            placeholder="输入磁力链接"
                                            onblur="saveMagnetInline(this)"
                                            ondblclick="copyMagnet({{ movie.id }}, {{ movie.page }})"
@@ -328,10 +329,11 @@
                                                 data-id="{{ movie.id }}"
                                                 data-page="{{ movie.page }}"
                                                 data-name="{{ movie.name }}"
-                                                data-magnet="{{ movie.magnet }}">
+                                                data-magnet="{{ movie.magnet }}"
+                                                data-url="{{ movie.douban_url }}">
                                             <i class="bi bi-pencil"></i>
                                         </button>
-                                        <button onclick="deleteMovie({{ movie.id }}, {{ movie.page }})" 
+                                        <button onclick="deleteMovie({{ movie.id }}, {{ movie.page }}, '{{ movie.douban_url }}')"
                                                 class="btn btn-outline-danger action-btn">
                                             <i class="bi bi-trash"></i>
                                         </button>
@@ -558,7 +560,7 @@
         // ==================== 电影详情侧滑面板 ====================
         var _detailOffcanvas = null;
 
-        async function showMovieDetail(movieId, page) {
+        async function showMovieDetail(movieId, page, doubanUrl) {
             var content = document.getElementById('detailContent');
             if (!content) return;
 
@@ -572,8 +574,10 @@
             _detailOffcanvas.show();
 
             try {
-                // 同时传 movieId 和 page，避免页内序号在不同页码间冲突导致返回错误电影
-                var resp = await apiFetch('/movies/detail/' + movieId + '?page=' + encodeURIComponent(page));
+                // URL 是唯一键（同名电影不串）；回退 (movieId, page) 定位
+                var qs = 'page=' + encodeURIComponent(page);
+                if (doubanUrl) qs += '&url=' + encodeURIComponent(doubanUrl);
+                var resp = await apiFetch('/movies/detail/' + movieId + '?' + qs);
                 var result = await resp.json();
                 if (!result.success) {
                     content.innerHTML = '<div class="alert alert-danger m-3">' + escapeHtml(result.message || '加载失败') + '</div>';
@@ -613,6 +617,9 @@
             }
             html += '<div class="text-muted small mb-1">页码: 第' + escapeHtml(m.page) + '页 / 序号: ' + escapeHtml(m.id) + '</div>';
             html += '<div class="text-muted small mb-1">保存时间: ' + escapeHtml(m.save_time) + '</div>';
+            if (m.douban_url) {
+                html += '<div class="small mb-1"><a href="' + escapeHtml(m.douban_url) + '" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right me-1"></i>豆瓣页面</a></div>';
+            }
             html += '</div>';
             html += '</div>';
 
@@ -627,13 +634,14 @@
             // 操作按钮区
             html += '<div class="p-3 border-bottom">';
             html += '<div class="d-flex flex-wrap gap-2">';
-            html += '<button class="btn btn-sm btn-outline-primary" onclick="showEditModal(' + m.id + ', ' + m.page + ', \'' + escapeHtml(m.name).replace(/'/g, "\\'") + '\', \'' + escapeHtml(m.magnet).replace(/'/g, "\\'") + '\')"><i class="bi bi-pencil me-1"></i>编辑</button>';
+            var urlArg = m.douban_url ? ", '" + escapeHtml(m.douban_url).replace(/'/g, "\\'") + "'" : '';
+            html += '<button class="btn btn-sm btn-outline-primary" onclick="showEditModal(' + m.id + ', ' + m.page + ', \'' + escapeHtml(m.name).replace(/'/g, "\\'") + '\', \'' + escapeHtml(m.magnet).replace(/'/g, "\\'") + '\'' + urlArg + ')"><i class="bi bi-pencil me-1"></i>编辑</button>';
             html += '<button class="btn btn-sm btn-outline-info" onclick="searchMagnetForDetail(' + m.id + ', ' + m.page + ', \'' + escapeHtml(m.name).replace(/'/g, "\\'") + '\')"><i class="bi bi-magnet me-1"></i>搜索磁链</button>';
             if (!m.is_empty) {
                 html += '<button class="btn btn-sm btn-outline-success" onclick="transferTo115(' + m.id + ', ' + m.page + ')"><i class="bi bi-cloud-upload me-1"></i>转存115</button>';
                 html += '<button class="btn btn-sm btn-outline-secondary" onclick="copyDetailMagnet(' + m.id + ', ' + m.page + ')"><i class="bi bi-clipboard me-1"></i>复制磁链</button>';
             }
-            html += '<button class="btn btn-sm btn-outline-danger" onclick="deleteMovie(' + m.id + ', ' + m.page + ')"><i class="bi bi-trash me-1"></i>删除</button>';
+            html += '<button class="btn btn-sm btn-outline-danger" onclick="deleteMovie(' + m.id + ', ' + m.page + urlArg + ')"><i class="bi bi-trash me-1"></i>删除</button>';
             html += '</div>';
             html += '</div>';
 
@@ -775,6 +783,7 @@
         async function saveMagnetInline(input) {
             var id = input.dataset.id;
             var page = input.dataset.page;
+            var url = input.dataset.url || '';
             var magnet = input.value.trim();
             var originalValue = input.defaultValue;
 
@@ -786,10 +795,12 @@
             var name = row ? row.querySelector('.fw-medium').textContent.trim() : '';
 
             try {
+                var body = `page=${page}&name=${encodeURIComponent(name)}&magnet=${encodeURIComponent(magnet)}`;
+                if (url) body += `&url=${encodeURIComponent(url)}`;
                 var resp = await apiFetch('/update/' + id, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: `page=${page}&name=${encodeURIComponent(name)}&magnet=${encodeURIComponent(magnet)}`
+                    body: body
                 });
                 var result = await resp.json();
                 if (result.success) {

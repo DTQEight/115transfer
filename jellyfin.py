@@ -183,22 +183,31 @@ def build_in_library_set(movies, jellyfin_items):
         set of 豆瓣URL
     """
     jf_imdb_ids = {it['imdb_id'] for it in jellyfin_items if it.get('imdb_id')}
+    local_imdb_ids = {str(m.get('imdb_id') or '').strip() for m in movies if str(m.get('imdb_id') or '').strip()}
 
     in_lib = set()
     imdb_n = 0
-    unmatched = []
+    unmatched_local = []
     for m in movies:
         m_imdb = str(m.get('imdb_id') or '').strip()
         if m_imdb and m_imdb in jf_imdb_ids:
             in_lib.add(m.get('url', ''))
             imdb_n += 1
         else:
-            unmatched.append((m.get('title', ''), m_imdb))
+            unmatched_local.append((m.get('title', ''), m_imdb))
 
-    logger.info(f'[Jellyfin] 匹配完成：IMDb{imdb_n} 未匹配{len(unmatched)}/{len(movies)}'
-                + (f'（Jellyfin有IMDb {len(jf_imdb_ids)}条）' if jf_imdb_ids else '（Jellyfin条目无IMDb编号）'))
-    for title, imdb in unmatched[:20]:
-        logger.info(f'[Jellyfin] 未匹配: 本地="{title}" IMDb="{imdb or "无"}"')
+    # 诊断：Jellyfin 侧未对应任何本地电影的条目（在 Jellyfin 库里但豆瓣没看过/未回填IMDb/是剧集）
+    jf_no_imdb = [it for it in jellyfin_items if not it.get('imdb_id')]
+    jf_unmatched = [it for it in jellyfin_items
+                    if it.get('imdb_id') and it['imdb_id'] not in local_imdb_ids]
+
+    logger.info(f'[Jellyfin] 匹配完成：本地命中{imdb_n}/{len(movies)}，'
+                f'Jellyfin共{len(jellyfin_items)}条(有IMDb{len(jf_imdb_ids)} 无IMDb{len(jf_no_imdb)})，'
+                f'Jellyfin侧未对应本地电影{len(jf_unmatched)}条')
+    for title, imdb in unmatched_local[:20]:
+        logger.info(f'[Jellyfin] 本地未匹配: "{title}" IMDb="{imdb or "无"}"')
+    for it in jf_unmatched[:20]:
+        logger.info(f'[Jellyfin] Jellyfin侧未对应本地: "{it["title"]}" IMDb="{it["imdb_id"]}"')
     return in_lib
 
 

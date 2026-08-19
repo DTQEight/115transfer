@@ -24,6 +24,99 @@
         [data-bs-theme="dark"] body {
             background: #1a1a2e;
         }
+        /* 待办记事本悬浮球 */
+        .notes-fab {
+            position: fixed;
+            right: 22px;
+            bottom: 22px;
+            z-index: 1050;
+            width: 52px;
+            height: 52px;
+            border-radius: 50%;
+            border: none;
+            background: var(--primary-gradient);
+            color: #fff;
+            font-size: 1.35rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 18px rgba(102, 126, 234, 0.55);
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .notes-fab:hover {
+            transform: scale(1.08);
+            box-shadow: 0 6px 24px rgba(102, 126, 234, 0.7);
+        }
+        .notes-fab-badge {
+            position: absolute;
+            top: -4px;
+            right: -4px;
+            min-width: 20px;
+            height: 20px;
+            padding: 0 5px;
+            border-radius: 10px;
+            background: #fd7e14;
+            color: #fff;
+            font-size: 0.7rem;
+            font-weight: 700;
+            line-height: 20px;
+            text-align: center;
+            box-shadow: 0 0 0 2px rgba(255,255,255,0.85);
+        }
+        [data-bs-theme="dark"] .notes-fab-badge {
+            box-shadow: 0 0 0 2px #1a1a2e;
+        }
+        /* 待办列表项 */
+        .note-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid rgba(0,0,0,0.06);
+            margin-bottom: 8px;
+            background: var(--bs-body-bg, #fff);
+        }
+        [data-bs-theme="dark"] .note-item {
+            border-color: rgba(255,255,255,0.08);
+        }
+        .note-item .form-check-input {
+            margin-top: 3px;
+            flex-shrink: 0;
+        }
+        .note-item .note-text {
+            flex-grow: 1;
+            word-break: break-all;
+            font-size: 0.9rem;
+        }
+        .note-item.done .note-text {
+            text-decoration: line-through;
+            opacity: 0.55;
+        }
+        .note-item .btn-del-note {
+            border: none;
+            background: none;
+            color: #dc3545;
+            padding: 0 2px;
+            flex-shrink: 0;
+            opacity: 0.5;
+        }
+        .note-item .btn-del-note:hover {
+            opacity: 1;
+        }
+        @media (max-width: 576px) {
+            .notes-fab {
+                right: 14px;
+                bottom: 14px;
+                width: 46px;
+                height: 46px;
+                font-size: 1.15rem;
+            }
+            #notesOffcanvas {
+                width: 92% !important;
+            }
+        }
         .navbar-custom {
             background: var(--primary-gradient);
             box-shadow: 0 2px 20px rgba(102, 126, 234, 0.4);
@@ -358,10 +451,42 @@
 
     <div class="container pb-5">
         {% block content %}{% endblock %}
-        
+
         <footer class="mt-5 text-center">
             <p><i class="bi bi-tag me-1"></i>版本: {{ version }}</p>
         </footer>
+    </div>
+
+    <!-- 待办记事本：悬浮球（全页面固定） -->
+    <button class="notes-fab" id="notesFab" title="待办记事本"
+            data-bs-toggle="offcanvas" data-bs-target="#notesOffcanvas">
+        <i class="bi bi-journal-check"></i>
+        <span class="notes-fab-badge d-none" id="notesFabBadge">0</span>
+    </button>
+
+    <!-- 待办记事本：侧滑面板 -->
+    <div class="offcanvas offcanvas-end" tabindex="-1" id="notesOffcanvas" style="width: 380px;">
+        <div class="offcanvas-header">
+            <h5 class="offcanvas-title"><i class="bi bi-journal-check me-2"></i>待办记事本</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
+        </div>
+        <div class="offcanvas-body d-flex flex-column p-0">
+            <div class="p-3 border-bottom">
+                <div class="input-group">
+                    <input type="text" class="form-control" id="noteInput" placeholder="记点什么...（Enter 添加）" maxlength="500">
+                    <button class="btn btn-primary" onclick="addNote()"><i class="bi bi-plus-lg"></i></button>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                    <span class="text-muted small" id="noteStats"></span>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="clearDoneNotes()">
+                        <i class="bi bi-eraser me-1"></i>清除已完成
+                    </button>
+                </div>
+            </div>
+            <div class="flex-grow-1 overflow-auto p-3" id="notesList">
+                <p class="text-muted text-center">加载中...</p>
+            </div>
+        </div>
     </div>
 
     <!-- 编辑模态框 -->
@@ -590,6 +715,128 @@
             }
             return resp;
         }
+
+        // ==================== 待办记事本 ====================
+        // 服务端存储（DATA_DIR/notes.json），换设备待办也跟着账号走
+        var _notes = [];        // [{text: '...', done: false}, ...]
+        var _notesLoaded = false;
+        var _notesSaving = false;
+
+        async function loadNotes() {
+            try {
+                const resp = await apiFetch('/api/notes');
+                const result = await resp.json();
+                if (result.success) {
+                    _notes = result.notes || [];
+                    _notesLoaded = true;
+                    renderNotes();
+                }
+            } catch (e) {
+                document.getElementById('notesList').innerHTML =
+                    '<p class="text-danger text-center small">加载失败: ' + escapeHtml(e.message) + '</p>';
+            }
+        }
+
+        async function saveNotes(silent) {
+            if (_notesSaving) return;
+            _notesSaving = true;
+            try {
+                const resp = await apiFetch('/api/notes', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({notes: _notes})
+                });
+                const result = await resp.json();
+                if (!result.success && !silent) {
+                    showToast(result.message || '保存失败', 'danger');
+                }
+            } catch (e) {
+                if (!silent) showToast('待办保存失败: ' + e.message, 'danger');
+            } finally {
+                _notesSaving = false;
+                renderNotes();
+            }
+        }
+
+        function addNote() {
+            const input = document.getElementById('noteInput');
+            const text = input.value.trim();
+            if (!text) return;
+            if (_notes.length >= 200) {
+                showToast('待办数量已达上限200条', 'warning');
+                return;
+            }
+            _notes.unshift({text: text, done: false});
+            input.value = '';
+            saveNotes();
+        }
+
+        function toggleNote(idx) {
+            if (idx < 0 || idx >= _notes.length) return;
+            _notes[idx].done = !_notes[idx].done;
+            saveNotes(true);
+        }
+
+        function deleteNote(idx) {
+            if (idx < 0 || idx >= _notes.length) return;
+            _notes.splice(idx, 1);
+            saveNotes(true);
+        }
+
+        function clearDoneNotes() {
+            const doneCount = _notes.filter(n => n.done).length;
+            if (doneCount === 0) {
+                showToast('没有已完成的待办', 'info');
+                return;
+            }
+            _notes = _notes.filter(n => !n.done);
+            saveNotes();
+        }
+
+        function renderNotes() {
+            const listEl = document.getElementById('notesList');
+            const statsEl = document.getElementById('noteStats');
+            const badgeEl = document.getElementById('notesFabBadge');
+            if (!listEl) return;
+
+            const total = _notes.length;
+            const undone = _notes.filter(n => !n.done).length;
+            statsEl.textContent = total ? `共 ${total} 条 / 待办 ${undone} 条` : '';
+
+            // 悬浮球徽标：仅显示未完成数量
+            if (undone > 0) {
+                badgeEl.textContent = undone > 99 ? '99+' : undone;
+                badgeEl.classList.remove('d-none');
+            } else {
+                badgeEl.classList.add('d-none');
+            }
+
+            if (total === 0) {
+                listEl.innerHTML = '<p class="text-muted text-center small">还没有待办，记点什么吧</p>';
+                return;
+            }
+
+            let html = '';
+            _notes.forEach(function(n, i) {
+                html += '<div class="note-item' + (n.done ? ' done' : '') + '">';
+                html += '<input type="checkbox" class="form-check-input mt-1" ' + (n.done ? 'checked' : '') + ' onchange="toggleNote(' + i + ')">';
+                html += '<span class="note-text">' + escapeHtml(n.text) + '</span>';
+                html += '<button class="btn-del-note" onclick="deleteNote(' + i + ')" title="删除"><i class="bi bi-x-lg"></i></button>';
+                html += '</div>';
+            });
+            listEl.innerHTML = html;
+        }
+
+        // 首次打开面板时加载；Enter 快速添加
+        document.getElementById('notesOffcanvas').addEventListener('show.bs.offcanvas', function() {
+            if (!_notesLoaded) loadNotes();
+        });
+        document.getElementById('noteInput').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addNote();
+            }
+        });
 
         async function doLogout() {
             const form = document.createElement('form');

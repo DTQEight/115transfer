@@ -43,7 +43,6 @@
                                 <li><i class="bi bi-folder2 text-warning me-1"></i>华语电影</li>
                                 <li><i class="bi bi-folder2 text-warning me-1"></i>外语电影</li>
                                 <li><i class="bi bi-folder2 text-warning me-1"></i>动画电影</li>
-                                <li><i class="bi bi-folder2 text-warning me-1"></i>纪录片</li>
                             </ul>
                         </div>
                         <div class="col-6">
@@ -447,7 +446,7 @@ function renderIdentifiedResults() {
     }
 
     const categories = {
-        '电影': ['华语电影', '外语电影', '动画电影', '纪录片'],
+        '电影': ['华语电影', '外语电影', '动画电影'],
         '电视剧': ['日番', '国漫', '国产剧', '日韩剧', '欧美剧', '综艺', '儿童', '纪录片'],
     };
 
@@ -515,7 +514,7 @@ function renderIdentifiedResults() {
 
 function changePrimary(index, primary) {
     const categories = {
-        '电影': ['华语电影', '外语电影', '动画电影', '纪录片'],
+        '电影': ['华语电影', '外语电影', '动画电影'],
         '电视剧': ['日番', '国漫', '国产剧', '日韩剧', '欧美剧', '综艺', '儿童', '纪录片'],
     };
     identifiedResults[index].primary = primary;

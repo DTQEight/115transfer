@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, R
 from flask_cors import CORS
 import pandas as pd
 import os
+import json
 import secrets
 import shutil
 import glob as glob_mod
@@ -299,6 +300,75 @@ def logout() -> Response:
 @app.route('/health')
 def health() -> Response:
     return jsonify({'status': 'ok', 'version': VERSION})
+
+
+# ==================== 待办记事本 ====================
+# 服务端存储：跟随账号而非浏览器，换设备待办也在
+NOTES_FILE: str = os.path.join(DATA_DIR, 'notes.json')
+_notes_lock: threading.Lock = threading.Lock()
+
+
+def _load_notes() -> List[Dict[str, Any]]:
+    """读取待办列表（损坏时重置为空，不影响主流程）"""
+    with _notes_lock:
+        if os.path.exists(NOTES_FILE):
+            try:
+                with open(NOTES_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    return data
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f'[待办] 文件读取失败，重置为空: {e}')
+    return []
+
+
+def _save_notes(notes: List[Dict[str, Any]]) -> None:
+    with _notes_lock:
+        try:
+            with open(NOTES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(notes, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            logger.error(f'[待办] 保存失败: {e}')
+            raise
+
+
+def _normalize_note(note: Any) -> Optional[Dict[str, Any]]:
+    """校验单条待办：text 必须是非空字符串且长度合理，done 必须是布尔"""
+    if not isinstance(note, dict):
+        return None
+    text = note.get('text')
+    if not isinstance(text, str) or not text.strip() or len(text) > 500:
+        return None
+    done = note.get('done', False)
+    if not isinstance(done, bool):
+        done = bool(done)
+    return {'text': text.strip(), 'done': done}
+
+
+@app.route('/api/notes', methods=['GET'])
+def notes_get() -> Response:
+    return jsonify({'success': True, 'notes': _load_notes()})
+
+
+@app.route('/api/notes', methods=['POST'])
+def notes_save() -> Response:
+    """整体保存待办列表（前端本地编辑，失焦/变更时整体提交）"""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get('notes'), list):
+        return jsonify({'success': False, 'message': '数据格式错误'}), 400
+    if len(data['notes']) > 200:
+        return jsonify({'success': False, 'message': '待办数量超过上限200条'}), 400
+    notes: List[Dict[str, Any]] = []
+    for note in data['notes']:
+        normalized = _normalize_note(note)
+        if normalized is not None:
+            notes.append(normalized)
+    try:
+        _save_notes(notes)
+        return jsonify({'success': True, 'count': len(notes)})
+    except OSError as e:
+        return jsonify({'success': False, 'message': f'保存失败: {e}'}), 500
+
 
 def load_movies() -> pd.DataFrame:
     if not os.path.exists(EXCEL_FILE):

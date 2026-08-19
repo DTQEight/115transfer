@@ -8,10 +8,6 @@ CATEGORY_CONFIG = {
                 'condition': lambda m: 16 in (m.get('genre_ids') or []),
             },
             {
-                'name': '纪录片',
-                'condition': lambda m: 99 in (m.get('genre_ids') or []),
-            },
-            {
                 'name': '华语电影',
                 'condition': lambda m: (m.get('original_language') or '') in ('zh', 'cn', 'bo', 'za')
                     or any(c in ('CN', 'HK', 'TW') for c in (m.get('production_countries') or [])),
@@ -88,6 +84,6 @@ def classify(media_info):
 def get_all_categories():
     """获取所有分类配置"""
     return {
-        '电影': ['华语电影', '外语电影', '动画电影', '纪录片'],
+        '电影': ['华语电影', '外语电影', '动画电影'],
         '电视剧': ['日番', '国漫', '国产剧', '日韩剧', '欧美剧', '综艺', '儿童', '纪录片'],
     }

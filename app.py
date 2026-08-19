@@ -443,14 +443,11 @@ def jellyfin_libraries() -> Response:
 
 @app.route('/jellyfin/refresh', methods=['POST'])
 def jellyfin_refresh() -> Response:
-    """手动刷新入库状态。
+    """手动刷新入库状态（纯本地IMDb编号比对，同步返回）。
 
-    若存在缺失 IMDB_ID，启动后台线程解析豆瓣详情页（首次较慢，进度见日志），
-    立即返回提示；否则同步比对并返回已入库数量。
+    IMDB_ID 由豆瓣全量同步负责回填，本接口只做本地↔Jellyfin 比对。
     """
-    ret = _refresh_jellyfin_status(resolve_imdb=True)
-    if ret == -2:
-        return jsonify({'success': True, 'message': '已在后台解析IMDb编号并匹配（首次较慢，进度见日志，完成后刷新页面查看✓）'})
+    ret = _refresh_jellyfin_status()
     if ret < 0:
         return jsonify({'success': False, 'message': '刷新失败或未配置Jellyfin，请检查配置和日志'})
     return jsonify({'success': True, 'message': f'刷新完成: {ret}部已入库', 'count': ret})
@@ -461,55 +458,29 @@ def jellyfin_refresh() -> Response:
 _jellyfin_refresh_lock: threading.Lock = threading.Lock()
 
 
-def _refresh_jellyfin_status(resolve_imdb: bool = False) -> int:
+def _refresh_jellyfin_status() -> int:
     """拉取Jellyfin库与本地电影比对，写回"已入库"列。返回已入库数量。
 
+    纯本地比对：用 Excel 里已回填的 IMDB_ID 与 Jellyfin 条目 ProviderIds.Imdb 精确匹配。
+    不在此抓豆瓣详情页——IMDB_ID 的回填由豆瓣全量同步负责（职责分离）。
     未配置Jellyfin时静默返回-1（不报错，不修改数据）。
-    resolve_imdb=True（手动刷新）且存在缺失 IMDB_ID 时，丢后台线程解析豆瓣详情页
-    回填 IMDB_ID 再匹配（避免长请求超时）；返回 -2 表示后台进行中。
-    自动同步走 resolve_imdb=False：用已有 IMDB_ID + 标题前缀立即匹配。
     """
     config = jellyfin.load_config()
     if not config.get('base_url', '').strip() or not decrypt(config.get('api_key', '')):
         return -1
-
-    # 手动刷新且有缺失IMDB_ID → 后台解析，立即返回，避免请求超时
-    if resolve_imdb:
-        with data_lock:
-            df = load_movies()
-        if not df.empty and 'IMDB_ID' in df.columns and _has_missing_ids(df, 'IMDB_ID'):
-            threading.Thread(target=_jellyfin_backfill_worker, daemon=True).start()
-            logger.info('[Jellyfin] 检测到缺失IMDB_ID，启动后台解析豆瓣详情页')
-            return -2
-
-    return _jellyfin_match_and_write()
+    if not _jellyfin_refresh_lock.acquire(blocking=False):
+        logger.info('[Jellyfin] 刷新已在进行中，跳过')
+        return -1
+    try:
+        return _jellyfin_match_and_write()
+    finally:
+        _jellyfin_refresh_lock.release()
 
 
 def _has_missing_ids(df: pd.DataFrame, col: str) -> bool:
     if col not in df.columns:
         return False
     return any(pd.isna(v) or str(v).strip() == '' for v in df[col])
-
-
-def _jellyfin_backfill_worker() -> None:
-    """后台：解析缺失 IMDB_ID（豆瓣详情页，串行+延迟防反爬）→ 重新匹配写回。
-
-    与手动/自动刷新互斥（_jellyfin_refresh_lock 非阻塞，抢不到即跳过）。
-    """
-    if not _jellyfin_refresh_lock.acquire(blocking=False):
-        logger.info('[Jellyfin] 后台解析跳过：已有刷新在进行中')
-        return
-    try:
-        with data_lock:
-            df = load_movies()
-        if df.empty:
-            return
-        _backfill_imdb_ids(df)
-        _jellyfin_match_and_write()
-    except Exception as e:
-        logger.error(f'[Jellyfin] 后台解析匹配失败: {e}')
-    finally:
-        _jellyfin_refresh_lock.release()
 
 
 def _jellyfin_match_and_write() -> int:
@@ -539,64 +510,75 @@ def _jellyfin_match_and_write() -> int:
     return count
 
 
+def _apply_imdb_ids(url_to_imdb: Dict[str, str]) -> int:
+    """按豆瓣链接把 IMDB_ID 合并回写到最新 Excel（不覆盖并发写入的其他列）。
+
+    Returns: 实际写入的行数。
+    """
+    if not url_to_imdb:
+        return 0
+    with data_lock:
+        df = load_movies()
+        if df.empty or 'IMDB_ID' not in df.columns or '豆瓣链接' not in df.columns:
+            return 0
+        n = 0
+        for idx, row in df.iterrows():
+            url = str(row['豆瓣链接']) if pd.notna(row['豆瓣链接']) else ''
+            if url in url_to_imdb:
+                df.at[idx, 'IMDB_ID'] = url_to_imdb[url]
+                n += 1
+        if n:
+            save_movies(df)
+    return n
+
+
 def _backfill_imdb_ids(df: pd.DataFrame) -> None:
     """逐条访问豆瓣详情页解析 IMDb 编号并回写 IMDB_ID 列。
 
-    串行 + 延迟防反爬（豆瓣对高频详情页请求敏感）。已解析的跳过，失败留空下次再试。
-    每50条持久化一次防中途丢失。豆瓣Cookie未配置时静默跳过。
+    由豆瓣全量同步调用（IMDB_ID 回填归属豆瓣同步，与 Jellyfin 入库比对职责分离）。
+    串行 + 0.8s 延迟防反爬。已解析的（含 'N/A' 占位）跳过，失败留空下次再试。
+    每50条持久化一次防中途丢失。按豆瓣链接合并回写，不覆盖 Excel 其他列。
     """
     try:
         import douban as douban_mod
     except Exception as e:
-        logger.warning(f'[Jellyfin] 导入豆瓣模块失败，跳过IMDb解析: {e}')
+        logger.warning(f'[豆瓣] 导入豆瓣模块失败，跳过IMDb解析: {e}')
         return
-    if 'IMDB_ID' not in df.columns:
-        df['IMDB_ID'] = ''
-    # 候选：IMDB_ID 为空且有豆瓣链接的行（按URL去重，同一豆瓣条目只抓一次）
-    seen_url: Dict[str, List[int]] = {}
-    for i, r in df.iterrows():
+    # 候选：IMDB_ID 为空（不含 'N/A' 占位）且有豆瓣链接的，按URL去重
+    seen: set = set()
+    urls = []
+    for _, r in df.iterrows():
         imdb = r['IMDB_ID'] if 'IMDB_ID' in r.index and pd.notna(r['IMDB_ID']) else ''
         url = str(r['豆瓣链接']) if '豆瓣链接' in r.index and pd.notna(r['豆瓣链接']) else ''
-        if (pd.isna(imdb) or str(imdb).strip() == '') and url:
-            seen_url.setdefault(url, []).append(i)
-    if not seen_url:
+        if url and str(imdb).strip() == '' and url not in seen:
+            seen.add(url)
+            urls.append(url)
+    if not urls:
         return
-    urls = list(seen_url.keys())
-    logger.info(f'[Jellyfin] 开始解析IMDb编号: {len(urls)}个豆瓣详情页待抓取')
+    logger.info(f'[豆瓣] 开始解析IMDb编号: {len(urls)}个详情页待抓取')
     import time as _time
-    resolved = 0
-    failed = 0
+    url_to_imdb: Dict[str, str] = {}
+    resolved = failed = 0
     for n, url in enumerate(urls, 1):
         meta, err = douban_mod.fetch_movie_meta(url)
         if err:
             failed += 1
             if 'Cookie' in err:
-                logger.warning(f'[Jellyfin] 豆瓣Cookie失效，中止IMDb解析: {err}')
+                logger.warning(f'[豆瓣] Cookie失效，中止IMDb解析: {err}')
                 break
         else:
             imdb_id = meta.get('imdb_id', '')
+            # 无IMDb编号置 'N/A' 占位，下次同步跳过，避免反复抓取国产片
+            url_to_imdb[url] = imdb_id if imdb_id else 'N/A'
             if imdb_id:
-                for i in seen_url[url]:
-                    df.at[i, 'IMDB_ID'] = imdb_id
                 resolved += 1
-            else:
-                # 豆瓣详情页无IMDb编号（多见于国产片），置占位避免反复抓取
-                for i in seen_url[url]:
-                    df.at[i, 'IMDB_ID'] = 'N/A'
         if n % 50 == 0:
-            logger.info(f'[Jellyfin] IMDb解析进度: {n}/{len(urls)}（成功{resolved}）')
-            try:
-                with data_lock:
-                    save_movies(df)
-            except Exception as e:
-                logger.warning(f'[Jellyfin] IMDb回写暂存失败: {e}')
+            logger.info(f'[豆瓣] IMDb解析进度: {n}/{len(urls)}（成功{resolved}）')
+            _apply_imdb_ids(url_to_imdb)
+            url_to_imdb = {}
         _time.sleep(0.8)  # 防反爬
-    logger.info(f'[Jellyfin] IMDb解析完成: 成功{resolved}/{len(urls)}，失败{failed}')
-    try:
-        with data_lock:
-            save_movies(df)
-    except Exception as e:
-        logger.warning(f'[Jellyfin] IMDb回写持久化失败: {e}')
+    logger.info(f'[豆瓣] IMDb解析完成: 成功{resolved}/{len(urls)}，失败{failed}')
+    _apply_imdb_ids(url_to_imdb)  # 写入剩余
 
 
 def load_movies() -> pd.DataFrame:
@@ -2918,6 +2900,17 @@ def _do_douban_auto_sync():
                     logger.info(f'[豆瓣自动同步] 数据库已重建，共{len(new_rows)}部（豆瓣{len(movies)}部，删除{removed}部）')
                 else:
                     logger.info('[豆瓣自动同步] 顺序已一致，无需更新')
+
+            # 回填缺失的 IMDB_ID（抓豆瓣详情页）——IMDB_ID 回填归属豆瓣同步
+            # 首次全量较慢（每部0.8s），之后仅新增电影需回填；'N/A' 占位的不重抓
+            try:
+                with data_lock:
+                    _df_for_imdb = load_movies()
+                if not _df_for_imdb.empty and _has_missing_ids(_df_for_imdb, 'IMDB_ID'):
+                    logger.info('[豆瓣自动同步] 检测到缺失 IMDB_ID，开始抓取豆瓣详情页回填')
+                    _backfill_imdb_ids(_df_for_imdb)
+            except Exception as imdb_err:
+                logger.warning(f'[豆瓣自动同步] IMDB_ID回填失败（不影响同步）: {imdb_err}')
 
             result_msg = f'成功: 新增{added}部，跳过{skipped}部（已存在），删除{removed}部，共{len(movies)}部'
             logger.info(f'[豆瓣自动同步] {result_msg}')

@@ -1317,9 +1317,8 @@
                 const resp = await apiFetch('/jellyfin/refresh', { method: 'POST' });
                 const result = await resp.json();
                 showToast(result.message, result.success ? 'success' : 'danger');
-                if (result.success && !(result.message || '').includes('后台解析')) {
-                    // 同步比对完成：刷新当前页以更新 ✓ 标记
-                    // 后台解析中则不自动刷页（解析未完成，刷了也看不到最新结果）
+                if (result.success) {
+                    // 纯本地IMDb比对，同步完成，刷新页面看 ✓ 标记
                     setTimeout(() => window.location.reload(), 800);
                 }
             } catch (e) {

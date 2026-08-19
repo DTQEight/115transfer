@@ -297,8 +297,11 @@ def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
 
     if incomplete_reason:
         return all_movies, f'拉取不完整(已获取{len(all_movies)}部): {incomplete_reason}'
-    if total is not None and len(all_movies) < total and pages >= max_pages:
-        return all_movies, f'达到最大页数{max_pages}，列表可能不完整(已获取{len(all_movies)}/{total}部)'
+    if total is not None and len(all_movies) < total:
+        # 拉取量 < 页面报告总数：豆瓣Cookie失效时按游客处理，collect列表
+        # 只给前14页(208部)就返回空页，页面头部仍显示真实总数
+        return all_movies, (f'拉取不完整: 已获取{len(all_movies)}部，豆瓣报告共{total}部。'
+                            f'豆瓣Cookie可能已失效，请到网页端重新配置Cookie')
     return all_movies, None
 
 

@@ -119,7 +119,7 @@
 
         <form action="/search" method="get" class="mb-4">
             <div class="input-group search-box">
-                <input type="text" name="keyword" id="searchInput" class="form-control" placeholder="搜索电影名... (Ctrl+Shift+F)" value="">
+                <input type="text" name="keyword" id="searchInput" class="form-control" placeholder="搜索电影名... (Ctrl+Shift+F)" value="" autocomplete="off">
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-search me-1"></i>搜索
                 </button>
@@ -226,7 +226,7 @@
                             {% endfor %}
                         </select>
                         <div class="input-group input-group-sm" style="width: 150px;">
-                            <input type="number" id="goPage" class="form-control" placeholder="跳转页码">
+                            <input type="number" id="goPage" class="form-control" placeholder="跳转页码" autocomplete="off">
                             <button onclick="goToPage()" class="btn btn-outline-secondary">
                                 <i class="bi bi-arrow-right"></i>
                             </button>
@@ -318,6 +318,8 @@
                                            data-page="{{ movie.page }}"
                                            data-url="{{ movie.douban_url }}"
                                            placeholder="输入磁力链接"
+                                           autocomplete="off"
+                                           readonly onfocus="this.removeAttribute('readonly')"
                                            onblur="saveMagnetInline(this)"
                                            ondblclick="copyMagnet({{ movie.id }}, {{ movie.page }})"
                                            onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
@@ -398,7 +400,7 @@
                     </div>
                     <div class="modal-body">
                         <div class="input-group mb-3">
-                            <input type="text" id="magnetSearchQuery" class="form-control" onkeydown="if(event.key==='Enter'){searchForumMagnet();}">
+                            <input type="text" id="magnetSearchQuery" class="form-control" autocomplete="off" onkeydown="if(event.key==='Enter'){searchForumMagnet();}">
                             <button class="btn btn-primary" onclick="searchForumMagnet()">
                                 <i class="bi bi-search me-1"></i>搜索
                             </button>

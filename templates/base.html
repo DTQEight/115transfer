@@ -987,6 +987,43 @@
         </div>
     </div>
 
+    <!-- TMDB手动识别模态框 -->
+    <div class="modal fade" id="tmdbPickerModal" tabindex="-1" aria-labelledby="tmdbPickerModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="tmdbPickerModalLabel">
+                        <i class="bi bi-search me-2" style="color:#0ea5e9"></i>手动识别 TMDB
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3 d-flex gap-2 align-items-end flex-wrap">
+                        <div class="flex-grow-1" style="min-width:200px">
+                            <label class="form-label small text-muted">电影名 <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="tmdbSearchName" placeholder="例如：无间道">
+                        </div>
+                        <div style="width:120px">
+                            <label class="form-label small text-muted">年份（可选）</label>
+                            <input type="number" class="form-control" id="tmdbSearchYear" placeholder="2002">
+                        </div>
+                        <button id="tmdbSearchBtn" class="btn btn-primary" onclick="runTmdbSearch()">
+                            <i class="bi bi-search me-1"></i>搜索
+                        </button>
+                        <button class="btn btn-outline-danger" onclick="clearCurrentTmdbId()" id="tmdbClearBtn" title="清除已手动填的TMDB ID">
+                            <i class="bi bi-trash me-1"></i>清除
+                        </button>
+                    </div>
+                    <div id="tmdbSearchStatus" class="text-muted small mb-2"></div>
+                    <div id="tmdbCandidateGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
     <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toastContainer"></div>
@@ -2015,9 +2052,14 @@
             hideLoading();
         }
 
+        var _currentDetailCtx = null;  // {id, page, url, name}
+
         async function showMovieDetail(movieId, page, doubanUrl) {
             var content = document.getElementById('detailContent');
             if (!content) return;
+
+            // 先把当前电影上下文存下（TMDB手动识别模态要用）
+            _currentDetailCtx = { id: movieId, page: page, url: doubanUrl || '', name: '' };
 
             content.className = 'd-flex justify-content-center align-items-center';
             content.style.minHeight = '200px';
@@ -2039,6 +2081,9 @@
                     content.innerHTML = '<div class="alert alert-danger m-3">' + escapeHtml(result.message || '加载失败') + '</div>';
                     return;
                 }
+                if (result.movie && result.movie.name) {
+                    _currentDetailCtx.name = result.movie.name;
+                }
                 renderMovieDetail(result);
             } catch (e) {
                 content.className = '';
@@ -2053,10 +2098,13 @@
             content.style.minHeight = '';
             var m = data.movie || {};
             var tmdb = data.tmdb || null;
+            var ids = data.ids || { imdb_id: '', tmdb_id: '' };
             var history = data.history || [];
 
             var html = '';
             var posterUrl = (tmdb && tmdb.url) ? tmdb.url : '';
+            var hasEitherId = !!(ids.imdb_id || ids.tmdb_id);
+            var needManualTmdb = !hasEitherId;  // 两个ID都空 → 提示手动识别
 
             html += '<div class="detail-hero">';
             if (posterUrl) {
@@ -2077,6 +2125,24 @@
             if (tmdb && tmdb.year) html += '<span class="meta-chip">' + escapeHtml(tmdb.year) + '</span>';
             html += '<span class="meta-chip">第' + escapeHtml(m.page) + '页 #' + escapeHtml(m.id) + '</span>';
             html += '</div>';
+
+            // ID 显示区：IMDb / TMDB 已填显示编号；都没填显示"手动识别TMDB"按钮
+            html += '<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">';
+            if (ids.imdb_id) {
+                html += '<span class="meta-chip" style="background:#e0f2fe;color:#075985" title="IMDb编号（豆瓣自动回填）">IMDb ' + escapeHtml(ids.imdb_id) + '</span>';
+            }
+            if (ids.tmdb_id) {
+                html += '<span class="meta-chip" style="background:#ede9fe;color:#5b21b6" title="TMDB编号（手动识别）">TMDB ' + escapeHtml(ids.tmdb_id) + '</span>';
+                html += '<button class="btn btn-sm btn-outline-warning" style="padding:2px 8px;font-size:11px" onclick="openTmdbPicker(true)">重识别</button>';
+            } else if (needManualTmdb) {
+                html += '<button class="btn btn-sm btn-info text-white" style="padding:4px 10px;font-size:12px" onclick="openTmdbPicker(false)">' +
+                        '<i class="bi bi-search me-1"></i>手动识别 TMDB</button>';
+                if (!ids.imdb_id) {
+                    html += '<span class="badge bg-warning-subtle text-warning-emphasis" style="font-weight:500">无IMDb，手动识别后可匹配 Jellyfin</span>';
+                }
+            }
+            html += '</div>';
+
             if (m.douban_url) {
                 html += '<a href="' + escapeHtml(m.douban_url) + '" target="_blank" rel="noopener" class="hero-douban-link"><i class="bi bi-box-arrow-up-right"></i>豆瓣页面</a>';
             }
@@ -2140,6 +2206,170 @@
             html += '</div>';
 
             content.innerHTML = html;
+        }
+
+        // ===== TMDB 手动识别 =====
+        var _tmdbPickerModalInst = null;
+        function openTmdbPicker(isRewrite) {
+            if (!_currentDetailCtx) {
+                showToast('请先打开电影详情卡', 'warning');
+                return;
+            }
+            if (!_tmdbPickerModalInst) {
+                _tmdbPickerModalInst = new bootstrap.Modal(document.getElementById('tmdbPickerModal'));
+            }
+            var nameInput = document.getElementById('tmdbSearchName');
+            var yearInput = document.getElementById('tmdbSearchYear');
+            var clearBtn = document.getElementById('tmdbClearBtn');
+            if (nameInput) {
+                nameInput.value = _currentDetailCtx.name || '';
+            }
+            if (yearInput) {
+                yearInput.value = '';
+            }
+            // 清除按钮仅在"重识别"模式（即已有TMDB或IMDb没但想主动清）可用
+            if (clearBtn) clearBtn.disabled = !isRewrite;
+            document.getElementById('tmdbSearchStatus').textContent = '点击「搜索」或按回车搜索 TMDB 候选';
+            document.getElementById('tmdbCandidateGrid').innerHTML = '';
+            _tmdbPickerModalInst.show();
+            // 回车触发搜索（只绑一次）
+            if (!nameInput.dataset.tmdbBound) {
+                nameInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') { e.preventDefault(); runTmdbSearch(); }
+                });
+                nameInput.dataset.tmdbBound = '1';
+                yearInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') { e.preventDefault(); runTmdbSearch(); }
+                });
+            }
+            setTimeout(function() { if (nameInput) nameInput.focus(); }, 200);
+        }
+
+        async function runTmdbSearch() {
+            var q = (document.getElementById('tmdbSearchName').value || '').trim();
+            var y = (document.getElementById('tmdbSearchYear').value || '').trim();
+            var status = document.getElementById('tmdbSearchStatus');
+            var grid = document.getElementById('tmdbCandidateGrid');
+            if (!q) {
+                showToast('请输入电影名', 'warning');
+                return;
+            }
+            var btn = document.getElementById('tmdbSearchBtn');
+            var original = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>搜索中...';
+            status.textContent = '正在 TMDB 搜索「' + q + '」...';
+            grid.innerHTML = '';
+            try {
+                var resp = await apiFetch('/tmdb/search?q=' + encodeURIComponent(q) +
+                    (y ? '&year=' + encodeURIComponent(y) : '') + '&limit=12');
+                var result = await resp.json();
+                if (!result.success) {
+                    status.textContent = '搜索失败：' + (result.message || '未知错误');
+                    status.className = 'text-danger small mb-2';
+                    showToast('TMDB搜索失败：' + (result.message || ''), 'danger');
+                    return;
+                }
+                var candidates = result.candidates || [];
+                status.className = 'text-muted small mb-2';
+                if (!candidates.length) {
+                    status.textContent = '没有搜索到结果，请换关键词或手动去 TMDB 查。';
+                    return;
+                }
+                status.textContent = '共找到 ' + candidates.length + ' 条候选，点击卡片下方的「选择此项」写入 TMDB ID。';
+                var html = '';
+                candidates.forEach(function(c) {
+                    var vote = c.vote_average && c.vote_average !== 0 ?
+                        ('<span class="badge bg-warning text-dark ms-1"><i class="bi bi-star-fill"></i>' + escapeHtml(String(c.vote_average)) + '</span>') : '';
+                    var year = c.year ? escapeHtml(String(c.year)) : '—';
+                    var media = c.media_type === 'tv' ?
+                        '<span class="badge bg-secondary-subtle text-secondary-emphasis">剧集</span>' :
+                        '<span class="badge bg-primary-subtle text-primary-emphasis">电影</span>';
+                    var poster = c.poster_url ?
+                        '<img src="' + escapeHtml(c.poster_url) + '" alt="' + escapeHtml(c.title) + '" style="width:100%;height:270px;object-fit:cover;border-radius:6px">' :
+                        '<div style="width:100%;height:270px;background:linear-gradient(135deg,#e5e7eb,#9ca3af);border-radius:6px;display:flex;align-items:center;justify-content:center;color:white;font-weight:600;padding:8px;text-align:center">' + escapeHtml(c.title) + '</div>';
+                    var ov = c.overview || '（无简介）';
+                    if (ov.length > 120) ov = ov.substring(0, 120) + '…';
+                    html += '<div class="card tmdb-cand-card" style="cursor:default">';
+                    html += '<div style="padding:6px">' + poster + '</div>';
+                    html += '<div class="card-body" style="padding:10px">';
+                    html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:6px">';
+                    html += '<div style="font-weight:600;font-size:14px;line-height:1.2">' + escapeHtml(c.title || '（无标题）') + '</div>';
+                    html += vote;
+                    html += '</div>';
+                    if (c.original_title && c.original_title !== c.title) {
+                        html += '<div style="font-size:12px;color:#6b7280;margin-top:2px">' + escapeHtml(c.original_title) + '</div>';
+                    }
+                    html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';
+                    html += media;
+                    html += '<span style="font-size:12px;color:#6b7280">' + year + '</span>';
+                    html += '<span style="font-size:11px;color:#9ca3af;margin-left:auto">TMDB ' + escapeHtml(String(c.tmdb_id)) + '</span>';
+                    html += '</div>';
+                    html += '<div style="font-size:12px;color:#4b5563;margin-top:8px;line-height:1.4;height:66px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(ov) + '</div>';
+                    html += '<button class="btn btn-sm btn-primary w-100 mt-2" onclick="applyTmdbCandidate(' + c.tmdb_id + ')">' +
+                            '<i class="bi bi-check-circle me-1"></i>选择此项</button>';
+                    html += '</div></div>';
+                });
+                grid.innerHTML = html;
+            } catch (e) {
+                status.className = 'text-danger small mb-2';
+                status.textContent = '请求错误：' + escapeHtml(e.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
+        }
+
+        async function applyTmdbCandidate(tmdbId) {
+            if (!_currentDetailCtx) return;
+            var btn = event && event.currentTarget ? event.currentTarget : null;
+            var original = btn ? btn.innerHTML : '';
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>写入中...'; }
+            try {
+                var resp = await apiFetch('/movie/' + _currentDetailCtx.id + '/tmdb_id', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        page: _currentDetailCtx.page,
+                        douban_url: _currentDetailCtx.url,
+                        tmdb_id: String(tmdbId),
+                    }),
+                });
+                var result = await resp.json();
+                if (!result.success) throw new Error(result.message || '写入失败');
+                showToast(result.message || '已写入 TMDB ID', 'success');
+                if (_tmdbPickerModalInst) _tmdbPickerModalInst.hide();
+                // 重刷当前详情卡（海报/年份/评分会立刻变成手动选择的那张）
+                await showMovieDetail(_currentDetailCtx.id, _currentDetailCtx.page, _currentDetailCtx.url);
+            } catch (e) {
+                showToast('写入TMDB失败：' + e.message, 'danger');
+            } finally {
+                if (btn) { btn.disabled = false; btn.innerHTML = original; }
+            }
+        }
+
+        async function clearCurrentTmdbId() {
+            if (!_currentDetailCtx) return;
+            var ok = confirm('确定清除这部电影的手动 TMDB ID？');
+            if (!ok) return;
+            try {
+                var resp = await apiFetch('/movie/' + _currentDetailCtx.id + '/tmdb_id', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        page: _currentDetailCtx.page,
+                        douban_url: _currentDetailCtx.url,
+                        tmdb_id: '',
+                    }),
+                });
+                var result = await resp.json();
+                if (!result.success) throw new Error(result.message || '清除失败');
+                showToast(result.message || '已清除手动 TMDB ID', 'success');
+                if (_tmdbPickerModalInst) _tmdbPickerModalInst.hide();
+                await showMovieDetail(_currentDetailCtx.id, _currentDetailCtx.page, _currentDetailCtx.url);
+            } catch (e) {
+                showToast('清除失败：' + e.message, 'danger');
+            }
         }
 
         function toggleDetailOverview(btn) {

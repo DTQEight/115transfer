@@ -492,7 +492,11 @@ def _has_missing_ids(df: pd.DataFrame, col: str) -> bool:
 
 
 def _jellyfin_match_and_write() -> int:
-    """用当前 IMDB_ID 比对 Jellyfin 并写回"已入库"列（仅按IMDb编号精确匹配）。"""
+    """用 IMDB_ID + TMDB_ID 两个权威编号比对 Jellyfin 并写回"已入库"列。
+
+    优先级：IMDb（豆瓣自动回填）→ TMDB（用户手动识别，国产片无IMDb时兜底）。
+    两者都是 ID 精确匹配，零歧义，不做标题模糊。
+    """
     with data_lock:
         df = load_movies()
     if df.empty:
@@ -502,6 +506,7 @@ def _jellyfin_match_and_write() -> int:
         'url': str(r['豆瓣链接']) if pd.notna(r['豆瓣链接']) else '',
         'year': '',
         'imdb_id': str(r['IMDB_ID']) if 'IMDB_ID' in r.index and pd.notna(r['IMDB_ID']) else '',
+        'tmdb_id': str(r['TMDB_ID']) if 'TMDB_ID' in r.index and pd.notna(r['TMDB_ID']) else '',
     } for _, r in df.iterrows()]
     in_lib = jellyfin.refresh_in_library_status(movies)
     count = 0
@@ -518,26 +523,30 @@ def _jellyfin_match_and_write() -> int:
     return count
 
 
-def _apply_imdb_ids(url_to_imdb: Dict[str, str]) -> int:
-    """按豆瓣链接把 IMDB_ID 合并回写到最新 Excel（不覆盖并发写入的其他列）。
+def _apply_ids_by_url(url_to_values: Dict[str, str], col: str) -> int:
+    """按豆瓣链接把某个ID列合并回写到最新 Excel（不覆盖并发写入的其他列）。
 
-    Returns: 实际写入的行数。
+    col='IMDB_ID' 或 'TMDB_ID'。Returns: 实际写入的行数。
     """
-    if not url_to_imdb:
+    if not url_to_values or not col:
         return 0
     with data_lock:
         df = load_movies()
-        if df.empty or 'IMDB_ID' not in df.columns or '豆瓣链接' not in df.columns:
+        if df.empty or col not in df.columns or '豆瓣链接' not in df.columns:
             return 0
         n = 0
         for idx, row in df.iterrows():
             url = str(row['豆瓣链接']) if pd.notna(row['豆瓣链接']) else ''
-            if url in url_to_imdb:
-                df.at[idx, 'IMDB_ID'] = url_to_imdb[url]
+            if url in url_to_values:
+                df.at[idx, col] = url_to_values[url]
                 n += 1
         if n:
             save_movies(df)
     return n
+
+
+def _apply_imdb_ids(url_to_imdb: Dict[str, str]) -> int:
+    return _apply_ids_by_url(url_to_imdb, 'IMDB_ID')
 
 
 def _backfill_imdb_ids(df: pd.DataFrame) -> None:
@@ -591,7 +600,7 @@ def _backfill_imdb_ids(df: pd.DataFrame) -> None:
 
 def load_movies() -> pd.DataFrame:
     if not os.path.exists(EXCEL_FILE):
-        df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'IMDB_ID'])
+        df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'IMDB_ID', 'TMDB_ID'])
         df.to_excel(EXCEL_FILE, index=False)
         return df
 
@@ -611,6 +620,9 @@ def load_movies() -> pd.DataFrame:
     # 兼容旧数据文件：无"IMDB_ID"列时自动补空列（Jellyfin入库精确匹配主键）
     if 'IMDB_ID' not in df.columns:
         df['IMDB_ID'] = ''
+    # 兼容旧数据文件：无"TMDB_ID"列时自动补空列（手动识别的备用匹配主键，国产片常见无IMDb）
+    if 'TMDB_ID' not in df.columns:
+        df['TMDB_ID'] = ''
     # 过滤掉重复的表头行（序号列为非数字的行）
     if not df.empty:
         try:
@@ -2816,8 +2828,9 @@ def _do_douban_auto_sync():
                         url = str(row['豆瓣链接']) if '豆瓣链接' in row.index and not pd.isna(row['豆瓣链接']) else ''
                         in_lib = '是' if ('已入库' in row.index and not pd.isna(row['已入库']) and str(row['已入库']) == '是') else '否'
                         imdb_id = str(row['IMDB_ID']) if 'IMDB_ID' in row.index and not pd.isna(row['IMDB_ID']) else ''
+                        tmdb_id = str(row['TMDB_ID']) if 'TMDB_ID' in row.index and not pd.isna(row['TMDB_ID']) else ''
                         rec = {'磁力链接': magnet, '保存时间': save_time, '电影名': name, '已入库': in_lib,
-                               'imdb_id': imdb_id}
+                               'imdb_id': imdb_id, 'tmdb_id': tmdb_id}
                         if url:
                             existing_by_url[url] = rec
                         elif name not in existing_by_name:
@@ -2850,6 +2863,7 @@ def _do_douban_auto_sync():
                         save_time = rec['保存时间']
                         in_lib = rec['已入库']
                         imdb_id = rec.get('imdb_id', '')
+                        tmdb_id = rec.get('tmdb_id', '')
                         if rec['电影名'] != name:
                             name = rec['电影名']  # 保留用户可能改过的电影名
                     elif name in existing_by_name:
@@ -2859,12 +2873,14 @@ def _do_douban_auto_sync():
                         save_time = existing_by_name[name]['保存时间']
                         in_lib = existing_by_name[name]['已入库']
                         imdb_id = existing_by_name[name].get('imdb_id', '')
+                        tmdb_id = existing_by_name[name].get('tmdb_id', '')
                     else:
                         added += 1
                         magnet = ''
                         save_time = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
                         in_lib = '否'
                         imdb_id = ''
+                        tmdb_id = ''
 
                     new_rows.append({
                         '序号': seq,
@@ -2875,6 +2891,7 @@ def _do_douban_auto_sync():
                         '豆瓣链接': url,
                         '已入库': in_lib,
                         'IMDB_ID': imdb_id,
+                        'TMDB_ID': tmdb_id,
                     })
 
                 # 豆瓣中不存在的本地电影 → 删除（不追加）
@@ -2890,7 +2907,7 @@ def _do_douban_auto_sync():
                     ]
                     logger.info(f'[豆瓣自动同步] 删除{removed}部豆瓣已不存在的电影: {removed_items[:10]}')
 
-                new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'IMDB_ID'])
+                new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'IMDB_ID', 'TMDB_ID'])
 
                 # 判断是否需要保存：有新增/删除 或 顺序/页码/URL发生变化
                 need_save = added > 0 or removed > 0
@@ -3122,6 +3139,95 @@ def history_by_name(movie_name: str):
         return jsonify({'success': False, 'message': str(e), 'records': []})
 
 
+@app.route('/tmdb/search')
+def tmdb_search():
+    """TMDB候选搜索（供手动识别：返回多个候选由用户点选）。
+
+    Query:
+        q: 电影名（必填）
+        year: 年份（可选，辅助搜索）
+        limit: 最大返回条数（默认10，最多20）
+    Returns:
+        { success: bool, candidates: [...] , message: err }
+        candidates 元素见 media.tmdb.identify_media_candidates。
+    """
+    q = (request.args.get('q') or '').strip()
+    year = (request.args.get('year') or '').strip() or None
+    try:
+        limit = max(1, min(20, int(request.args.get('limit') or 10)))
+    except ValueError:
+        limit = 10
+    try:
+        from media.tmdb import identify_media_candidates
+        candidates, err = identify_media_candidates(q, year=year, limit=limit)
+        if err:
+            return jsonify({'success': False, 'message': err, 'candidates': []})
+        return jsonify({'success': True, 'candidates': candidates})
+    except Exception as e:
+        logger.error(f'[TMDB搜索] 失败 q={q!r}: {e}')
+        return jsonify({'success': False, 'message': str(e), 'candidates': []}), 500
+
+
+@app.route('/movie/<int:movie_id>/tmdb_id', methods=['POST'])
+def save_movie_tmdb_id(movie_id: int):
+    """按序号+页码+豆瓣链接定位电影行，写入 TMDB_ID 列。
+
+    Body:
+        page: 页码（int，因为每页序号从1重新编号，必传）
+        douban_url: 豆瓣链接（首选定位键，同名电影独立区分，必传）
+        tmdb_id: 新的 TMDB ID（纯数字或空字符串清除）
+    返回:
+        { success, message, row_url }
+    """
+    try:
+        payload = request.get_json(silent=True) or request.form
+        page = payload.get('page')
+        douban_url = (payload.get('douban_url') or '').strip()
+        tmdb_id_raw = (payload.get('tmdb_id') or '').strip()
+        if page is None or not douban_url:
+            return jsonify({'success': False, 'message': '缺少定位参数（page + douban_url）'}), 400
+        try:
+            page = int(page)
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'message': 'page 必须是数字'}), 400
+        if tmdb_id_raw and not str(tmdb_id_raw).isdigit():
+            return jsonify({'success': False, 'message': 'TMDB ID 必须是纯数字或留空'}), 400
+        new_tmdb_id = str(tmdb_id_raw) if tmdb_id_raw else ''
+
+        with data_lock:
+            df = load_movies()
+            # 按 douban_url 定位（最强），兜底再按序号+页码
+            idx = None
+            for i, row in df.iterrows():
+                row_url = str(row['豆瓣链接']) if '豆瓣链接' in row.index and not pd.isna(row['豆瓣链接']) else ''
+                if row_url and row_url == douban_url:
+                    idx = i
+                    break
+            if idx is None:
+                for i, row in df.iterrows():
+                    try:
+                        if int(row['序号']) == int(movie_id) and int(row['页码']) == page:
+                            idx = i
+                            break
+                    except (ValueError, TypeError):
+                        pass
+            if idx is None:
+                return jsonify({'success': False, 'message': '未找到该电影，请刷新列表'}), 404
+
+            if 'TMDB_ID' not in df.columns:
+                df['TMDB_ID'] = ''
+            df.at[idx, 'TMDB_ID'] = new_tmdb_id
+            save_movies(df)
+            actual_url = str(df.at[idx, '豆瓣链接']) if '豆瓣链接' in df.columns and pd.notna(df.at[idx, '豆瓣链接']) else ''
+        logger.info(f'[TMDB手动识别] 已写入 TMDB_ID={new_tmdb_id or "清除"} 电影#{movie_id} 页{page} URL={douban_url}')
+        return jsonify({'success': True,
+                        'message': ('已写入 TMDB ID ' + new_tmdb_id) if new_tmdb_id else '已清除手动 TMDB ID',
+                        'row_url': actual_url})
+    except Exception as e:
+        logger.error(f'[TMDB手动识别] 写入失败 #{movie_id}: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @app.route('/movies/detail/<int:movie_id>')
 def movies_detail(movie_id: int):
     """获取电影详情（聚合电影信息、TMDB信息、转存历史）
@@ -3181,28 +3287,44 @@ def movies_detail(movie_id: int):
 
         # TMDB 信息（可选，失败不影响主流程）
         tmdb_info = None
+        ids_info = {'imdb_id': '', 'tmdb_id': ''}
         try:
-            from media.tmdb import identify_media, get_tmdb_api_key, find_by_imdb_id
+            from media.tmdb import identify_media, get_tmdb_api_key, find_by_imdb_id, get_media_by_id
+            # 先取本机编号（前端"手动识别TMDB"按钮显隐要用：都没有才提示手动识别）
+            imdb_id = ''
+            tmdb_id = ''
+            if 'IMDB_ID' in r.index and not pd.isna(r['IMDB_ID']):
+                raw = str(r['IMDB_ID']).strip()
+                if raw and raw != 'N/A':
+                    imdb_id = raw
+            if 'TMDB_ID' in r.index and not pd.isna(r['TMDB_ID']):
+                raw = str(r['TMDB_ID']).strip()
+                if raw and raw != 'N/A':
+                    tmdb_id = raw
+            ids_info = {'imdb_id': imdb_id, 'tmdb_id': tmdb_id}
+
             if get_tmdb_api_key():
-                # 优先按 IMDb 编号精确查询（零歧义，解决同名电影卡片串信息）
-                imdb_id = ''
-                if 'IMDB_ID' in r.index and not pd.isna(r['IMDB_ID']):
-                    raw = str(r['IMDB_ID']).strip()
-                    if raw and raw != 'N/A':
-                        imdb_id = raw
                 result = None
-                err = None
+                # 1. 优先按 IMDb 编号精确查询（零歧义，解决同名电影卡片串信息）
                 if imdb_id:
-                    result, err = find_by_imdb_id(imdb_id)
-                # IMDb 查询失败/无IMDb → 退回按电影名查询
-                if (not result or not result.get('poster_path')) and name:
-                    result, err = identify_media(name)
+                    result, _ = find_by_imdb_id(imdb_id)
+                # 2. 再按本地 TMDB_ID 精确查询（手动识别，国产片无IMDb兜底）
+                if (not result or not result.get('poster_path')) and tmdb_id:
+                    try:
+                        result = get_media_by_id(tmdb_id, media_type='movie')
+                    except Exception:
+                        result = None
+                # 3. 两个 ID 都没时：退回按电影名搜索（仍可能误匹配，但比无海报好）
+                if (not result or not result.get('poster_path')) and name and not imdb_id and not tmdb_id:
+                    result, _ = identify_media(name)
                 if result and result.get('poster_path'):
                     tmdb_info = {
                         'url': f"https://image.tmdb.org/t/p/w300{result['poster_path']}",
                         'year': result.get('year', ''),
                         'rating': str(result.get('vote_average', '')) if result.get('vote_average') else '',
                         'overview': result.get('overview', ''),
+                        'source': 'imdb' if imdb_id else ('tmdb' if tmdb_id else 'name'),
+                        'tmdb_id': result.get('tmdb_id', ''),
                     }
         except Exception as te:
             logger.debug(f'[电影详情] TMDB获取失败: {te}')
@@ -3211,6 +3333,7 @@ def movies_detail(movie_id: int):
             'success': True,
             'movie': movie,
             'tmdb': tmdb_info,
+            'ids': ids_info,
             'history': history,
         })
     except Exception as e:

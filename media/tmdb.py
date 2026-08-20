@@ -295,6 +295,118 @@ def find_by_imdb_id(imdb_id, language='zh-CN'):
     return result, None
 
 
+def identify_media_candidates(name, year=None, limit=10):
+    """手动识别：按电影名+年份返回多个候选（不走自动 best 决策），供用户点选。
+
+    Returns (candidates, err):
+        candidates: list[{
+            'tmdb_id': int, 'media_type': 'movie'|'tv',
+            'title': str, 'original_title': str,
+            'year': 'YYYY',
+            'overview': str,
+            'poster_path': str (相对URL, /xxx.jpg 或空),
+            'poster_url': str (TMDB w300完整URL，方便前端直接用),
+            'vote_average': float,
+            'name_zh': str, 'name_en': str,
+        }, ...]  最多 limit 条；失败时空列表 + err 文本
+    """
+    if not name or not name.strip():
+        return [], '搜索关键词为空'
+    if not get_tmdb_api_key():
+        return [], '未配置TMDB API Key'
+
+    name = name.strip()
+    # 收集多策略的搜索结果（按顺序去重），不做 best 决策
+    queries = [(name, year)]
+    # 括号去掉
+    cleaned = name.split('（')[0].split('(')[0].strip()
+    if cleaned and cleaned != name:
+        queries.append((cleaned, year))
+    # 中文部分
+    cn_match = re.search(r'([\u4e00-\u9fff]+)', name)
+    if cn_match:
+        cn = cn_match.group(1)
+        if len(cn) >= 2 and cn != name and (cn, year) not in queries:
+            queries.append((cn, year))
+    # 英文部分
+    en_match = re.search(r'([A-Za-z][A-Za-z\s\.]+)', name)
+    if en_match:
+        en = en_match.group(1).strip().replace('.', ' ')
+        if len(en) >= 3 and en != name and (en, year) not in queries:
+            queries.append((en, None))
+
+    seen_ids = set()
+    merged = []
+    last_err = None
+    for q_name, q_year in queries:
+        try:
+            results, err = search_multi(q_name, year=q_year)
+        except Exception as e:
+            last_err = f'search失败: {e}'
+            continue
+        if err:
+            last_err = err
+            continue
+        if not results:
+            continue
+        for r in results:
+            rid = r.get('id')
+            if rid is None or rid in seen_ids:
+                continue
+            seen_ids.add(rid)
+            merged.append(r)
+            if len(merged) >= limit * 3:
+                break
+        if len(merged) >= limit:
+            break
+
+    if not merged:
+        if last_err:
+            return [], last_err
+        return [], '未找到匹配结果'
+
+    # 拿详情补全字段（批量，最多 limit 条）
+    candidates = []
+    for r in merged[:limit]:
+        tmdb_id = r.get('id')
+        media_type = r.get('media_type') or 'movie'
+        r_year = (r.get('release_date') or r.get('first_air_date') or '')[:4]
+        try:
+            if media_type == 'tv':
+                detail, err = get_tv_detail(tmdb_id)
+            else:
+                detail, err = get_movie_detail(tmdb_id)
+        except Exception as e:
+            detail, err = None, str(e)
+        if detail:
+            title = detail.get('title') or detail.get('name') or r.get('title') or r.get('name') or ''
+            otitle = detail.get('original_title') or detail.get('original_name') or r.get('original_title') or r.get('original_name') or ''
+            dyear = (detail.get('release_date') or detail.get('first_air_date') or r_year or '')[:4]
+            poster = detail.get('poster_path') or r.get('poster_path') or ''
+            overview = detail.get('overview') or r.get('overview') or ''
+            vote = detail.get('vote_average') or r.get('vote_average') or 0
+        else:
+            title = r.get('title') or r.get('name') or ''
+            otitle = r.get('original_title') or r.get('original_name') or ''
+            dyear = r_year
+            poster = r.get('poster_path') or ''
+            overview = r.get('overview') or ''
+            vote = r.get('vote_average') or 0
+        poster_url = f'https://image.tmdb.org/t/p/w300{poster}' if poster else ''
+        candidates.append({
+            'tmdb_id': tmdb_id,
+            'media_type': media_type,
+            'title': title,
+            'original_title': otitle,
+            'year': dyear,
+            'overview': overview,
+            'poster_path': poster,
+            'poster_url': poster_url,
+            'vote_average': vote,
+        })
+    return candidates, None
+
+
 def identify_media(name, year=None):
     """自动识别媒体，多策略搜索
 

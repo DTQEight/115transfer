@@ -465,7 +465,7 @@
                             {% endfor %}
                         </select>
                         <div class="input-group input-group-sm" style="width: 150px;">
-                            <input type="number" id="goPage" class="form-control" placeholder="跳转页码" autocomplete="off">
+                            <input type="number" id="goToPageInput" class="form-control" placeholder="跳转页码" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();goToPage();}">
                             <button onclick="goToPage()" class="btn btn-outline-secondary">
                                 <i class="bi bi-arrow-right"></i>
                             </button>

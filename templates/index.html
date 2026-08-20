@@ -226,7 +226,7 @@
                             {% endfor %}
                         </select>
                         <div class="input-group input-group-sm" style="width: 150px;">
-                            <input type="number" id="goToPageInput" class="form-control" placeholder="跳转页码" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();goToPage();}">
+                            <input type="number" id="goPage" class="form-control" placeholder="跳转页码" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();goToPage();}">
                             <button onclick="goToPage()" class="btn btn-outline-secondary">
                                 <i class="bi bi-arrow-right"></i>
                             </button>
@@ -293,7 +293,6 @@
                     <table class="table table-hover mb-0">
                         <thead>
                             <tr>
-                                <th class="hide-mobile" style="width:40px"></th>
                                 <th style="width:60px">#</th>
                                 <th class="hide-mobile" style="width:70px">页码</th>
                                 <th>电影名</th>
@@ -305,9 +304,6 @@
                         <tbody>
                             {% for movie in movies %}
                             <tr class="movie-row" data-id="{{ movie.id }}" data-url="{{ movie.douban_url }}">
-                                <td class="drag-handle text-center hide-mobile" style="cursor:grab;">
-                                    <i class="bi bi-grip-vertical"></i>
-                                </td>
                                 <td class="text-muted">{{ movie.id }}</td>
                                 <td class="hide-mobile"><span class="badge-page">{{ movie.page }}</span></td>
                                 <td class="fw-medium" style="cursor:pointer;" onclick="showMovieDetail({{ movie.id }}, {{ movie.page }}, '{{ movie.douban_url }}')" title="点击查看详情">{{ movie.name }}
@@ -359,7 +355,7 @@
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="7" class="text-center text-muted py-5">
+                                <td colspan="6" class="text-center text-muted py-5">
                                     <i class="bi bi-inbox" style="font-size: 2rem; display: block; margin-bottom: 0.5rem;"></i>
                                     暂无电影数据
                                 </td>
@@ -525,7 +521,82 @@
             container.innerHTML = html;
         }
 
+        // ==================== 电影详情侧滑面板 ====================
+        function toggleDashboard(e) {
+            if (e) e.stopPropagation();
+            var collapsed = document.getElementById('dashboardBody').classList.toggle('d-none');
+            var chevron = document.getElementById('dashboardChevron');
+            chevron.style.transform = collapsed ? 'rotate(-90deg)' : '';
+            document.getElementById('dashboardSummary').classList.toggle('d-none', !collapsed);
+            localStorage.setItem('dashboardCollapsed', collapsed ? '1' : '0');
+        }
 
+        function initDashboardState() {
+            // 恢复上次状态，默认展开
+            var collapsed = localStorage.getItem('dashboardCollapsed') === '1';
+            var body = document.getElementById('dashboardBody');
+            var chevron = document.getElementById('dashboardChevron');
+            var summary = document.getElementById('dashboardSummary');
+            body.classList.toggle('d-none', collapsed);
+            chevron.style.transform = collapsed ? 'rotate(-90deg)' : '';
+            summary.classList.toggle('d-none', !collapsed);
+        }
+
+        // 加载统计仪表盘（转存统计+最近记录）
+        async function loadDashboard(e) {
+            if (e) e.stopPropagation();  // 阻止触发标题栏的展开/收起
+            try {
+                var resp = await apiFetch('/history/statistics');
+                if (resp.ok) {
+                    var result = await resp.json();
+                    if (result.success && result.statistics) {
+                        var s = result.statistics;
+                        document.getElementById('todaySuccess').textContent = s.today_success || 0;
+                        document.getElementById('todayFail').textContent = s.today_fail || 0;
+                        document.getElementById('totalSuccess').textContent = s.total_success || 0;
+                        document.getElementById('totalFail').textContent = s.total_fail || 0;
+                    }
+                }
+            } catch (e) {
+                console.error('加载统计失败:', e);
+            }
+            try {
+                var resp2 = await apiFetch('/history/recent?limit=8');
+                var historyEl = document.getElementById('recentHistory');
+                if (resp2.ok) {
+                    var result2 = await resp2.json();
+                    if (result2.success && result2.records && result2.records.length > 0) {
+                        var html = '<ul class="list-unstyled mb-0">';
+                        result2.records.forEach(function(r) {
+                            var time = r.time || '';
+                            var shortTime = time.substring(5, 16).replace('T', ' ');
+                            var icon = r.success ? '<i class="bi bi-check-circle text-success"></i>' : '<i class="bi bi-x-circle text-danger"></i>';
+                            var name = escapeHtml(r.movie_name || r.magnet || '');
+                            if (name.length > 30) name = name.substring(0, 30) + '...';
+                            var sourceBadge = '';
+                            if (r.source === 'wechat') sourceBadge = '<span class="badge bg-secondary">微信</span> ';
+                            else if (r.source === 'baidu') sourceBadge = '<span class="badge bg-info text-dark">论坛</span> ';
+                            else if (r.source === 'batch') sourceBadge = '<span class="badge bg-primary">批量</span> ';
+                            html += '<li class="d-flex align-items-center gap-2 py-1 border-bottom">' +
+                                '<span>' + icon + '</span>' +
+                                '<span class="text-muted" style="min-width:80px;">' + escapeHtml(shortTime) + '</span>' +
+                                '<span class="flex-grow-1 text-truncate">' + sourceBadge + name + '</span>' +
+                                '</li>';
+                        });
+                        html += '</ul>';
+                        historyEl.innerHTML = html;
+                    } else {
+                        historyEl.innerHTML = '<p class="text-muted text-center mb-0">暂无转存记录</p>';
+                    }
+                }
+            } catch (e) {
+                console.error('加载历史失败:', e);
+            }
+        }
+        initDashboardState();
+        loadDashboard();
+
+        // 内联保存磁力链接
         async function saveMagnetInline(input) {
             var id = input.dataset.id;
             var page = input.dataset.page;
@@ -533,14 +604,16 @@
             var magnet = input.value.trim();
             var originalValue = input.defaultValue;
 
+            // 如果值没变化，不保存
             if (magnet === originalValue) return;
 
+            // 获取当前电影名
             var row = input.closest('tr');
             var name = row ? row.querySelector('.fw-medium').textContent.trim() : '';
 
             try {
-                var body = 'page=' + page + '&name=' + encodeURIComponent(name) + '&magnet=' + encodeURIComponent(magnet);
-                if (url) body += '&url=' + encodeURIComponent(url);
+                var body = `page=${page}&name=${encodeURIComponent(name)}&magnet=${encodeURIComponent(magnet)}`;
+                if (url) body += `&url=${encodeURIComponent(url)}`;
                 var resp = await apiFetch('/update/' + id, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
@@ -551,7 +624,6 @@
                     input.defaultValue = magnet;
                     if (magnet) input.classList.remove('border-warning');
                     else input.classList.add('border-warning');
-                    var row = input.closest('tr');
                     if (row) {
                         var tBtn = row.querySelector('.transfer-btn');
                         if (tBtn) {
@@ -577,7 +649,7 @@
             }
         }
 
-        document.addEventListener('keydown', function(e) {
+        document.addEventListener('keydown', (e) => {
             if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'F') {
                 e.preventDefault();
                 document.getElementById('searchInput').focus();
@@ -585,11 +657,92 @@
         });
 
         function goToPage() {
-            var input = document.getElementById('goToPageInput');
-            if (!input) return;
-            var p = parseInt(input.value, 10);
-            if (!p) return;
-            window.location.href = window.location.pathname + '?page=' + p;
+            const page = document.getElementById('goPage').value;
+            if (page) {
+                showLoading();
+                location.href = `/?page=${page}`;
+            }
+        }
+
+        document.getElementById('goPage').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                goToPage();
+            }
+        });
+        
+        function selectPage(page) {
+            if (page) {
+                showLoading();
+                location.href = `/?page=${page}`;
+            }
+        }
+
+        async function transferTo115(movieId, page) {
+            showLoading();
+            try {
+                const response = await apiFetch(`/cloud115/transfer/${movieId}/${page}`, { method: 'POST' });
+                const result = await response.json();
+                showToast(result.message, result.success ? 'success' : 'danger');
+            } catch (e) {
+                showToast('转存请求失败', 'danger');
+            }
+            hideLoading();
+        }
+
+        async function batchTransfer115() {
+            if (!currentPage) {
+                showToast('请先选择一个页码', 'danger');
+                return;
+            }
+            if (!confirm(`确定要批量转存页码 ${currentPage} 的所有磁力链接到115网盘吗？`)) {
+                return;
+            }
+            showLoading();
+            try {
+                const response = await apiFetch('/cloud115/batch_transfer', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `page=${currentPage}`
+                });
+                const result = await response.json();
+                showToast(result.message, result.success ? 'success' : 'danger');
+            } catch (e) {
+                showToast('批量转存请求失败', 'danger');
+            }
+            hideLoading();
+        }
+
+        async function open115Tasks() {
+            showLoading();
+            try {
+                const response = await apiFetch('/cloud115/tasks');
+                const result = await response.json();
+                if (result.success) {
+                    let html = '<div style="max-height:400px;overflow-y:auto;">';
+                    if (result.tasks && result.tasks.length > 0) {
+                        html += '<table class="table table-sm"><thead><tr><th>任务名</th><th>大小</th><th>进度</th><th>状态</th></tr></thead><tbody>';
+                        result.tasks.forEach(t => {
+                            const name = t.name || t.url || '未知';
+                            const size = t.size ? (t.size / 1024 / 1024).toFixed(1) + 'MB' : '-';
+                            const percent = t.percent != null ? t.percent + '%' : '-';
+                            const status = t.status == 2 ? '完成' : t.status == 1 ? '下载中' : '等待中';
+                            html += `<tr><td>${escapeHtml(name.substring(0,40))}</td><td>${escapeHtml(size)}</td><td>${escapeHtml(percent)}</td><td>${escapeHtml(status)}</td></tr>`;
+                        });
+                        html += '</tbody></table>';
+                    } else {
+                        html += '<p class="text-muted text-center"><i class="bi bi-inbox me-1"></i>暂无离线任务</p>';
+                    }
+                    html += '</div>';
+                    document.getElementById('tasks115Body').innerHTML = html;
+                    new bootstrap.Modal(document.getElementById('tasks115Modal')).show();
+                } else {
+                    showToast(result.message, 'danger');
+                }
+            } catch (e) {
+                showToast('获取任务列表失败', 'danger');
+            }
+            hideLoading();
         }
 
         async function saveMagnetInlineDirect(input, magnet) {

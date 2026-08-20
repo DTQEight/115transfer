@@ -220,6 +220,81 @@ def _format_tv_result(detail):
     }
 
 
+_FIND_CACHE = {}  # imdb_id -> result
+_FIND_CACHE_LOCK = threading.Lock()
+
+
+def find_by_imdb_id(imdb_id, language='zh-CN'):
+    """通过 IMDb ID 精确查找 TMDB 条目（零歧义，同名电影首选）
+
+    使用 TMDB /find/{imdb_id}?external_source=imdb_id
+    返回格式同 identify_media：{tmdb_id, poster_path, year, vote_average, overview}
+    """
+    if not imdb_id:
+        return None, '缺少 IMDb 编号'
+    api_key = get_tmdb_api_key()
+    if not api_key:
+        return None, '未配置TMDB API Key'
+
+    cache_key = (imdb_id, language)
+    with _FIND_CACHE_LOCK:
+        if cache_key in _FIND_CACHE:
+            cached = _FIND_CACHE[cache_key]
+            return cached
+
+    try:
+        resp = _SESSION.get(
+            f'{TMDB_BASE_URL}/find/{imdb_id}',
+            params={'api_key': api_key, 'external_source': 'imdb_id', 'language': language},
+            timeout=15,
+        )
+        data = resp.json()
+    except Exception as e:
+        return None, f'请求失败: {e}'
+
+    # 优先电影结果，其次剧集
+    candidates = (data.get('movie_results') or []) + (data.get('tv_results') or [])
+    if not candidates:
+        with _FIND_CACHE_LOCK:
+            _FIND_CACHE[cache_key] = (None, '未找到匹配结果')
+        return None, '未找到匹配结果'
+
+    c = candidates[0]
+    tmdb_id = c.get('id')
+    mt = 'movie' if c in data.get('movie_results', []) else 'tv'
+
+    # 拿一次详情补 overview / vote_average / release_date 等
+    if tmdb_id:
+        detail, err = get_media_by_id(tmdb_id, language=language)
+        if detail:
+            result = {
+                'tmdb_id': detail.get('tmdb_id') or tmdb_id,
+                'media_type': detail.get('media_type') or mt,
+                'poster_path': detail.get('poster_path') or c.get('poster_path'),
+                'name': detail.get('name') or c.get('title') or c.get('name'),
+                'year': detail.get('year'),
+                'vote_average': detail.get('vote_average', 0),
+                'overview': detail.get('overview', ''),
+            }
+            with _FIND_CACHE_LOCK:
+                _FIND_CACHE[cache_key] = (result, None)
+            return result, None
+
+    # 没拿到详情也返回 find 结果里的基本信息
+    result = {
+        'tmdb_id': tmdb_id,
+        'media_type': mt,
+        'poster_path': c.get('poster_path'),
+        'name': c.get('title') or c.get('name'),
+        'year': str(c.get('release_date') or c.get('first_air_date') or '')[:4] or None,
+        'vote_average': c.get('vote_average', 0),
+        'overview': c.get('overview', ''),
+    }
+    with _FIND_CACHE_LOCK:
+        _FIND_CACHE[cache_key] = (result, None)
+    return result, None
+
+
 def identify_media(name, year=None):
     """自动识别媒体，多策略搜索
 

@@ -3182,9 +3182,21 @@ def movies_detail(movie_id: int):
         # TMDB 信息（可选，失败不影响主流程）
         tmdb_info = None
         try:
-            from media.tmdb import identify_media, get_tmdb_api_key
-            if get_tmdb_api_key() and name:
-                result, err = identify_media(name)
+            from media.tmdb import identify_media, get_tmdb_api_key, find_by_imdb_id
+            if get_tmdb_api_key():
+                # 优先按 IMDb 编号精确查询（零歧义，解决同名电影卡片串信息）
+                imdb_id = ''
+                if 'IMDB_ID' in r.index and not pd.isna(r['IMDB_ID']):
+                    raw = str(r['IMDB_ID']).strip()
+                    if raw and raw != 'N/A':
+                        imdb_id = raw
+                result = None
+                err = None
+                if imdb_id:
+                    result, err = find_by_imdb_id(imdb_id)
+                # IMDb 查询失败/无IMDb → 退回按电影名查询
+                if (not result or not result.get('poster_path')) and name:
+                    result, err = identify_media(name)
                 if result and result.get('poster_path'):
                     tmdb_info = {
                         'url': f"https://image.tmdb.org/t/p/w300{result['poster_path']}",

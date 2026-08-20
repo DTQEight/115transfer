@@ -84,12 +84,12 @@
                                                 title="搜索磁力链接">
                                             <i class="bi bi-magnet"></i>
                                         </button>
-                                        {% if not movie.is_empty %}
                                         <button onclick="transferTo115({{ movie.id }}, {{ movie.page }})" 
-                                                class="btn btn-outline-success action-btn" title="转存到115网盘">
+                                                class="btn btn-outline-success action-btn transfer-btn{% if movie.is_empty %} disabled opacity-50{% endif %}"
+                                                title="{% if movie.is_empty %}请先填写磁力链接{% else %}转存到115网盘{% endif %}"
+                                                {% if movie.is_empty %}disabled{% endif %}>
                                             <i class="bi bi-cloud-upload"></i>
                                         </button>
-                                        {% endif %}
                                     </div>
                                 </td>
                             </tr>

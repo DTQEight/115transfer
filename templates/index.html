@@ -587,12 +587,12 @@
                                                 title="搜索磁力链接">
                                             <i class="bi bi-magnet"></i>
                                         </button>
-                                        {% if not movie.is_empty %}
                                         <button onclick="transferTo115({{ movie.id }}, {{ movie.page }})" 
-                                                class="btn btn-outline-success action-btn" title="转存到115网盘">
+                                                class="btn btn-outline-success action-btn transfer-btn{% if movie.is_empty %} disabled opacity-50{% endif %}"
+                                                title="{% if movie.is_empty %}请先填写磁力链接{% else %}转存到115网盘{% endif %}"
+                                                {% if movie.is_empty %}disabled{% endif %}>
                                             <i class="bi bi-cloud-upload"></i>
                                         </button>
-                                        {% endif %}
                                     </div>
                                 </td>
                             </tr>
@@ -790,6 +790,21 @@
                     input.defaultValue = magnet;
                     if (magnet) input.classList.remove('border-warning');
                     else input.classList.add('border-warning');
+                    var row = input.closest('tr');
+                    if (row) {
+                        var tBtn = row.querySelector('.transfer-btn');
+                        if (tBtn) {
+                            if (magnet) {
+                                tBtn.disabled = false;
+                                tBtn.classList.remove('disabled','opacity-50');
+                                tBtn.title = '转存到115网盘';
+                            } else {
+                                tBtn.disabled = true;
+                                tBtn.classList.add('disabled','opacity-50');
+                                tBtn.title = '请先填写磁力链接';
+                            }
+                        }
+                    }
                     showToast('磁力链接已保存', 'success');
                 } else {
                     showToast(result.message || '保存失败', 'danger');
@@ -832,6 +847,18 @@
                     input.defaultValue = magnet;
                     if (magnet) input.classList.remove('border-warning');
                     else input.classList.add('border-warning');
+                    var tBtn = row ? row.querySelector('.transfer-btn') : null;
+                    if (tBtn) {
+                        if (magnet) {
+                            tBtn.disabled = false;
+                            tBtn.classList.remove('disabled','opacity-50');
+                            tBtn.title = '转存到115网盘';
+                        } else {
+                            tBtn.disabled = true;
+                            tBtn.classList.add('disabled','opacity-50');
+                            tBtn.title = '请先填写磁力链接';
+                        }
+                    }
                 }
             } catch (e) {
                 console.error('保存失败', e);

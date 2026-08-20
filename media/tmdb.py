@@ -165,23 +165,48 @@ def get_tv_detail(tv_id, language='zh-CN'):
         return None, f'获取详情失败: {str(e)}'
 
 
-def get_media_by_id(tmdb_id, language='zh-CN'):
-    """通过TMDB ID直接获取电影或电视剧详情"""
+def get_media_by_id(tmdb_id, media_type=None, language='zh-CN'):
+    """通过TMDB ID直接获取电影或电视剧详情
+
+    Args:
+        tmdb_id:  TMDB ID（整数或纯数字字符串）
+        media_type: 'movie' | 'tv' | None。None 时先尝试 movie 再 tv（兼容旧无类型数据）。
+                    有类型时**只查询指定端点**，避免同 ID 不同类型的命名空间冲突。
+        language: 语言
+    Returns:
+        (result_dict or None, err_msg)
+    """
     api_key = get_tmdb_api_key()
     if not api_key:
         return None, '未配置TMDB API Key'
 
-    # 先尝试电影
-    detail, err = get_movie_detail(tmdb_id, language)
+    try:
+        tmdb_id_int = int(tmdb_id)
+    except (ValueError, TypeError):
+        return None, f'TMDB ID 无效: {tmdb_id}'
+
+    # 若指定类型，直接定向查询，不做回退
+    if media_type == 'movie':
+        detail, err = get_movie_detail(tmdb_id_int, language)
+        if detail:
+            return _format_movie_result(detail, 'movie'), None
+        return None, err or f'TMDB电影 {tmdb_id_int} 未找到'
+    if media_type == 'tv':
+        detail, err = get_tv_detail(tmdb_id_int, language)
+        if detail:
+            return _format_tv_result(detail), None
+        return None, err or f'TMDB剧集 {tmdb_id_int} 未找到'
+
+    # 未指定类型：兼容旧纯数字ID，先试电影再试电视剧
+    detail, err = get_movie_detail(tmdb_id_int, language)
     if detail:
         return _format_movie_result(detail, 'movie'), None
 
-    # 再尝试电视剧
-    detail, err = get_tv_detail(tmdb_id, language)
+    detail, err = get_tv_detail(tmdb_id_int, language)
     if detail:
         return _format_tv_result(detail), None
 
-    return None, f'TMDB ID {tmdb_id} 未找到'
+    return None, f'TMDB ID {tmdb_id_int} 未找到'
 
 
 def _format_movie_result(detail, media_type='movie'):
@@ -263,9 +288,9 @@ def find_by_imdb_id(imdb_id, language='zh-CN'):
     tmdb_id = c.get('id')
     mt = 'movie' if c in data.get('movie_results', []) else 'tv'
 
-    # 拿一次详情补 overview / vote_average / release_date 等
+    # 拿一次详情补 overview / vote_average / release_date 等（按正确类型定向）
     if tmdb_id:
-        detail, err = get_media_by_id(tmdb_id, language=language)
+        detail, err = get_media_by_id(tmdb_id, media_type=mt, language=language)
         if detail:
             result = {
                 'tmdb_id': detail.get('tmdb_id') or tmdb_id,

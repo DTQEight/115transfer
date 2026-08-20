@@ -94,6 +94,78 @@ def get_beijing_time() -> datetime:
     """获取北京时间"""
     return datetime.now(zoneinfo.ZoneInfo("Asia/Shanghai"))
 
+
+# ---------- TMDB ID（带类型前缀）工具 ----------
+# 存储格式："tv:85436" / "movie:1732766" / "85436"（旧纯数字，无类型）
+# 这样不需要新增 Excel 列，向后兼容；同时彻底解决 movie/tv 同 ID 的命名空间冲突。
+def parse_tmdb_id(raw) -> Tuple[str, Optional[str]]:
+    """解析 TMDB_ID 单元格值 → (纯数字ID, media_type or None)
+
+    例：
+        "tv:85436"        → ("85436", "tv")
+        "movie:1732766"   → ("1732766", "movie")
+        "1732766.0"       → ("1732766", None)   旧浮点格式
+        "" / NaN / "N/A"  → ("", None)
+    """
+    if raw is None:
+        return "", None
+    try:
+        if pd.isna(raw):
+            return "", None
+    except (TypeError, ValueError):
+        pass
+    s = str(raw).strip()
+    if not s or s == 'N/A':
+        return "", None
+    if s.lower().startswith('tv:'):
+        tid = s[3:].strip()
+        if tid.endswith('.0'):
+            try:
+                tid = str(int(float(tid)))
+            except ValueError:
+                pass
+        return tid, 'tv'
+    if s.lower().startswith('movie:'):
+        tid = s[6:].strip()
+        if tid.endswith('.0'):
+            try:
+                tid = str(int(float(tid)))
+            except ValueError:
+                pass
+        return tid, 'movie'
+    # 旧纯数字/浮点 → 规范化为整数串，类型未知
+    try:
+        f = float(s)
+        if f.is_integer():
+            return str(int(f)), None
+    except (ValueError, TypeError):
+        pass
+    return s, None
+
+
+def compose_tmdb_id(tmdb_id_raw, media_type: Optional[str]) -> str:
+    """按 id + 类型拼接 Excel 单元格要存的字符串。"""
+    if not tmdb_id_raw:
+        return ""
+    tid = str(tmdb_id_raw).strip()
+    # 去尾 .0
+    try:
+        f = float(tid)
+        if f.is_integer():
+            tid = str(int(f))
+    except (ValueError, TypeError):
+        pass
+    if media_type in ('movie', 'tv'):
+        return f"{media_type}:{tid}"
+    return tid
+
+
+def tmdb_display(raw) -> str:
+    """给前端展示用：返回带类型说明的纯ID或"tv:xxxx"去掉前缀后的数字。
+    这里只返回纯ID数字，类型另用 media_type 判断。"""
+    tid, _mt = parse_tmdb_id(raw)
+    return tid
+
 app = Flask(__name__)
 
 # Flask secret_key：从环境变量读取，生产环境必须设置强随机值
@@ -506,7 +578,8 @@ def _jellyfin_match_and_write() -> int:
         'url': str(r['豆瓣链接']) if pd.notna(r['豆瓣链接']) else '',
         'year': '',
         'imdb_id': str(r['IMDB_ID']) if 'IMDB_ID' in r.index and pd.notna(r['IMDB_ID']) else '',
-        'tmdb_id': str(r['TMDB_ID']) if 'TMDB_ID' in r.index and pd.notna(r['TMDB_ID']) else '',
+        # TMDB_ID 可能带 tv:/movie: 前缀，Jellyfin ProviderIds.Tmdb 只比纯数字
+        'tmdb_id': parse_tmdb_id(r['TMDB_ID'])[0] if 'TMDB_ID' in r.index and pd.notna(r['TMDB_ID']) else '',
     } for _, r in df.iterrows()]
     in_lib = jellyfin.refresh_in_library_status(movies)
     count = 0
@@ -623,20 +696,18 @@ def load_movies() -> pd.DataFrame:
     # 兼容旧数据文件：无"TMDB_ID"列时自动补空列（手动识别的备用匹配主键，国产片常见无IMDb）
     if 'TMDB_ID' not in df.columns:
         df['TMDB_ID'] = ''
-    # 规范化 TMDB_ID：将 Excel 读出的浮点格式（如 1732766.0）统一转为整数字符串（1732766）
+    # 规范化 TMDB_ID：支持 "tv:85436" / "movie:xxx" 前缀格式；旧浮点 1732766.0 → 1732766
     def _norm_tmdb(v):
         if pd.isna(v):
             return ''
         s = str(v).strip()
         if not s or s == 'N/A':
-            return '' if s != 'N/A' else s
-        try:
-            f = float(s)
-            if f.is_integer():
-                return str(int(f))
-        except (ValueError, TypeError):
-            pass
-        return s
+            return s if s == 'N/A' else ''
+        # 走 parse → 再 compose，保证前缀统一、尾部 .0 被去掉
+        tid, mt = parse_tmdb_id(s)
+        if not tid:
+            return '' if s != 'N/A' else 'N/A'
+        return compose_tmdb_id(tid, mt)
     df['TMDB_ID'] = df['TMDB_ID'].apply(_norm_tmdb)
     # 过滤掉重复的表头行（序号列为非数字的行）
     if not df.empty:
@@ -671,6 +742,11 @@ def save_movies(df: pd.DataFrame) -> None:
                 if not s:
                     return ''
                 if col == 'TMDB_ID' and s != 'N/A':
+                    tid, mt = parse_tmdb_id(s)
+                    if not tid:
+                        return ''
+                    return compose_tmdb_id(tid, mt)
+                if col == 'IMDB_ID' and s != 'N/A':
                     try:
                         f = float(s)
                         if f.is_integer():
@@ -3203,12 +3279,14 @@ def tmdb_search():
 
 @app.route('/movie/<int:movie_id>/tmdb_id', methods=['POST'])
 def save_movie_tmdb_id(movie_id: int):
-    """按序号+页码+豆瓣链接定位电影行，写入 TMDB_ID 列。
+    """按序号+页码+豆瓣链接定位电影行，写入 TMDB_ID 列（支持带类型前缀 tv:/movie:）。
 
     Body:
         page: 页码（int，因为每页序号从1重新编号，必传）
         douban_url: 豆瓣链接（首选定位键，同名电影独立区分，必传）
         tmdb_id: 新的 TMDB ID（纯数字或空字符串清除）
+        tmdb_type: 可选 'movie' | 'tv'；有值时拼成 "movie:xxx" / "tv:xxx" 前缀，
+                   彻底解决 TMDB 电影/剧集同 ID 命名空间冲突。
     返回:
         { success, message, row_url }
     """
@@ -3217,6 +3295,9 @@ def save_movie_tmdb_id(movie_id: int):
         page = payload.get('page')
         douban_url = (payload.get('douban_url') or '').strip()
         tmdb_id_raw = (payload.get('tmdb_id') or '').strip()
+        tmdb_type = (payload.get('tmdb_type') or '').strip() or None
+        if tmdb_type not in ('movie', 'tv'):
+            tmdb_type = None
         if page is None or not douban_url:
             return jsonify({'success': False, 'message': '缺少定位参数（page + douban_url）'}), 400
         try:
@@ -3225,7 +3306,8 @@ def save_movie_tmdb_id(movie_id: int):
             return jsonify({'success': False, 'message': 'page 必须是数字'}), 400
         if tmdb_id_raw and not str(tmdb_id_raw).isdigit():
             return jsonify({'success': False, 'message': 'TMDB ID 必须是纯数字或留空'}), 400
-        new_tmdb_id = str(tmdb_id_raw) if tmdb_id_raw else ''
+        # 合成存储格式："movie:xxx" / "tv:xxx" / "xxx" / ""
+        new_tmdb_id = compose_tmdb_id(tmdb_id_raw, tmdb_type) if tmdb_id_raw else ''
 
         with data_lock:
             df = load_movies()
@@ -3252,9 +3334,9 @@ def save_movie_tmdb_id(movie_id: int):
             df.at[idx, 'TMDB_ID'] = new_tmdb_id
             save_movies(df)
             actual_url = str(df.at[idx, '豆瓣链接']) if '豆瓣链接' in df.columns and pd.notna(df.at[idx, '豆瓣链接']) else ''
-        logger.info(f'[TMDB手动识别] 已写入 TMDB_ID={new_tmdb_id or "清除"} 电影#{movie_id} 页{page} URL={douban_url}')
+        logger.info(f'[TMDB手动识别] 已写入 TMDB_ID={new_tmdb_id or "清除"} (type={tmdb_type or "auto"}) 电影#{movie_id} 页{page} URL={douban_url}')
         return jsonify({'success': True,
-                        'message': ('已写入 TMDB ID ' + new_tmdb_id) if new_tmdb_id else '已清除手动 TMDB ID',
+                        'message': ('已写入 TMDB ID ' + tmdb_id_raw + ('（剧集）' if tmdb_type == 'tv' else '（电影）' if tmdb_type == 'movie' else '')) if tmdb_id_raw else '已清除手动 TMDB ID',
                         'row_url': actual_url})
     except Exception as e:
         logger.error(f'[TMDB手动识别] 写入失败 #{movie_id}: {e}')
@@ -3326,26 +3408,28 @@ def movies_detail(movie_id: int):
             # 先取本机编号（前端"手动识别TMDB"按钮显隐要用：都没有才提示手动识别）
             imdb_id = ''
             tmdb_id = ''
+            tmdb_media_type: Optional[str] = None
             if 'IMDB_ID' in r.index and not pd.isna(r['IMDB_ID']):
                 raw = str(r['IMDB_ID']).strip()
                 if raw and raw != 'N/A':
                     imdb_id = raw
             if 'TMDB_ID' in r.index and not pd.isna(r['TMDB_ID']):
-                raw = str(r['TMDB_ID']).strip()
-                if raw and raw != 'N/A':
-                    tmdb_id = raw
-            ids_info = {'imdb_id': imdb_id, 'tmdb_id': tmdb_id}
+                tid, mt = parse_tmdb_id(r['TMDB_ID'])
+                if tid:
+                    tmdb_id = tid
+                    tmdb_media_type = mt
+            # ids_info.tmdb_id 给前端 meta-chip 用：展示纯 ID；另外返回 tmdb_media_type 控制类型标签
+            ids_info = {'imdb_id': imdb_id, 'tmdb_id': tmdb_id, 'tmdb_media_type': tmdb_media_type}
 
             if get_tmdb_api_key():
                 result = None
                 # 1. 优先按 IMDb 编号精确查询（零歧义，解决同名电影卡片串信息）
                 if imdb_id:
                     result, _ = find_by_imdb_id(imdb_id)
-                # 2. 再按本地 TMDB_ID 精确查询（手动识别，国产片无IMDb兜底）
+                # 2. 再按本地 TMDB_ID 精确查询（手动识别，国产片无IMDb兜底）——**定向类型**，避免 tv/movie 同ID冲突
                 if (not result or not result.get('poster_path')) and tmdb_id:
                     try:
-                        # get_media_by_id 返回 (result, err) tuple，且签名无 media_type 参数
-                        res, _err = get_media_by_id(tmdb_id)
+                        res, _err = get_media_by_id(tmdb_id, media_type=tmdb_media_type)
                         if res:
                             result = res
                     except Exception:

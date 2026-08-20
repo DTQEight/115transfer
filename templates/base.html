@@ -2132,7 +2132,10 @@
                 html += '<span class="meta-chip" style="background:#e0f2fe;color:#075985" title="IMDb编号（豆瓣自动回填）">IMDb ' + escapeHtml(ids.imdb_id) + '</span>';
             }
             if (ids.tmdb_id) {
-                html += '<span class="meta-chip" style="background:#ede9fe;color:#5b21b6" title="TMDB编号（手动识别）">TMDB ' + escapeHtml(ids.tmdb_id) + '</span>';
+                var tmdbTypeLabel = '';
+                if (ids.tmdb_media_type === 'tv') tmdbTypeLabel = '（剧集）';
+                else if (ids.tmdb_media_type === 'movie') tmdbTypeLabel = '（电影）';
+                html += '<span class="meta-chip" style="background:#ede9fe;color:#5b21b6" title="TMDB编号（手动识别）">TMDB ' + escapeHtml(ids.tmdb_id) + tmdbTypeLabel + '</span>';
                 html += '<button class="btn btn-sm btn-outline-warning" style="padding:2px 8px;font-size:11px" onclick="openTmdbPicker(true)">重识别</button>';
             } else if (needManualTmdb) {
                 html += '<button class="btn btn-sm btn-info text-white" style="padding:4px 10px;font-size:12px" onclick="openTmdbPicker(false)">' +
@@ -2306,7 +2309,7 @@
                     html += '<span style="font-size:11px;color:#9ca3af;margin-left:auto">TMDB ' + escapeHtml(String(c.tmdb_id)) + '</span>';
                     html += '</div>';
                     html += '<div style="font-size:12px;color:#4b5563;margin-top:8px;line-height:1.4;height:66px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(ov) + '</div>';
-                    html += '<button class="btn btn-sm btn-primary w-100 mt-2" onclick="applyTmdbCandidate(' + c.tmdb_id + ')">' +
+                    html += '<button class="btn btn-sm btn-primary w-100 mt-2" onclick="applyTmdbCandidate(' + c.tmdb_id + ', \'' + String(c.media_type || '').replace(/'/g, '&#39;') + '\')">' +
                             '<i class="bi bi-check-circle me-1"></i>选择此项</button>';
                     html += '</div></div>';
                 });
@@ -2320,20 +2323,25 @@
             }
         }
 
-        async function applyTmdbCandidate(tmdbId) {
+        async function applyTmdbCandidate(tmdbId, mediaType) {
             if (!_currentDetailCtx) return;
             var btn = event && event.currentTarget ? event.currentTarget : null;
             var original = btn ? btn.innerHTML : '';
             if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>写入中...'; }
             try {
+                var body = {
+                    page: _currentDetailCtx.page,
+                    douban_url: _currentDetailCtx.url,
+                    tmdb_id: String(tmdbId),
+                };
+                // 只有合法类型才上传，避免无类型旧接口回退时被覆盖
+                if (mediaType === 'movie' || mediaType === 'tv') {
+                    body.tmdb_type = mediaType;
+                }
                 var resp = await apiFetch('/movie/' + _currentDetailCtx.id + '/tmdb_id', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        page: _currentDetailCtx.page,
-                        douban_url: _currentDetailCtx.url,
-                        tmdb_id: String(tmdbId),
-                    }),
+                    body: JSON.stringify(body),
                 });
                 var result = await resp.json();
                 if (!result.success) throw new Error(result.message || '写入失败');

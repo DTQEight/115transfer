@@ -799,13 +799,30 @@ def index() -> str:
     except ValueError:
         page_num = 1
 
+    # 筛选参数：all(默认) / in(已入库) / out(未入库)
+    lib_filter = (request.args.get('filter') or 'all').strip().lower()
+
     try:
         with data_lock:
             df = load_movies()
 
         if df.empty:
             return render_template('index.html', movies=[], current_page=0, all_page_nums=[], version=VERSION,
-                                  stats={'total': 0, 'pages': 0, 'filled': 0, 'empty': 0, 'complete_rate': 0})
+                                  stats={'total': 0, 'pages': 0, 'filled': 0, 'empty': 0, 'complete_rate': 0},
+                                  current_filter='all')
+
+        # 按入库状态筛选
+        if lib_filter == 'in' and '已入库' in df.columns:
+            df = df[df['已入库'].apply(lambda v: str(v).strip() == '是' if not pd.isna(v) else False)]
+        elif lib_filter == 'out' and '已入库' in df.columns:
+            df = df[df['已入库'].apply(lambda v: str(v).strip() != '是' if not pd.isna(v) else True)]
+        else:
+            lib_filter = 'all'
+
+        if df.empty:
+            return render_template('index.html', movies=[], current_page=0, all_page_nums=[], version=VERSION,
+                                  stats={'total': 0, 'pages': 0, 'filled': 0, 'empty': 0, 'complete_rate': 0},
+                                  current_filter=lib_filter)
 
         all_page_nums = sorted(df['页码'].unique())
 
@@ -843,12 +860,13 @@ def index() -> str:
                               current_page=page_num,
                               all_page_nums=all_page_nums,
                               version=VERSION,
-                              stats=stats)
+                              stats=stats,
+                              current_filter=lib_filter)
     except Exception as e:
         logger.error(f'[首页] 加载数据失败: {e}', exc_info=True)
-        # 返回500状态码，便于前端识别错误，而不是返回200的"成功"页面
         return render_template('index.html', movies=[], current_page=0, all_page_nums=[], version=VERSION,
                               stats={'total': 0, 'pages': 0, 'filled': 0, 'empty': 0, 'complete_rate': 0},
+                              current_filter='all',
                               error='加载数据失败，请检查日志'), 500
 
 @app.route('/search')

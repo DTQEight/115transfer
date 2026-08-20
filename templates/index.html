@@ -232,6 +232,12 @@
                             </button>
                         </div>
                         <div class="vr d-none d-md-block"></div>
+                        <select id="libFilter" class="form-select form-select-sm" style="width: auto;" onchange="changeFilter(this.value)" title="按入库状态筛选">
+                            <option value="all" {{ 'selected' if current_filter == 'all' else '' }}>全部</option>
+                            <option value="in" {{ 'selected' if current_filter == 'in' else '' }}>已入库</option>
+                            <option value="out" {{ 'selected' if current_filter == 'out' else '' }}>未入库</option>
+                        </select>
+                        <div class="vr d-none d-md-block"></div>
                         <button onclick="batchTransfer115()" class="btn btn-sm btn-primary" title="批量转存当前页所有磁力链接到115网盘">
                             <i class="bi bi-cloud-upload me-1"></i>批量转存
                         </button>
@@ -246,27 +252,30 @@
                         <nav>
                             <ul class="pagination pagination-sm justify-content-end mb-0">
                                 <li class="page-item {{ 'disabled' if current_page == 0 or (all_page_nums and current_page == all_page_nums[0]) else '' }}">
-                                    <a class="page-link" href="{{ url_for('index', page=all_page_nums[0] if all_page_nums else 1) }}">
+                                    <a class="page-link" href="{{ url_for('index', page=all_page_nums[0] if all_page_nums else 1, filter=current_filter) }}">
                                         <i class="bi bi-chevron-double-left"></i>
                                     </a>
                                 </li>
                                 <li class="page-item {{ 'disabled' if current_page == 0 or not all_page_nums or current_page == all_page_nums[0] else '' }}">
-                                    <a class="page-link" href="{{ url_for('index', page=all_page_nums[all_page_nums.index(current_page)-1] if all_page_nums and current_page in all_page_nums and current_page != all_page_nums[0] else (all_page_nums[0] if all_page_nums else 1)) }}">
+                                    <a class="page-link" href="{{ url_for('index', page=all_page_nums[all_page_nums.index(current_page)-1] if all_page_nums and current_page in all_page_nums and current_page != all_page_nums[0] else (all_page_nums[0] if all_page_nums else 1), filter=current_filter) }}">
                                         <i class="bi bi-chevron-left"></i>
                                     </a>
                                 </li>
                                 <li class="page-item {{ 'disabled' if current_page == 0 or not all_page_nums or current_page == all_page_nums[-1] else '' }}">
-                                    <a class="page-link" href="{{ url_for('index', page=all_page_nums[all_page_nums.index(current_page)+1] if all_page_nums and current_page in all_page_nums and current_page != all_page_nums[-1] else (all_page_nums[-1] if all_page_nums else 1)) }}">
+                                    <a class="page-link" href="{{ url_for('index', page=all_page_nums[all_page_nums.index(current_page)+1] if all_page_nums and current_page in all_page_nums and current_page != all_page_nums[-1] else (all_page_nums[-1] if all_page_nums else 1), filter=current_filter) }}">
                                         <i class="bi bi-chevron-right"></i>
                                     </a>
                                 </li>
                                 <li class="page-item {{ 'disabled' if current_page == 0 or (all_page_nums and current_page == all_page_nums[-1]) else '' }}">
-                                    <a class="page-link" href="{{ url_for('index', page=all_page_nums[-1] if all_page_nums else 1) }}">
+                                    <a class="page-link" href="{{ url_for('index', page=all_page_nums[-1] if all_page_nums else 1, filter=current_filter) }}">
                                         <i class="bi bi-chevron-double-right"></i>
                                     </a>
                                 </li>
                             </ul>
                         </nav>
+                        <span class="text-muted small d-none d-lg-inline" title="键盘快捷键：←/→ 翻页">
+                            <i class="bi bi-keyboard me-1"></i>←/→
+                        </span>
                     </div>
                 </div>
             </div>
@@ -656,11 +665,13 @@
             }
         });
 
+        const currentFilter = '{{ current_filter or "all" }}';
+
         function goToPage() {
             const page = document.getElementById('goPage').value;
             if (page) {
                 showLoading();
-                location.href = `/?page=${page}`;
+                location.href = `/?page=${page}&filter=${currentFilter}`;
             }
         }
 
@@ -670,13 +681,34 @@
                 goToPage();
             }
         });
-        
+
         function selectPage(page) {
             if (page) {
                 showLoading();
-                location.href = `/?page=${page}`;
+                location.href = `/?page=${page}&filter=${currentFilter}`;
             }
         }
+
+        function changeFilter(filter) {
+            showLoading();
+            location.href = `/?page=1&filter=${filter}`;
+        }
+
+        // 翻页快捷键：←/→
+        document.addEventListener('keydown', (e) => {
+            const tag = (e.target.tagName || '').toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
+            const links = document.querySelectorAll('ul.pagination .page-link');
+            if (links.length < 4) return;
+            // links[0]=首页 [1]=上一页 [2]=下一页 [3]=末页
+            if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                if (!links[1].parentElement.classList.contains('disabled')) links[1].click();
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                if (!links[2].parentElement.classList.contains('disabled')) links[2].click();
+            }
+        });
 
         async function transferTo115(movieId, page) {
             showLoading();

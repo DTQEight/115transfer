@@ -170,24 +170,70 @@ def get_task_list(page=1):
     if not cookie:
         return False, '未配置115 Cookie', []
 
+    # 先校验 Cookie 是否仍有效（失效时老 web/lixian 接口会跳登录页 HTML，导致格式错误）
     try:
-        url = f'https://115.com/web/lixian/?ct=lixian&ac=task_list&page={page}'
+        nav_resp = requests.get('https://my.115.com/?ct=ajax&ac=nav',
+                                headers=_get_headers(), timeout=10)
+        nav_data = nav_resp.json()
+        if nav_data.get('state') is not True:
+            return False, '115 Cookie 已失效，请重新获取后再试', []
+    except (json.JSONDecodeError, Exception) as e:
+        # 校验本身失败不直接中断，仍尝试请求任务列表
+        pass
+
+    try:
+        # 优先走 webapi 纯 JSON 接口（返回结构更稳定，不跳登录HTML）
+        url = f'https://webapi.115.com/web/lixian/task/list?page={page}'
         resp = requests.get(url, headers=_get_headers(), timeout=15)
-        
+
         if resp.status_code != 200:
             return False, f'请求失败，状态码: {resp.status_code}', []
-        
+
         try:
             result = resp.json()
         except json.JSONDecodeError:
-            return False, '响应格式错误', []
+            # 兜底：webapi 不行再试老 web/lixian 接口
+            try:
+                old_url = f'https://115.com/web/lixian/?ct=lixian&ac=task_list&page={page}'
+                resp = requests.get(old_url, headers=_get_headers(), timeout=15)
+                result = resp.json()
+            except (json.JSONDecodeError, Exception):
+                snippet = resp.text[:150].replace('\n', ' ').replace('\r', '')
+                return False, f'115返回非JSON，疑似Cookie失效或接口变更。响应片段：{snippet}', []
 
-        if result.get('state') is True or result.get('state') == 1:
-            tasks = result.get('result', result.get('data', []))
+        state_ok = (
+            result.get('state') is True
+            or result.get('state') == 1
+            or result.get('errcode') == 0
+            or result.get('errno') == 0
+            or result.get('code') == 0
+            or (isinstance(result.get('data'), dict) and 'tasks' in result.get('data', {}))
+        )
+        if state_ok:
+            tasks = (
+                result.get('result')
+                or result.get('data')
+                or result.get('tasks')
+                or result.get('list')
+                or []
+            )
             if isinstance(tasks, dict):
-                tasks = tasks.get('tasks', tasks.get('list', []))
+                tasks = (
+                    tasks.get('tasks')
+                    or tasks.get('list')
+                    or tasks.get('items')
+                    or []
+                )
             return True, '获取成功', tasks if isinstance(tasks, list) else []
-        return False, result.get('error_msg', result.get('error', '获取任务列表失败')), []
+        err = (
+            result.get('error_msg')
+            or result.get('error')
+            or result.get('errmsg')
+            or result.get('msg')
+            or result.get('message')
+            or '获取任务列表失败'
+        )
+        return False, str(err), []
     except Exception as e:
         return False, f'获取失败: {str(e)}', []
 

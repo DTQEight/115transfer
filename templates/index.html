@@ -740,7 +740,7 @@
                     showToast(result.message, 'danger');
                 }
             } catch (e) {
-                showToast('获取任务列表失败', 'danger');
+                showToast('获取任务列表失败：' + (e && e.message ? e.message : String(e)), 'danger');
             }
             hideLoading();
         }

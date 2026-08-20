@@ -3387,11 +3387,13 @@ def movies_tmdb_sync():
         # 立即放后台，避免请求超时
         _threading_local.Thread(target=_do_tmdb_sync, args=(overwrite, only_imdb), daemon=True).start()
 
+        mode_label = '仅补缺失' if mode == 'fill' else '覆盖刷新'
+        scope_label = 'IMDb+名称' if scope == 'all' else '仅 IMDb 精确匹配'
+        message = ('已启动后台批量同步 TMDB ID，请到【实时日志】查看进度。'
+                   + f'（模式：{mode_label}；范围：{scope_label}）')
         return jsonify({
             'success': True,
-            'message': '已启动后台批量同步 TMDB ID，请到【实时日志】查看进度。'
-                       + ('（模式：仅补缺失' if mode == 'fill' else '（模式：覆盖刷新')
-                       + '；范围：IMDb+名称）' if scope == 'all' else '；范围：仅 IMDb 精确匹配）'),
+            'message': message,
             'mode': mode,
             'scope': scope,
         })

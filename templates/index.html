@@ -765,6 +765,57 @@
         }
 
 
+        async function saveMagnetInline(input) {
+            var id = input.dataset.id;
+            var page = input.dataset.page;
+            var url = input.dataset.url || '';
+            var magnet = input.value.trim();
+            var originalValue = input.defaultValue;
+
+            if (magnet === originalValue) return;
+
+            var row = input.closest('tr');
+            var name = row ? row.querySelector('.fw-medium').textContent.trim() : '';
+
+            try {
+                var body = 'page=' + page + '&name=' + encodeURIComponent(name) + '&magnet=' + encodeURIComponent(magnet);
+                if (url) body += '&url=' + encodeURIComponent(url);
+                var resp = await apiFetch('/update/' + id, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: body
+                });
+                var result = await resp.json();
+                if (result.success) {
+                    input.defaultValue = magnet;
+                    if (magnet) input.classList.remove('border-warning');
+                    else input.classList.add('border-warning');
+                    showToast('磁力链接已保存', 'success');
+                } else {
+                    showToast(result.message || '保存失败', 'danger');
+                    input.value = originalValue;
+                }
+            } catch (e) {
+                showToast('保存失败', 'danger');
+                input.value = originalValue;
+            }
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'F') {
+                e.preventDefault();
+                document.getElementById('searchInput').focus();
+            }
+        });
+
+        function goToPage() {
+            var input = document.getElementById('goToPageInput');
+            if (!input) return;
+            var p = parseInt(input.value, 10);
+            if (!p) return;
+            window.location.href = window.location.pathname + '?page=' + p;
+        }
+
         async function saveMagnetInlineDirect(input, magnet) {
             var id = input.dataset.id;
             var page = input.dataset.page;

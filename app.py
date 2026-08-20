@@ -2868,6 +2868,150 @@ _auto_sync_lock: threading.Lock = threading.Lock()
 _auto_sync_status: Dict[str, Any] = {'running': False, 'last_result': '', 'last_time': ''}
 
 
+# ===== TMDB ID 批量同步 =====
+_tmdb_sync_lock: threading.Lock = threading.Lock()
+_tmdb_sync_status: Dict[str, Any] = {'running': False, 'last_summary': '', 'last_time': ''}
+
+
+def _do_tmdb_sync(overwrite: bool = False, only_imdb_missing: bool = False) -> None:
+    """后台补齐/刷新 TMDB_ID（带类型前缀 tv:/movie:）。
+
+    优先级：
+      1. 有 IMDB_ID → find_by_imdb_id（零歧义），取出类型拼前缀
+      2. 无 IMDB_ID，且 only_imdb_missing=False → identify_media 按名最佳匹配（有类型）
+    控制：
+      - 每部之间 sleep 0.4s，避免 TMDB 速率限制；搜索结果在 tmdb 模块内有缓存，重复名不重复请求
+      - 写 Excel 每 commit_batch=50 部 批量落盘一次，减少 IO；完成时再最终落盘
+    """
+    from media.tmdb import find_by_imdb_id, identify_media, get_tmdb_api_key
+    import threading as _threading
+    if not _tmdb_sync_lock.acquire(blocking=False):
+        logger.info('[TMDB批量同步] 上一次同步仍在执行，跳过本次请求')
+        return
+    try:
+        _tmdb_sync_status['running'] = True
+        if not get_tmdb_api_key():
+            logger.warning('[TMDB批量同步] 未配置 TMDB API Key，中止')
+            return
+
+        with data_lock:
+            df = load_movies()
+        if df.empty:
+            logger.info('[TMDB批量同步] 电影列表为空，结束')
+            return
+
+        total = len(df)
+        # 判定哪些行需要处理
+        rows_idx: List[int] = []
+        for i, r in df.iterrows():
+            tid, _mt = parse_tmdb_id(r['TMDB_ID']) if ('TMDB_ID' in r.index and pd.notna(r['TMDB_ID'])) else ('', None)
+            if tid and not overwrite:
+                continue
+            rows_idx.append(i)
+
+        need = len(rows_idx)
+        logger.info(f'[TMDB批量同步] 开始: 共{total}部，待处理{need}部（overwrite={overwrite}, only_imdb_missing={only_imdb_missing}）')
+
+        imdb_ok = 0
+        name_ok = 0
+        skipped_imdb = 0
+        skipped_name = 0
+        failed = 0
+        updates: Dict[int, str] = {}  # df行号 -> compose后的值
+        COMMIT_EVERY = 50
+
+        for pos, i in enumerate(rows_idx, start=1):
+            r = df.iloc[i]
+            name = str(r['电影名']) if pd.notna(r['电影名']) else ''
+            imdb_raw = str(r['IMDB_ID']) if 'IMDB_ID' in r.index and pd.notna(r['IMDB_ID']) else ''
+            imdb_id = imdb_raw.strip() if imdb_raw and imdb_raw != 'N/A' else ''
+            matched_tmdb_id = ''
+            matched_type: Optional[str] = None
+            source = ''
+
+            # 1. IMDb 精确查找（零歧义，优先）
+            if imdb_id:
+                res, err = find_by_imdb_id(imdb_id)
+                if res and res.get('tmdb_id'):
+                    matched_tmdb_id = str(res['tmdb_id'])
+                    matched_type = res.get('media_type') or None
+                    source = 'imdb'
+                    imdb_ok += 1
+                else:
+                    skipped_imdb += 1
+                    logger.debug(f'[TMDB批量同步] IMDb查不到: {name!r} IMDb={imdb_id} err={err or "无结果"}')
+
+            # 2. 无IMDb或查不到时，退回按电影名自动最佳匹配
+            if not matched_tmdb_id and not only_imdb_missing:
+                try:
+                    res, err = identify_media(name)
+                except Exception as e:
+                    res, err = None, str(e)
+                if res and res.get('tmdb_id'):
+                    matched_tmdb_id = str(res['tmdb_id'])
+                    matched_type = res.get('media_type') or None
+                    source = 'name'
+                    name_ok += 1
+                else:
+                    skipped_name += 1
+                    if pos <= 10 or pos % 50 == 0:
+                        logger.debug(f'[TMDB批量同步] 名称匹配失败: {name!r} err={err or "无结果"}')
+
+            if not matched_tmdb_id:
+                failed += 1
+            else:
+                composed = compose_tmdb_id(matched_tmdb_id, matched_type)
+                updates[i] = composed
+
+            # 进度日志（每100部或最后）
+            if pos % 100 == 0 or pos == need:
+                logger.info(f'[TMDB批量同步] 进度{pos}/{need} 成功{len(updates)} IMDb命中{imdb_ok} 名称命中{name_ok} 失败{failed}')
+
+            # 批量落盘
+            if len(updates) >= COMMIT_EVERY:
+                with data_lock:
+                    df2 = load_movies()
+                    if 'TMDB_ID' not in df2.columns:
+                        df2['TMDB_ID'] = ''
+                    for ri, val in updates.items():
+                        if ri < len(df2):
+                            df2.at[ri, 'TMDB_ID'] = val
+                    save_movies(df2)
+                    df = df2
+                logger.debug(f'[TMDB批量同步] 已批次落盘{len(updates)}条')
+                updates.clear()
+
+            # 限频：0.4s/条；find_by_imdb_id/identify_media 大部分走缓存，真实请求不到 1% 仍要限流
+            time.sleep(0.4)
+
+        # 最终落盘（不足一批的余数）
+        if updates:
+            with data_lock:
+                df2 = load_movies()
+                if 'TMDB_ID' not in df2.columns:
+                    df2['TMDB_ID'] = ''
+                for ri, val in updates.items():
+                    if ri < len(df2):
+                        df2.at[ri, 'TMDB_ID'] = val
+                save_movies(df2)
+
+        summary = (f'完成: 待处理{need}/总{total} 写入{imdb_ok + name_ok}（IMDb{imdb_ok} 名称{name_ok}）'
+                   f' 失败{failed}（IMDb未找到{skipped_imdb} 名称未找到{skipped_name}）')
+        logger.info(f'[TMDB批量同步] {summary}')
+        _tmdb_sync_status['last_summary'] = summary
+        _tmdb_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+    except Exception as e:
+        logger.error(f'[TMDB批量同步] 异常: {e}', exc_info=True)
+        _tmdb_sync_status['last_summary'] = '异常中止: ' + str(e)
+        _tmdb_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+    finally:
+        _tmdb_sync_status['running'] = False
+        try:
+            _tmdb_sync_lock.release()
+        except RuntimeError:
+            pass
+
+
 def _do_douban_auto_sync():
     """执行豆瓣全量自动同步（由调度器调用）"""
     # 原子地检查并获取锁，避免 TOCTOU 竞态条件
@@ -3210,6 +3354,60 @@ def douban_auto_sync_status():
                 'enabled': config.get('auto_sync_enabled', False),
                 'cron': config.get('auto_sync_cron', '0 3 * * *'),
             }
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+# ===== TMDB ID 批量同步路由 =====
+@app.route('/movies/tmdb_sync', methods=['POST'])
+def movies_tmdb_sync():
+    """一键批量补全 / 刷新全部电影的 TMDB ID（带类型前缀）。
+
+    Body / Form:
+        mode: 'fill'    仅补缺失（已有 TMDB_ID 的跳过）—— 默认，推荐日常
+              'refresh' 全量重新识别 / 覆盖已有（用于整体升级或怀疑旧值不准）
+        scope: 'all'        优先 IMDb 精确匹配，未命中再按电影名识别 —— 默认
+               'imdb_only'  仅对有 IMDb 的条目做 find_by_imdb_id（零歧义，不会误匹配，但没IMDb的留空）
+    返回 200 即表示已启动后台线程；实际进度通过 /logs 或 /movies/tmdb_sync_status 查看。
+    """
+    try:
+        payload = request.get_json(silent=True) or request.form
+        mode = (payload.get('mode') or 'fill').strip().lower() or 'fill'
+        scope = (payload.get('scope') or 'all').strip().lower() or 'all'
+        if mode not in ('fill', 'refresh'):
+            return jsonify({'success': False, 'message': 'mode 必须是 fill 或 refresh'}), 400
+        if scope not in ('all', 'imdb_only'):
+            return jsonify({'success': False, 'message': 'scope 必须是 all 或 imdb_only'}), 400
+
+        overwrite = (mode == 'refresh')
+        only_imdb = (scope == 'imdb_only')
+
+        import threading as _threading_local
+        # 立即放后台，避免请求超时
+        _threading_local.Thread(target=_do_tmdb_sync, args=(overwrite, only_imdb), daemon=True).start()
+
+        return jsonify({
+            'success': True,
+            'message': '已启动后台批量同步 TMDB ID，请到【实时日志】查看进度。'
+                       + ('（模式：仅补缺失' if mode == 'fill' else '（模式：覆盖刷新')
+                       + '；范围：IMDb+名称）' if scope == 'all' else '；范围：仅 IMDb 精确匹配）'),
+            'mode': mode,
+            'scope': scope,
+        })
+    except Exception as e:
+        logger.error(f'[TMDB批量同步] 启动失败: {e}')
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'}), 500
+
+
+@app.route('/movies/tmdb_sync_status')
+def movies_tmdb_sync_status():
+    try:
+        return jsonify({
+            'success': True,
+            'running': bool(_tmdb_sync_status.get('running')),
+            'last_time': _tmdb_sync_status.get('last_time') or '',
+            'last_summary': _tmdb_sync_status.get('last_summary') or '',
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})

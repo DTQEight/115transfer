@@ -71,6 +71,45 @@
             </div>
         </div>
 
+        <!-- TMDB ID 批量同步 -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-database-gear me-2"></i>一键补齐 TMDB ID（带类型）</span>
+                <button onclick="loadTmdbSyncStatus()" class="btn btn-outline-secondary btn-sm">
+                    <i class="bi bi-arrow-clockwise me-1"></i>刷新状态
+                </button>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    按优先级自动补齐 Excel 中 <code>TMDB_ID</code> 列，带 <code>movie:</code>/<code>tv:</code> 前缀以解决 TV/Movie 同 ID 冲突；
+                    可用于 Jellyfin 入库匹配 + 详情卡元数据。<br>
+                    ① 有 IMDb → 走 find_by_imdb_id（零歧义）；② 无 IMDb → 按豆瓣电影名最佳匹配。
+                </p>
+                <div class="row g-3 mb-3 align-items-end">
+                    <div class="col-12 col-md-4">
+                        <label class="form-label small">模式</label>
+                        <select id="tmdbSyncMode" class="form-select form-select-sm">
+                            <option value="fill" selected>仅补缺失（推荐，不覆盖现有值）</option>
+                            <option value="refresh">全量刷新（重新识别，覆盖已有）</option>
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-4">
+                        <label class="form-label small">范围</label>
+                        <select id="tmdbSyncScope" class="form-select form-select-sm">
+                            <option value="all" selected>IMDb 精确 + 名称匹配（全面）</option>
+                            <option value="imdb_only">仅 IMDb 精确匹配（零歧义但更慢）</option>
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-4">
+                        <button onclick="triggerTmdbSync()" id="tmdbSyncBtn" class="btn btn-outline-indigo btn-sm w-100" style="background:#5b21b6;color:#fff;border-color:#5b21b6">
+                            <i class="bi bi-lightning-charge me-1"></i>开始批量同步
+                        </button>
+                    </div>
+                </div>
+                <div id="tmdbSyncStatus" class="small"></div>
+            </div>
+        </div>
+
         <div class="card mb-4">
             <div class="card-header">
                 <i class="bi bi-cloud-download me-2"></i>同步电影
@@ -185,8 +224,60 @@ async function loadAutoSyncStatus() {
     }
 }
 
+// ===== TMDB 批量同步相关 =====
+async function triggerTmdbSync() {
+    var btn = document.getElementById('tmdbSyncBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>启动中...';
+    try {
+        var mode = document.getElementById('tmdbSyncMode').value;
+        var scope = document.getElementById('tmdbSyncScope').value;
+        var resp = await apiFetch('/movies/tmdb_sync', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({mode: mode, scope: scope})
+        });
+        var result = await resp.json();
+        showToast(result.message || (result.success ? '已启动' : '启动失败'), result.success ? 'success' : 'danger');
+        if (result.success) {
+            setTimeout(loadTmdbSyncStatus, 2000);
+        }
+    } catch (e) {
+        showToast('触发失败: ' + e.message, 'danger');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-lightning-charge me-1"></i>开始批量同步';
+    }
+}
+
+async function loadTmdbSyncStatus() {
+    var el = document.getElementById('tmdbSyncStatus');
+    try {
+        var resp = await apiFetch('/movies/tmdb_sync_status');
+        if (!resp.ok) { el.innerHTML = '<span class="text-muted">状态获取失败</span>'; return; }
+        var result = await resp.json();
+        if (!result.success) { el.innerHTML = '<span class="text-muted">' + escapeHtml(result.message || '') + '</span>'; return; }
+        var html = '';
+        if (result.running) {
+            html += '<div class="alert alert-info py-2 mb-2"><i class="bi bi-arrow-repeat me-1"></i>批量同步进行中，请到【实时日志】查看进度条...</div>';
+        }
+        html += '<div class="d-flex flex-column gap-1">';
+        if (result.last_time) html += '<div><span class="text-muted">上次执行:</span> ' + escapeHtml(result.last_time) + '</div>';
+        if (result.last_summary) html += '<div><span class="text-muted">结果:</span> ' + escapeHtml(result.last_summary) + '</div>';
+        if (!result.last_summary && !result.running) html += '<div class="text-muted">尚未执行，选择参数后点击【开始批量同步】即可。</div>';
+        html += '</div>';
+        el.innerHTML = html;
+        if (result.running) {
+            setTimeout(loadTmdbSyncStatus, 5000);
+        }
+    } catch (e) {
+        el.innerHTML = '<span class="text-danger">状态获取失败: ' + escapeHtml(e.message) + '</span>';
+    }
+}
+
 loadAutoSyncConfig();
 loadAutoSyncStatus();
+loadTmdbSyncStatus();
 
 async function saveConfig() {
     const userId = document.getElementById('userId').value.trim();

@@ -3311,7 +3311,10 @@ def movies_detail(movie_id: int):
                 # 2. 再按本地 TMDB_ID 精确查询（手动识别，国产片无IMDb兜底）
                 if (not result or not result.get('poster_path')) and tmdb_id:
                     try:
-                        result = get_media_by_id(tmdb_id, media_type='movie')
+                        # get_media_by_id 返回 (result, err) tuple，且签名无 media_type 参数
+                        res, _err = get_media_by_id(tmdb_id)
+                        if res:
+                            result = res
                     except Exception:
                         result = None
                 # 3. 两个 ID 都没时：退回按电影名搜索（仍可能误匹配，但比无海报好）

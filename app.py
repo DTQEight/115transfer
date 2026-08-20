@@ -573,14 +573,19 @@ def _jellyfin_match_and_write() -> int:
         df = load_movies()
     if df.empty:
         return 0
-    movies = [{
-        'title': str(r['电影名']) if pd.notna(r['电影名']) else '',
-        'url': str(r['豆瓣链接']) if pd.notna(r['豆瓣链接']) else '',
-        'year': '',
-        'imdb_id': str(r['IMDB_ID']) if 'IMDB_ID' in r.index and pd.notna(r['IMDB_ID']) else '',
-        # TMDB_ID 可能带 tv:/movie: 前缀，Jellyfin ProviderIds.Tmdb 只比纯数字
-        'tmdb_id': parse_tmdb_id(r['TMDB_ID'])[0] if 'TMDB_ID' in r.index and pd.notna(r['TMDB_ID']) else '',
-    } for _, r in df.iterrows()]
+    movies = []
+    for _, r in df.iterrows():
+        tmdb_tid, tmdb_mt = parse_tmdb_id(r['TMDB_ID']) if ('TMDB_ID' in r.index and pd.notna(r['TMDB_ID'])) else ('', None)
+        imdb_raw = str(r['IMDB_ID']) if 'IMDB_ID' in r.index and pd.notna(r['IMDB_ID']) else ''
+        movies.append({
+            'title': str(r['电影名']) if pd.notna(r['电影名']) else '',
+            'url': str(r['豆瓣链接']) if pd.notna(r['豆瓣链接']) else '',
+            'year': '',
+            'imdb_id': imdb_raw.strip() if imdb_raw and imdb_raw != 'N/A' else '',
+            # TMDB ID 纯数字 + 独立的类型字段 → jellyfin 可做同类型精准确认
+            'tmdb_id': tmdb_tid,
+            'tmdb_media_type': tmdb_mt or '',
+        })
     in_lib = jellyfin.refresh_in_library_status(movies)
     count = 0
     with data_lock:

@@ -82,11 +82,20 @@ def get_library_items(base_url, api_key, library_ids=None):
         provider_ids = it.get('ProviderIds') or {}
         imdb_id = provider_ids.get('Imdb') or ''
         tmdb_id = provider_ids.get('Tmdb') or ''
+        # 'Movie' / 'Series' 来自 IncludeItemTypes 请求，用于同类型精准确认，避免跨类型假阳性
+        jf_type = it.get('Type') or ''
+        # 归一化为 'movie' / 'tv' / ''
+        norm_type = ''
+        if jf_type == 'Movie':
+            norm_type = 'movie'
+        elif jf_type == 'Series':
+            norm_type = 'tv'
         return {
             'title': it.get('Name', ''),
             'year': str(it.get('ProductionYear') or ''),
             'imdb_id': str(imdb_id) if imdb_id else '',
             'tmdb_id': str(tmdb_id) if tmdb_id else '',
+            'media_type': norm_type,
         }
 
     url = base_url.rstrip('/') + '/Items'
@@ -176,20 +185,55 @@ def build_in_library_set(movies, jellyfin_items):
     匹配优先级（两者都是元数据权威ID，零歧义）：
       1. IMDb 编号：本地 IMDB_ID ∈ Jellyfin ProviderIds.Imdb
       2. TMDB 编号：本地 TMDB_ID ∈ Jellyfin ProviderIds.Tmdb（国产片无IMDb时手动识别）
+    类型校验（避免跨类型假阳性）：
+      - 本地有明确类型（imdb_media_type / tmdb_media_type 为 movie/tv）时，要求 Jellyfin 侧 Item.Type 一致；
+        不一致 → 不命中，即使 ID 相同。
+      - 本地无类型（旧纯数字 ID 未手动标注）→ 降级为"只要 ID 匹配就算命中"，保持向后兼容。
     不做标题/前缀模糊匹配——避免系列片、同名片误判（宁缺毋滥）。
     两个编号都缺即判未入库，待回填后再刷新。
 
     Args:
-        movies: [{'title', 'url', 'imdb_id'(可选), 'tmdb_id'(可选)}, ...] 本地电影
-        jellyfin_items: get_library_items 的返回
-
+        movies: [{'title', 'url',
+                  'imdb_id'(可选), 'imdb_media_type'(可选, 'movie'/'tv'),
+                  'tmdb_id'(可选), 'tmdb_media_type'(可选, 'movie'/'tv')}, ...]
+        jellyfin_items: get_library_items 的返回（含 media_type）
     Returns:
         set of 豆瓣URL
     """
-    jf_imdb_ids = {it['imdb_id'] for it in jellyfin_items if it.get('imdb_id')}
-    jf_tmdb_ids = {it['tmdb_id'] for it in jellyfin_items if it.get('tmdb_id')}
-    local_imdb_ids = {str(m.get('imdb_id') or '').strip() for m in movies if str(m.get('imdb_id') or '').strip()}
-    local_tmdb_ids = {str(m.get('tmdb_id') or '').strip() for m in movies if str(m.get('tmdb_id') or '').strip()}
+    # 按 (id, media_type) 建桶 + 全局无类型桶（空字符串 type）
+    def _build_id_sets(field):
+        """field='imdb_id' 或 'tmdb_id' → (typed_map, global_set)
+        typed_map: { id -> set(media_types 出现过) }，用于快速按类型精确命中
+        global_set: set(id)，用于旧数据无类型时降级匹配
+        """
+        typed_map = {}
+        global_set = set()
+        for it in jellyfin_items:
+            v = str(it.get(field) or '').strip()
+            if not v:
+                continue
+            global_set.add(v)
+            mt = it.get('media_type') or ''
+            typed_map.setdefault(v, set()).add(mt)
+        return typed_map, global_set
+
+    jf_imdb_typed, jf_imdb_global = _build_id_sets('imdb_id')
+    jf_tmdb_typed, jf_tmdb_global = _build_id_sets('tmdb_id')
+
+    def _hit(typed_map, global_set, the_id, the_type):
+        """ID + 类型判定命中
+        - the_id 不存在于全局 → False
+        - the_type 明确：要求 the_type 在 typed_map[the_id] 里；若 Jellyfin 侧未知该 ID 的类型，降级通配
+        - the_type 未知（''/None）：仅要求 ID ∈ global_set
+        """
+        if not the_id or the_id not in global_set:
+            return False
+        if not the_type:
+            return True
+        jf_types = typed_map.get(the_id) or set()
+        if not jf_types:
+            return True  # Jellyfin 侧这个 ID 所有条目都没类型信息 → 无法排除，判命中
+        return the_type in jf_types
 
     in_lib = set()
     imdb_n = 0
@@ -198,19 +242,24 @@ def build_in_library_set(movies, jellyfin_items):
     for m in movies:
         m_imdb = str(m.get('imdb_id') or '').strip()
         m_tmdb = str(m.get('tmdb_id') or '').strip()
+        # 本地的类型提示（可选），来自 tv:/movie: 前缀解析
+        m_imdb_type = m.get('imdb_media_type') or ''
+        m_tmdb_type = m.get('tmdb_media_type') or ''
         hit = False
-        if m_imdb and m_imdb in jf_imdb_ids:
+        if m_imdb and _hit(jf_imdb_typed, jf_imdb_global, m_imdb, m_imdb_type):
             in_lib.add(m.get('url', ''))
             imdb_n += 1
             hit = True
-        elif m_tmdb and m_tmdb in jf_tmdb_ids:
+        elif m_tmdb and _hit(jf_tmdb_typed, jf_tmdb_global, m_tmdb, m_tmdb_type):
             in_lib.add(m.get('url', ''))
             tmdb_n += 1
             hit = True
         if not hit:
-            unmatched_local.append((m.get('title', ''), m_imdb, m_tmdb))
+            unmatched_local.append((m.get('title', ''), m_imdb, m_tmdb, m_tmdb_type))
 
     # 诊断：Jellyfin 侧未对应任何本地电影的条目
+    local_imdb_ids = {str(m.get('imdb_id') or '').strip() for m in movies if str(m.get('imdb_id') or '').strip()}
+    local_tmdb_ids = {str(m.get('tmdb_id') or '').strip() for m in movies if str(m.get('tmdb_id') or '').strip()}
     jf_no_id = [it for it in jellyfin_items if not it.get('imdb_id') and not it.get('tmdb_id')]
     jf_unmatched = [
         it for it in jellyfin_items
@@ -221,10 +270,10 @@ def build_in_library_set(movies, jellyfin_items):
     logger.info(f'[Jellyfin] 匹配完成：IMDb{imdb_n} TMDB{tmdb_n} 共命中{len(in_lib)}/{len(movies)}，'
                 f'Jellyfin共{len(jellyfin_items)}条（有ID{len(jellyfin_items)-len(jf_no_id)} 无ID{len(jf_no_id)}），'
                 f'Jellyfin侧未对应本地电影{len(jf_unmatched)}条')
-    for title, imdb, tmdb in unmatched_local[:20]:
-        logger.info(f'[Jellyfin] 本地未匹配: "{title}" IMDb="{imdb or "无"}" TMDB="{tmdb or "无"}"')
+    for title, imdb, tmdb, tmdb_type in unmatched_local[:20]:
+        logger.info(f'[Jellyfin] 本地未匹配: "{title}" IMDb="{imdb or "无"}" TMDB="{tmdb or "无"}" TMDB类型={tmdb_type or "未指定"}')
     for it in jf_unmatched[:20]:
-        logger.info(f'[Jellyfin] Jellyfin侧未对应本地: "{it["title"]}" IMDb="{it["imdb_id"] or "无"}" TMDB="{it["tmdb_id"] or "无"}"')
+        logger.info(f'[Jellyfin] Jellyfin侧未对应本地: "{it["title"]}" ({it.get("media_type") or "未知类型"}) IMDb="{it["imdb_id"] or "无"}" TMDB="{it["tmdb_id"] or "无"}"')
     return in_lib
 
 

@@ -38,7 +38,7 @@ _session_lock = threading.Lock()
 # 配置文件读写锁：保护 load→modify→save 事务原子性
 _config_lock = threading.Lock()
 
-# searchid 内存缓存：按关键词缓存，避免写入共享配置文件造成并发覆盖
+# searchid + 分页元数据 内存缓存：按关键词缓存，避免写入共享配置文件造成并发覆盖
 _searchid_cache = {}
 _searchid_cache_lock = threading.Lock()
 _SEARCHID_CACHE_MAX = 50
@@ -46,14 +46,31 @@ _SEARCHID_CACHE_MAX = 50
 
 def _get_cached_searchid(keyword):
     with _searchid_cache_lock:
-        return _searchid_cache.get(keyword.lower())
+        entry = _searchid_cache.get(keyword.lower())
+        return entry['searchid'] if entry else None
 
 
-def _set_cached_searchid(keyword, searchid):
+def _set_cached_searchid(keyword, searchid, total_pages=None, total_count=None):
     with _searchid_cache_lock:
         if len(_searchid_cache) >= _SEARCHID_CACHE_MAX:
             _searchid_cache.pop(next(iter(_searchid_cache)))
-        _searchid_cache[keyword.lower()] = searchid
+        entry = _searchid_cache.get(keyword.lower(), {})
+        entry['searchid'] = searchid
+        # 只在有效值时更新（不覆盖已有更准确的值）
+        if total_pages is not None and total_pages > 0:
+            entry['total_pages'] = total_pages
+        if total_count is not None and total_count > 0:
+            entry['total_count'] = total_count
+        _searchid_cache[keyword.lower()] = entry
+
+
+def _get_cached_meta(keyword):
+    """返回缓存的 (total_pages, total_count)，无缓存返回 (None, None)"""
+    with _searchid_cache_lock:
+        entry = _searchid_cache.get(keyword.lower())
+        if not entry:
+            return None, None
+        return entry.get('total_pages'), entry.get('total_count')
 
 
 def _load_unlocked():
@@ -256,6 +273,17 @@ def search(keyword, page=1):
     # 提取分页数（从分页链接中提取最大页码）
     page_nums = [int(p) for p in re.findall(r'page=(\d+)', r.text)]
     total_pages = max(page_nums) if page_nums else 1
+
+    # 第 2 页及以后，论坛 HTML 的分页区可能不含 page= 链接，导致 total_pages=1
+    # 用第 1 页缓存的 total_pages / total_count 兜底
+    cached_tp, cached_tc = _get_cached_meta(keyword)
+    if cached_tp and (total_pages <= 1 or total_pages < page):
+        total_pages = cached_tp
+    if not total_count and cached_tc:
+        total_count = cached_tc
+
+    # 缓存分页元数据（后续页复用）
+    _set_cached_searchid(keyword, searchid, total_pages=total_pages, total_count=total_count)
 
     results = []
     items = re.findall(

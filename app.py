@@ -623,6 +623,21 @@ def load_movies() -> pd.DataFrame:
     # 兼容旧数据文件：无"TMDB_ID"列时自动补空列（手动识别的备用匹配主键，国产片常见无IMDb）
     if 'TMDB_ID' not in df.columns:
         df['TMDB_ID'] = ''
+    # 规范化 TMDB_ID：将 Excel 读出的浮点格式（如 1732766.0）统一转为整数字符串（1732766）
+    def _norm_tmdb(v):
+        if pd.isna(v):
+            return ''
+        s = str(v).strip()
+        if not s or s == 'N/A':
+            return '' if s != 'N/A' else s
+        try:
+            f = float(s)
+            if f.is_integer():
+                return str(int(f))
+        except (ValueError, TypeError):
+            pass
+        return s
+    df['TMDB_ID'] = df['TMDB_ID'].apply(_norm_tmdb)
     # 过滤掉重复的表头行（序号列为非数字的行）
     if not df.empty:
         try:
@@ -646,6 +661,24 @@ def backup_movies() -> None:
         os.remove(backups.pop(0))
 
 def save_movies(df: pd.DataFrame) -> None:
+    # 写盘前强制把 TMDB_ID / IMDB_ID 转为文本，防止 pandas 存为数值导致下次读回变成 xxx.0
+    for col in ('TMDB_ID', 'IMDB_ID'):
+        if col in df.columns:
+            def _norm_col(v):
+                if pd.isna(v):
+                    return ''
+                s = str(v).strip()
+                if not s:
+                    return ''
+                if col == 'TMDB_ID' and s != 'N/A':
+                    try:
+                        f = float(s)
+                        if f.is_integer():
+                            return str(int(f))
+                    except (ValueError, TypeError):
+                        pass
+                return s
+            df[col] = df[col].apply(_norm_col)
     backup_movies()
     df.to_excel(EXCEL_FILE, index=False)
     _movie_cache['hash'] = None

@@ -666,6 +666,7 @@
         });
 
         const currentFilter = '{{ current_filter or "all" }}';
+        const currentPage = {{ current_page or 0 }};
 
         function goToPage() {
             const page = document.getElementById('goPage').value;

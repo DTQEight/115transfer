@@ -15,10 +15,13 @@ import time
 import hashlib
 import urllib.parse
 import threading
+import ssl
+import socket
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from urllib3.exceptions import MaxRetryError
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -105,19 +108,95 @@ def update_config(mutator):
 
 
 def _build_session():
-    """构建带连接池的session（不含登录态）"""
+    """构建带连接池的session（不含登录态）
+
+    针对论坛不稳定TLS（SSLZeroReturnError）做了三层兜底：
+      1) 请求级 Retry：HTTP 5xx + 连接/SSL 错误（SSLZeroReturn/EOF/ConnectionReset）
+         都会自动重试 2 次，指数退避
+      2) SSL 上下文：强制 TLSv1.2，避免服务器在版本协商阶段直接 EOF
+         + 禁用 verify（论坛证书不标准）+ 禁用系统代理
+      3) 业务调用侧还有"SSLError 时放弃当前连接池、重建全新 Session 再试"的二次兜底
+    """
     s = requests.Session()
     s.headers.update({'User-Agent': UA})
     s.trust_env = False  # 忽略系统代理环境变量
     s.verify = False  # 论坛SSL证书域名不匹配，禁用证书验证
-    # 配置连接池：增大连接数，启用重试，复用TCP连接
-    retry = Retry(total=2, backoff_factor=0.3,
-                  status_forcelist=[500, 502, 503, 504],
-                  allowed_methods=["GET", "POST"])
-    adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry)
+
+    # 定制 SSLContext：强制 TLSv1.2 + 常用密码套件，降低服务端 TLS 协商阶段 EOF 概率
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    except AttributeError:
+        ctx.options |= 0x80000  # OP_NO_SSLv3
+        ctx.options |= 0x4000000  # OP_NO_TLSv1
+        ctx.options |= 0x10000000  # OP_NO_TLSv1_1
+    try:
+        ctx.set_ciphers('DEFAULT@SECLEVEL=1')
+    except ssl.SSLError:
+        pass
+
+    # mount 时把自定义 ssl_context 赋给 urllib3 poolmanager
+    # requests.Session.mount 的 HTTPAdapter 默认使用 self.init_poolmanager，
+    # 我们通过子类来注入 ssl_context
+    class _SSLAdapter(HTTPAdapter):
+        def init_poolmanager(self, *args, **kwargs):
+            kwargs['ssl_context'] = ctx
+            return super().init_poolmanager(*args, **kwargs)
+
+    # 配置连接池 + 重试：新增连接错误（含TLS握手异常）的自动重试
+    # urllib3 >=1.26 的 Retry 支持 connect/read 错误重试：通过 backoff_factor 控制间隔
+    retry = Retry(
+        total=4,  # 总尝试次数上限（包含重定向）
+        backoff_factor=0.6,  # 0.6s, 1.2s, 2.4s 指数退避
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST"],
+        connect=3,  # 连接/握手错误重试3次
+        read=2,     # 读取中断错误重试2次
+        other=1,    # 其它未分类错误重试1次
+    )
+    adapter = _SSLAdapter(pool_connections=16, pool_maxsize=16, max_retries=retry)
     s.mount('http://', adapter)
     s.mount('https://', adapter)
     return s
+
+
+def _wrap_ssl_retry(fn, max_ssl_retries=2):
+    """对可能发生 SSLZeroReturnError/EOF 的请求再包一层 Session 重建重试。
+
+    原因：_build_session 里 urllib3.Retry 会在**同一个连接池**里重试，
+    如果是服务端按"源IP/四元组"触发了 EOF，同一个连接池继续尝试仍会失败。
+    这里在捕获到 SSL/连接层错误时，调用 _reset_session() 销毁全局连接池，
+    再新建 Session 继续尝试，相当于"换一条TCP通道再试"。
+    """
+    last_err = None
+    for attempt in range(max_ssl_retries + 1):
+        try:
+            return fn()
+        except (requests.exceptions.SSLError,
+                ssl.SSLZeroReturnError if hasattr(ssl, 'SSLZeroReturnError') else ssl.SSLEOFError if hasattr(ssl, 'SSLEOFError') else ssl.SSLError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+                MaxRetryError,
+                ConnectionResetError,
+                BrokenPipeError,
+                socket.error) as e:
+            last_err = e
+            if attempt < max_ssl_retries:
+                time.sleep(0.8 * (attempt + 1))
+                _reset_session()
+                continue
+            # 最后一次失败：把技术性异常重新封装成带原因的友好 RuntimeError
+            msg = str(e) or e.__class__.__name__
+            friendly = '论坛服务器TLS握手异常（连接被远端直接断开），通常稍后重试或网络波动后恢复'
+            if 'timed out' in msg.lower() or 'timeout' in msg.lower():
+                friendly = '论坛连接超时，请检查网络或稍后重试'
+            elif 'Name or service not known' in msg or 'getaddrinfo' in msg:
+                friendly = '论坛域名解析失败，请确认 baidubaidu.win 是否可访问'
+            elif 'refused' in msg.lower():
+                friendly = '论坛连接被拒绝，可能服务暂时不可用'
+            raise RuntimeError(f'{friendly}（{e.__class__.__name__}: {msg[:200]}）') from e
 
 
 def _get_session():
@@ -196,13 +275,16 @@ def _is_logged_in(s):
 
 
 def _login(s, username, password):
-    """登录论坛"""
-    r = s.get(BASE + 'member.php?mod=logging&action=login', timeout=15)
-    r.encoding = 'gbk'
+    """登录论坛（外层调用会在 session 重建后再次调用，所以 s.session 可能是新建的）"""
+    def _step1():
+        r = s.get(BASE + 'member.php?mod=logging&action=login', timeout=15)
+        r.encoding = 'gbk'
+        return r
+    r = _wrap_ssl_retry(_step1)
     m_formhash = re.search(r'name="formhash"\s+value="([^"]+)"', r.text)
     m_loginhash = re.search(r'loginhash=([A-Za-z0-9]+)', r.text)
     if not m_formhash or not m_loginhash:
-        raise RuntimeError('登录页解析失败')
+        raise RuntimeError('登录页解析失败（论坛页面未返回预期内容，可能登录限制或临时宕机）')
     formhash = m_formhash.group(1)
     loginhash = m_loginhash.group(1)
 
@@ -215,7 +297,10 @@ def _login(s, username, password):
         'answer': '',
         'cookietime': '2592000',
     }
-    r2 = s.post(login_url, data=data, timeout=15, allow_redirects=True)
+
+    def _step2():
+        return s.post(login_url, data=data, timeout=15, allow_redirects=True)
+    r2 = _wrap_ssl_retry(_step2)
     r2.encoding = 'gbk'
     if 'succeedhandle' not in r2.text and '欢迎您回来' not in r2.text and 'succeedhandle_login' not in r2.text:
         # 再检查一下是否已经登录
@@ -251,7 +336,7 @@ def search(keyword, page=1):
         else:
             url = BASE + f'search.php?mod=forum&searchid={searchid}&orderby=lastpost&ascdesc=desc&searchsubmit=yes&kw={kw_encoded}&page={page}'
 
-    r = s.get(url, timeout=(5, 15), allow_redirects=True)
+    r = _wrap_ssl_retry(lambda: s.get(url, timeout=(5, 15), allow_redirects=True))
     r.encoding = 'gbk'
 
     # 提取searchid并缓存到内存（不写文件，避免并发覆盖其他配置项）
@@ -528,7 +613,7 @@ def _get_magnet_from_thread_with_session(s, tid):
 def _get_thread_attachments_with_session(s, tid):
     """使用已有session获取帖子附件（避免重复创建session）"""
     url = BASE + f'forum.php?mod=viewthread&tid={tid}'
-    r = s.get(url, timeout=(5, 15))
+    r = _wrap_ssl_retry(lambda: s.get(url, timeout=(5, 15)))
     r.encoding = 'gbk'
 
     attachments = []
@@ -552,7 +637,7 @@ def _get_thread_attachments_with_session(s, tid):
 
 def _download_torrent_with_session(s, attach_url):
     """使用已有session下载种子（避免重复创建session）"""
-    r = s.get(attach_url, timeout=(5, 30), allow_redirects=True)
+    r = _wrap_ssl_retry(lambda: s.get(attach_url, timeout=(5, 30), allow_redirects=True))
     if r.status_code != 200:
         raise RuntimeError(f'下载附件失败: HTTP {r.status_code}')
     if not r.content[:1] == b'd':

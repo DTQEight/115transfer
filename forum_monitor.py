@@ -301,11 +301,30 @@ def _relogin_with_notice(task_label: str) -> Any:
 
 # ==================== 板块发现 ====================
 
+# 子版块链接正则：Discuz 子版块在 forumdisplay 页面里以 forum.php?mod=forumdisplay&fid=XX 出现
+# 也可能出现在 <a href="forum-XX-1.html"> 伪静态格式
+_SUBFORUM_LINK_RE = re.compile(
+    r'href="forum\.php\?mod=forumdisplay&(?:amp;)?fid=(\d+)[^"]*"[^>]*>([^<]+)'
+)
+_SUBFORUM_STATIC_RE = re.compile(
+    r'href="forum-(\d+)-\d+\.html"[^>]*>([^<]+)'
+)
+# Discuz 子版块区域标记（子版块列表通常在 <div class="bn"> 或 <table class="dt"> 里）
+_SUBFORUM_AREA_RE = re.compile(
+    r'(?:子版块|subforum|<div[^>]*class="bn")', re.IGNORECASE
+)
+
+
 def discover_forums() -> List[Dict[str, str]]:
-    """发现论坛所有板块
+    """发现论坛所有板块（递归发现子版块）
+
+    流程：
+      1. 抓论坛首页 → 发现顶级版块
+      2. 对每个顶级版块，访问其 forumdisplay 页面 → 发现子版块
+      3. 递归到子版块的子版块（最多 3 层防止死循环）
 
     Returns:
-        [{'fid': '12', 'name': '电影区'}, ...]
+        [{'fid': '12', 'name': '电影区', 'parent': '', 'depth': 0}, ...]
     """
     s = baidu_forum._get_session()
     r = s.get(baidu_forum.BASE + 'forum.php', timeout=(10, 30))
@@ -314,15 +333,17 @@ def discover_forums() -> List[Dict[str, str]]:
 
     forums: List[Dict[str, str]] = []
     seen: set = set()
+
+    # 1. 首页发现顶级版块
     for m in _FORUM_LINK_RE.finditer(r.text):
         fid = m.group(1)
         name = baidu_forum._strip_html(m.group(2)).strip()
         if fid in seen or not name:
             continue
         seen.add(fid)
-        forums.append({'fid': fid, 'name': name})
+        forums.append({'fid': fid, 'name': name, 'parent': '', 'depth': 0})
 
-    # 如果标准正则没匹配到，尝试伪静态格式 forum-XX-1.html
+    # 伪静态格式兜底
     if not forums:
         logger.info('[论坛监控] 标准板块链接未匹配，尝试伪静态格式')
         for m in re.finditer(r'href="forum-(\d+)-\d+\.html"[^>]*>([^<]+)', r.text):
@@ -331,19 +352,106 @@ def discover_forums() -> List[Dict[str, str]]:
             if fid in seen or not name:
                 continue
             seen.add(fid)
-            forums.append({'fid': fid, 'name': name})
+            forums.append({'fid': fid, 'name': name, 'parent': '', 'depth': 0})
 
     if not forums:
-        # 记录 HTML 片段帮助诊断
         snippet = r.text[:3000] if len(r.text) > 3000 else r.text
         logger.warning(f'[论坛监控] 首页未匹配到板块链接，HTML片段:\n{snippet}')
-        # 回退到已知的电影板块 fid=44（filter=sortid&sortid=1 查看全部帖子）
         logger.info('[论坛监控] 回退到默认板块 fid=44')
-        forums = [{'fid': '44', 'name': '电影区'}]
-    else:
-        logger.info(f'[论坛监控] 发现 {len(forums)} 个板块: {forums}')
+        forums = [{'fid': '44', 'name': '电影区', 'parent': '', 'depth': 0}]
+        seen.add('44')
+
+    # 2. 递归发现子版块
+    _discover_subforums_recursive(s, forums, seen, max_depth=3)
+
+    # 打印完整板块树
+    logger.info(f'[论坛监控] 共发现 {len(forums)} 个板块（含子版块）:')
+    for f in forums:
+        indent = '  ' * f.get('depth', 0)
+        logger.info(f'[论坛监控]   {indent}fid={f["fid"]} {f["name"]}'
+                     + (f' (父: {f["parent"]})' if f.get('parent') else ''))
 
     return forums
+
+
+def _discover_subforums_recursive(s, forums: list, seen: set,
+                                   parent_fid: str = '', current_depth: int = 1,
+                                   max_depth: int = 3) -> None:
+    """递归发现子版块
+
+    访问每个版块的 forumdisplay 页面，查找子版块链接。
+    最多递归 max_depth 层防止死循环。
+    """
+    if current_depth > max_depth:
+        return
+
+    # 找出当前层需要扫描的版块（刚加入的、还没扫描子版块的）
+    if parent_fid:
+        # 只扫描指定的父版块
+        to_scan = [f for f in forums if f['fid'] == parent_fid and f.get('depth', 0) == current_depth - 1]
+    else:
+        # 首次调用：扫描所有顶级版块
+        to_scan = [f for f in forums if f.get('depth', 0) == 0]
+
+    for parent in to_scan:
+        try:
+            url = baidu_forum.BASE + f'forum.php?mod=forumdisplay&fid={parent["fid"]}'
+            r = s.get(url, timeout=(10, 20))
+            r.encoding = 'gbk'
+            if r.status_code != 200:
+                continue
+
+            # 检查页面是否包含子版块区域
+            has_subforum = bool(_SUBFORUM_AREA_RE.search(r.text))
+
+            # 用标准正则找子版块
+            sub_found = False
+            for m in _SUBFORUM_LINK_RE.finditer(r.text):
+                fid = m.group(1)
+                name = baidu_forum._strip_html(m.group(2)).strip()
+                if fid in seen or not name or fid == parent['fid']:
+                    continue
+                # 避免把帖子链接里的 fid 误判为子版块：检查是否在子版块区域附近
+                # 简化处理：只要 fid 不在已发现列表里且名字不像帖子标题就加入
+                if len(name) > 30:  # 版块名通常短，帖子标题长
+                    continue
+                seen.add(fid)
+                forums.append({
+                    'fid': fid, 'name': name,
+                    'parent': parent['fid'], 'depth': current_depth,
+                })
+                sub_found = True
+
+            # 伪静态格式兜底
+            if not sub_found:
+                for m in _SUBFORUM_STATIC_RE.finditer(r.text):
+                    fid = m.group(1)
+                    name = baidu_forum._strip_html(m.group(2)).strip()
+                    if fid in seen or not name or fid == parent['fid']:
+                        continue
+                    if len(name) > 30:
+                        continue
+                    seen.add(fid)
+                    forums.append({
+                        'fid': fid, 'name': name,
+                        'parent': parent['fid'], 'depth': current_depth,
+                    })
+                    sub_found = True
+
+            if sub_found:
+                logger.info(f'[论坛监控] 版块 fid={parent["fid"]} ({parent["name"]}) 下发现子版块')
+
+            # 递归扫描子版块的子版块
+            new_subs = [f for f in forums if f.get('parent') == parent['fid']]
+            for sub in new_subs:
+                _discover_subforums_recursive(s, forums, seen,
+                                               parent_fid=sub['fid'],
+                                               current_depth=current_depth + 1,
+                                               max_depth=max_depth)
+
+        except Exception as e:
+            logger.debug(f'[论坛监控] 扫描版块 fid={parent["fid"]} 子版块失败: {e}')
+            continue
 
 
 # ==================== 板块帖子列表解析 ====================

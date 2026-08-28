@@ -452,7 +452,8 @@ def get_thread_attachments(tid):
         [{'aid': ..., 'filename': ..., 'url': ...}, ...]
     """
     s = _get_session()
-    return _get_thread_attachments_with_session(s, tid)
+    attachments, _html = _get_thread_attachments_with_session(s, tid)
+    return attachments
 
 
 def download_torrent(attach_url):
@@ -623,33 +624,150 @@ def get_magnet_from_thread(tid):
 
 
 def _get_magnet_from_thread_with_session(s, tid):
-    """使用指定 session 获取帖子磁力链接（已登录）"""
-    attachments = _get_thread_attachments_with_session(s, tid)
-    if not attachments:
-        raise RuntimeError('帖子中没有找到附件')
+    """使用指定 session 获取帖子磁力链接（已登录）
 
-    # 尝试每个附件，找到第一个有效的torrent
-    last_err = ''
-    for att in attachments:
-        try:
-            content, disposition = _download_torrent_with_session(s, att['url'])
-            # 从Content-Disposition提取文件名
-            if disposition:
-                fn_m = re.search(r'filename="([^"]+)"', disposition)
-                if fn_m:
-                    att['filename'] = fn_m.group(1)
-            result = torrent_to_magnet(content)
-            result['tid'] = tid
-            result['filename'] = att.get('filename', '')
-            return result
-        except Exception as e:
-            last_err = str(e)
-            continue
-    raise RuntimeError(f'所有附件解析失败: {last_err}')
+    优先级：
+      1. .torrent 附件 → 下载 → 解析 → 磁力链接
+      2. 帖子正文里的磁力链接 / 纯 hash（直接提取，无需下载附件）
+    """
+    attachments, page_html = _get_thread_attachments_with_session(s, tid)
+
+    # 优先级1：附件种子
+    if attachments:
+        last_err = ''
+        for att in attachments:
+            try:
+                content, disposition = _download_torrent_with_session(s, att['url'])
+                if disposition:
+                    fn_m = re.search(r'filename="([^"]+)"', disposition)
+                    if fn_m:
+                        att['filename'] = fn_m.group(1)
+                result = torrent_to_magnet(content)
+                result['tid'] = tid
+                result['filename'] = att.get('filename', '')
+                result['source'] = 'attachment'
+                return result
+            except Exception as e:
+                last_err = str(e)
+                continue
+
+    # 优先级2：帖子正文里的磁力链接
+    text_magnets = _extract_magnets_from_post(page_html)
+    if text_magnets:
+        m = text_magnets[0]  # 取第一个
+        return {
+            'tid': tid,
+            'info_hash': m['info_hash'],
+            'magnet': m['magnet'],
+            'name': m.get('name', ''),
+            'filename': '',
+            'trackers': [],
+            'source': 'post_text',
+        }
+
+    err_parts = []
+    if attachments:
+        err_parts.append(f'附件解析失败: {last_err}')
+    err_parts.append('帖子正文中也未找到磁力链接')
+    raise RuntimeError('；'.join(err_parts))
+
+
+def _extract_magnets_from_post(html):
+    """从帖子正文 HTML 中提取磁力链接
+
+    论坛用户经常直接在帖子里贴磁力链接，不通过附件系统。
+    支持以下格式：
+      - magnet:?xt=urn:btih:xxx（标准磁力链接）
+      - 纯 40 位 hex hash（自动拼成磁力链接）
+      - 32 位 base32 hash（自动解码拼成磁力链接）
+      - BBCode [url=magnet:...]...[/url]
+      - HTML <a href="magnet:...">...</a>
+      - [code]magnet:...[/code] / [code]纯hash[/code]
+    """
+    magnets = []
+    seen_hashes = set()
+
+    # 1. 标准 magnet 链接（各种变体）
+    for m in re.finditer(r'magnet:\?xt=urn:btih:([a-fA-F0-9]{40})', html, re.IGNORECASE):
+        h = m.group(1).lower()
+        if h not in seen_hashes:
+            seen_hashes.add(h)
+            magnets.append({
+                'magnet': f'magnet:?xt=urn:btih:{h}',
+                'info_hash': h,
+                'name': '',
+                'source': 'post_text',
+            })
+    # base32 编码的 hash（32位字母数字）
+    for m in re.finditer(r'magnet:\?xt=urn:btih:([A-Z2-7]{32})', html):
+        h = _b32_to_hex(m.group(1))
+        if h and h not in seen_hashes:
+            seen_hashes.add(h)
+            magnets.append({
+                'magnet': f'magnet:?xt=urn:btih:{h}',
+                'info_hash': h,
+                'name': '',
+                'source': 'post_text',
+            })
+
+    # 2. 帖子正文里的纯 40 位 hex hash（不在 magnet 链接里的）
+    # 排除已出现在 magnet 链接里的，以及 HTML 属性/JS 里的
+    # 只在 td_postcontent / postmessage 区域里找
+    post_area = ''
+    pm_m = re.search(r'id="postmessage_\d+"[^>]*>([\s\S]*?)</td>', html)
+    if pm_m:
+        post_area = pm_m.group(1)
+    if not post_area:
+        # 兜底：整个页面（去掉 script/style）
+        post_area = re.sub(r'<script[^>]*>[\s\S]*?</script>', '', html)
+        post_area = re.sub(r'<style[^>]*>[\s\S]*?</style>', '', post_area)
+
+    # 去掉 HTML 标签后的纯文本里找 hash
+    plain = _strip_html(post_area)
+    for m in re.finditer(r'\b([a-fA-F0-9]{40})\b', plain):
+        h = m.group(1).lower()
+        if h not in seen_hashes and _is_likely_hash(h, plain):
+            seen_hashes.add(h)
+            magnets.append({
+                'magnet': f'magnet:?xt=urn:btih:{h}',
+                'info_hash': h,
+                'name': '',
+                'source': 'post_text',
+            })
+
+    return magnets
+
+
+def _b32_to_hex(b32):
+    """base32 字符串转 hex 字符串"""
+    import base64
+    try:
+        decoded = base64.b32decode(b32.upper())
+        return decoded.hex()
+    except Exception:
+        return ''
+
+
+def _is_likely_hash(h, context):
+    """简单判断一个 40 位 hex 字符串是否可能是 info_hash 而非随机字符串
+
+    info_hash 是 SHA1（40 hex），在帖子正文里通常独立出现（前后有空格/换行/引号）
+    排除过长的连续 hex（可能是其他编码）
+    """
+    # 如果上下文里包含"种子""bt""hash""磁力"等关键词附近，优先保留
+    # 简单规则：只要不是全 0 或全 f 就保留
+    if h == '0' * 40 or h == 'f' * 40:
+        return False
+    return True
 
 
 def _get_thread_attachments_with_session(s, tid):
-    """使用已有session获取帖子附件（避免重复创建session）"""
+    """使用已有session获取帖子附件（避免重复创建session）
+
+    同时提取：
+      1. .torrent 文件附件（aid 链接）
+      2. 帖子正文里的磁力链接（纯文本/hash/BBCODE）
+    """
     url = BASE + f'forum.php?mod=viewthread&tid={tid}'
     r = _wrap_ssl_retry(lambda: s.get(url, timeout=(5, 15)))
     r.encoding = 'gbk'
@@ -670,7 +788,7 @@ def _get_thread_attachments_with_session(s, tid):
             'url': attach_url,
             'filename': '',
         })
-    return attachments
+    return attachments, r.text
 
 
 def _download_torrent_with_session(s, attach_url):

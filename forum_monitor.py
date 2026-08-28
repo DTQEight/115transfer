@@ -480,35 +480,51 @@ def download_thread_seeds(tid: str, fid: str) -> Tuple[List[str], List[Dict[str,
 
     复用 baidu_forum 的附件发现 + 下载逻辑，同步调用 torrent_to_magnet
     计算每个种子的磁力链接。单个附件失败跳过，不影响其他附件。
+    同时提取帖子正文里的磁力链接（不通过附件系统的纯文本磁力链接）。
 
     Returns:
         (seed_paths, magnet_links)
         - seed_paths: 保存的相对路径列表，如 ['12/12345_67890.torrent']
-        - magnet_links: 磁力链接信息列表，如 [{'aid', 'magnet', 'name'}, ...]
+        - magnet_links: 磁力链接信息列表，如 [{'aid', 'magnet', 'name', 'source'}, ...]
     """
     s = baidu_forum._get_session()
-    attachments = baidu_forum._get_thread_attachments_with_session(s, tid)
-    if not attachments:
-        return [], []
+    attachments, page_html = baidu_forum._get_thread_attachments_with_session(s, tid)
     saved: List[str] = []
     magnets: List[Dict[str, str]] = []
-    for att in attachments:
-        try:
-            content, _ = baidu_forum._download_torrent_with_session(s, att['url'])
-            rel_path = _save_seed_file(content, fid, tid, att['aid'])
-            saved.append(rel_path)
-            # 计算磁力链接（失败不影响种子文件保存）
+
+    # 优先级1：附件种子
+    if attachments:
+        for att in attachments:
             try:
-                m = baidu_forum.torrent_to_magnet(content)
-                magnets.append({
-                    'aid': att['aid'],
-                    'magnet': m['magnet'],
-                    'name': m.get('name', ''),
-                })
-            except Exception as e:
-                logger.warning(f'[论坛监控] 帖子{tid} 附件{att["aid"]} 磁力链接计算失败: {e}')
-        except Exception:
-            continue  # 非种子附件或下载失败，跳过
+                content, _ = baidu_forum._download_torrent_with_session(s, att['url'])
+                rel_path = _save_seed_file(content, fid, tid, att['aid'])
+                saved.append(rel_path)
+                try:
+                    m = baidu_forum.torrent_to_magnet(content)
+                    magnets.append({
+                        'aid': att['aid'],
+                        'magnet': m['magnet'],
+                        'name': m.get('name', ''),
+                        'source': 'attachment',
+                    })
+                except Exception as e:
+                    logger.warning(f'[论坛监控] 帖子{tid} 附件{att["aid"]} 磁力链接计算失败: {e}')
+            except Exception:
+                continue  # 非种子附件或下载失败，跳过
+
+    # 优先级2：帖子正文里的磁力链接（无附件或附件失败时）
+    if not magnets:
+        text_magnets = baidu_forum._extract_magnets_from_post(page_html)
+        for tm in text_magnets:
+            magnets.append({
+                'aid': '',
+                'magnet': tm['magnet'],
+                'name': tm.get('name', ''),
+                'source': 'post_text',
+            })
+        if text_magnets:
+            logger.info(f'[论坛监控] 帖子{tid} 从正文提取到 {len(text_magnets)} 个磁力链接（无附件）')
+
     return saved, magnets
 
 

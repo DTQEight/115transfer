@@ -234,27 +234,16 @@ def _get_session():
                 _global_session_ts = time.time()
                 return s
 
-        # 重新登录
-        try:
-            _login(s, username, password)
-            # 缓存cookies（事务性更新，避免覆盖并发修改的 username/password）
-            def _update(cfg):
-                cfg['cookies'] = dict(s.cookies)
-                cfg['cookies_ts'] = time.time()
-            update_config(_update)
-            _global_session = s
-            _global_session_ts = time.time()
-            return s
-        except Exception:
-            # 登录失败：如果缓存 cookies 还在，尝试直接用（搜索/浏览可能不需要登录态）
-            if cached and (time.time() - cached_ts < 86400):
-                s2 = _build_session()
-                for k, v in cached.items():
-                    s2.cookies.set(k, v, domain='10001.baidubaidu.win')
-                _global_session = s2
-                _global_session_ts = time.time()
-                return s2
-            raise
+        # 重新登录（不用缓存cookies兜底，直接走登录流程）
+        _login(s, username, password)
+        # 缓存cookies（事务性更新，避免覆盖并发修改的 username/password）
+        def _update(cfg):
+            cfg['cookies'] = dict(s.cookies)
+            cfg['cookies_ts'] = time.time()
+        update_config(_update)
+        _global_session = s
+        _global_session_ts = time.time()
+        return s
 
 
 def _reset_session():

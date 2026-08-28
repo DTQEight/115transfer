@@ -235,15 +235,26 @@ def _get_session():
                 return s
 
         # 重新登录
-        _login(s, username, password)
-        # 缓存cookies（事务性更新，避免覆盖并发修改的 username/password）
-        def _update(cfg):
-            cfg['cookies'] = dict(s.cookies)
-            cfg['cookies_ts'] = time.time()
-        update_config(_update)
-        _global_session = s
-        _global_session_ts = time.time()
-        return s
+        try:
+            _login(s, username, password)
+            # 缓存cookies（事务性更新，避免覆盖并发修改的 username/password）
+            def _update(cfg):
+                cfg['cookies'] = dict(s.cookies)
+                cfg['cookies_ts'] = time.time()
+            update_config(_update)
+            _global_session = s
+            _global_session_ts = time.time()
+            return s
+        except Exception:
+            # 登录失败：如果缓存 cookies 还在，尝试直接用（搜索/浏览可能不需要登录态）
+            if cached and (time.time() - cached_ts < 86400):
+                s2 = _build_session()
+                for k, v in cached.items():
+                    s2.cookies.set(k, v, domain='10001.baidubaidu.win')
+                _global_session = s2
+                _global_session_ts = time.time()
+                return s2
+            raise
 
 
 def _reset_session():
@@ -302,12 +313,50 @@ def _login(s, username, password):
         return s.post(login_url, data=data, timeout=15, allow_redirects=True)
     r2 = _wrap_ssl_retry(_step2)
     r2.encoding = 'gbk'
-    if 'succeedhandle' not in r2.text and '欢迎您回来' not in r2.text and 'succeedhandle_login' not in r2.text:
-        # 再检查一下是否已经登录
-        if not _is_logged_in(s):
-            err = re.search(r'class="alert_info"[^>]*>([\s\S]*?)</div>', r2.text)
-            raise RuntimeError('登录失败: ' + (err.group(1).strip() if err else r2.url))
-    return s
+
+    # 成功标志
+    if 'succeedhandle' in r2.text or '欢迎您回来' in r2.text or 'succeedhandle_login' in r2.text:
+        return s
+
+    # 失败：提取 Discuz 真实错误信息
+    # Discuz X3.x 登录失败的错误消息在 <div class="alert_error"> 或 alert_info 中
+    err_msg = ''
+
+    # alert_error（Discuz 常见错误容器）
+    err_m = re.search(r'class="alert_error"[^>]*>([\s\S]*?)</div>', r2.text)
+    if err_m:
+        err_msg = _strip_html(err_m.group(1)).strip()
+    if not err_msg:
+        # alert_info
+        err_m = re.search(r'class="alert_info"[^>]*>([\s\S]*?)</div>', r2.text)
+        if err_m:
+            err_msg = _strip_html(err_m.group(1)).strip()
+    if not err_msg:
+        # messagetext
+        err_m = re.search(r'class="messagetext"[^>]*>([\s\S]*?)</div>', r2.text)
+        if err_m:
+            err_msg = _strip_html(err_m.group(1)).strip()
+
+    # 常见 Discuz 登录失败模式
+    txt = r2.text
+    if '登录次数过多' in txt or 'floodcontrol' in txt:
+        err_msg = err_msg or '登录次数过多，论坛触发了登录频控，请稍等几分钟后再试（或在网页上退出后重试）'
+    elif '验证码' in txt or 'seccode' in txt or 'secqaa' in txt:
+        err_msg = err_msg or '论坛要求输入验证码，当前无法自动处理，请稍后在网页上正常登录一次再试'
+    elif '密码错误' in txt or '登录失败' in txt:
+        err_msg = err_msg or '账号或密码错误'
+    elif '禁止' in txt and '登录' in txt:
+        err_msg = err_msg or '账号被禁止登录'
+    elif '欢迎您回来' not in txt and 'succeedhandle' not in txt:
+        # 最终兜底：返回响应的前300字符纯文本，帮助诊断
+        snippet = _strip_html(txt)[:300].strip()
+        err_msg = err_msg or f'登录响应异常（可能会话冲突或网页端登录占用了会话）: {snippet}'
+
+    # 最后再检查一次是否其实已登录（有些 Discuz 版本成功后不返回 succeedhandle）
+    if _is_logged_in(s):
+        return s
+
+    raise RuntimeError(err_msg or '登录失败: 未知原因')
 
 
 def search(keyword, page=1):

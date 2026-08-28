@@ -2130,7 +2130,7 @@ def baidu_test():
         s = baidu_forum._get_session()
         if baidu_forum._is_logged_in(s):
             return jsonify({'success': True, 'message': '登录成功'})
-        return jsonify({'success': False, 'message': '登录失败，请检查账号密码'})
+        return jsonify({'success': False, 'message': '登录态验证失败（cookies可能已失效），请稍后重试或在网页退出后重新登录'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 

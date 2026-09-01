@@ -73,6 +73,34 @@ def _auth_headers(api_key):
     return {'Authorization': f'MediaBrowser Token="{api_key}"'}
 
 
+# 管理员用户ID缓存 {base_url -> user_id}
+_admin_user_cache = {}
+
+
+def _get_admin_user_id(base_url, api_key):
+    """获取管理员用户ID（用于 /Users/{uid}/Items 查询）
+
+    Jellyfin 12.0 的无用户上下文 /Items 接口会把合集(BoxSet)成员电影折叠掉：
+    只返回合集本身，不返回其中的电影，导致系列片（如寒战2、画皮2）全部漏匹配。
+    /Users/{uid}/Items（网页端使用的接口）返回全部条目，与界面显示一致。
+    """
+    if base_url in _admin_user_cache:
+        return _admin_user_cache[base_url]
+    user_id = None
+    try:
+        resp = _SESSION.get(base_url.rstrip('/') + '/Users',
+                            headers=_auth_headers(api_key), timeout=10)
+        if resp.status_code == 200:
+            for u in resp.json():
+                if u.get('Policy', {}).get('IsAdministrator'):
+                    user_id = u.get('Id')
+                    break
+    except Exception as e:
+        logger.warning(f'[Jellyfin] 获取用户列表失败，回退 /Items 接口: {e}')
+    _admin_user_cache[base_url] = user_id
+    return user_id
+
+
 def get_library_items(base_url, api_key, library_ids=None):
     """拉取 Jellyfin 影视库全部影片条目
 
@@ -108,7 +136,11 @@ def get_library_items(base_url, api_key, library_ids=None):
             'media_type': norm_type,
         }
 
-    url = base_url.rstrip('/') + '/Items'
+    # 优先走用户视角接口（含合集成员电影）；拿不到用户ID时回退 /Items
+    admin_uid = _get_admin_user_id(base_url, api_key)
+    url = (base_url.rstrip('/') + f'/Users/{admin_uid}/Items') if admin_uid else (base_url.rstrip('/') + '/Items')
+    if admin_uid:
+        logger.info(f'[Jellyfin] 使用用户视角接口拉取（含合集成员电影）')
     params = {
         'IncludeItemTypes': 'Movie,Series',
         'Fields': 'ProductionYear,ProviderIds',

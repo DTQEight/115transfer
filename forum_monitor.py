@@ -1614,6 +1614,111 @@ def run_recheck_all_no_seeds(thread_delay: float = 3.0) -> Dict[str, Any]:
         _monitor_lock.release()
 
 
+def run_backfill_magnets() -> Dict[str, Any]:
+    """补齐历史帖子的磁力链接（纯本地操作，不访问论坛）
+
+    背景：2026-07-27 之前入库的帖子只下载了 .torrent 存盘，未计算磁力链接，
+    而本地搜索只返回 magnet_links 非空的帖子，导致这批帖子搜不到。
+    本函数遍历「seed_paths 非空但 magnet_links 为空」的帖子，读取本地
+    种子文件重新计算磁力链接回填，无需重新请求论坛。
+    """
+    if not _monitor_lock.acquire(blocking=False):
+        return {'success': False, 'message': '已有监控任务在运行'}
+
+    started_at = _now_iso()
+    try:
+        _init_db()
+        with _db_ctx() as conn:
+            cur = conn.execute('''
+                SELECT tid, seed_paths FROM threads
+                WHERE (magnet_links IS NULL OR magnet_links='' OR magnet_links='[]')
+                  AND seed_paths IS NOT NULL AND seed_paths!='' AND seed_paths!='[]'
+            ''')
+            candidates = [(r['tid'], r['seed_paths']) for r in cur.fetchall()]
+
+        total = len(candidates)
+        if total == 0:
+            return {'success': True, 'message': '没有需要补齐磁力链接的帖子', 'total': 0, 'backfilled': 0}
+
+        _monitor_status.update({
+            'running': True, 'mode': 'backfill', 'started_at': started_at,
+            'current_forum': '补齐磁力链接', 'current_page': 0,
+            'total_pages': total, 'planned_pages': total,
+            'forum_started_at': started_at,
+            'threads_found': total, 'threads_new': 0, 'seeds_downloaded': 0,
+            'message': f'磁力链接补齐开始：共{total}个帖子',
+        })
+        logger.info(f'[论坛监控] 磁力链接补齐开始：共{total}个帖子')
+
+        backfilled = 0
+        failed = 0
+        seed_root = os.path.abspath(_SEED_DIR) + os.sep
+        for idx, (tid, paths_json) in enumerate(candidates, 1):
+            if not _monitor_status.get('running', False):
+                _monitor_status['message'] = f'已取消（{idx - 1}/{total}，补齐{backfilled}个）'
+                logger.info(f'[论坛监控] 磁力链接补齐被取消：{idx - 1}/{total}')
+                break
+
+            try:
+                paths = json.loads(paths_json) or []
+            except (ValueError, TypeError):
+                paths = []
+            if not isinstance(paths, list):
+                paths = []
+
+            magnets: List[Dict[str, str]] = []
+            tid_prefix = f'{tid}_'
+            for rel in paths:
+                if not isinstance(rel, str):
+                    continue
+                filepath = os.path.abspath(os.path.join(_SEED_DIR, rel))
+                if not filepath.startswith(seed_root):
+                    continue
+                try:
+                    with open(filepath, 'rb') as f:
+                        content = f.read()
+                    m = baidu_forum.torrent_to_magnet(content)
+                    stem = os.path.splitext(os.path.basename(filepath))[0]
+                    magnets.append({
+                        'aid': stem[len(tid_prefix):] if stem.startswith(tid_prefix) else '',
+                        'magnet': m['magnet'],
+                        'name': m.get('name', ''),
+                        'source': 'attachment',
+                    })
+                except Exception as e:
+                    logger.warning(f'[论坛监控] 补齐 {tid} 种子文件 {rel} 解析失败: {e}')
+
+            if magnets:
+                with _db_ctx() as conn:
+                    conn.execute('UPDATE threads SET magnet_links=? WHERE tid=?',
+                                 (json.dumps(magnets, ensure_ascii=False), tid))
+                backfilled += 1
+            else:
+                failed += 1
+
+            if idx % 50 == 0 or idx == total:
+                _update_status(
+                    current_page=idx,
+                    threads_new=backfilled,
+                    message=f'补齐磁力链接 {idx}/{total}（成功{backfilled}，失败{failed}）',
+                )
+
+        status = '完成' if _monitor_status.get('running', False) else '已取消'
+        msg = f'共{total}个，补齐{backfilled}个，失败{failed}个'
+        _monitor_status.update({'running': False, 'message': f'磁力链接补齐{status}：{msg}'})
+        logger.info(f'[论坛监控] 磁力链接补齐{status}：{msg}')
+        _push_wechat_notice('磁力链接补齐', status, msg, {
+            'total': total, 'backfilled': backfilled, 'failed': failed,
+        })
+        return {'success': True, 'total': total, 'backfilled': backfilled, 'failed': failed}
+    except Exception as e:
+        _monitor_status.update({'running': False, 'message': f'磁力链接补齐失败: {e}'})
+        logger.error(f'[论坛监控] 磁力链接补齐异常: {e}', exc_info=True)
+        return {'success': False, 'message': str(e)}
+    finally:
+        _monitor_lock.release()
+
+
 # ==================== 查询接口 ====================
 
 def list_threads(fid: Optional[str] = None, keyword: str = '',

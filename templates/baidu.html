@@ -116,6 +116,9 @@
                     <button onclick="startIncremental()" class="btn btn-outline-info" id="btnIncremental">
                         <i class="bi bi-arrow-repeat me-1"></i>增量监控
                     </button>
+                    <button onclick="startBackfillMagnets()" class="btn btn-outline-warning" id="btnBackfillMagnets">
+                        <i class="bi bi-magnet me-1"></i>补齐磁力链接
+                    </button>
                     <button onclick="cancelMonitor('main')" class="btn btn-outline-danger" id="btnCancel" style="display:none;">
                         <i class="bi bi-stop-circle me-1"></i>取消主任务
                     </button>
@@ -1013,21 +1016,25 @@ async function refreshMonitorStatus() {
 
         if (st.running) {
             badge.className = 'badge bg-success';
-            var modeText = {full: '全量拉取中', recheck: '二次拉取中'}[st.mode] || '运行中';
+            var modeText = {full: '全量拉取中', recheck: '二次拉取中', backfill: '补齐磁链中'}[st.mode] || '运行中';
             badge.textContent = modeText;
             statusBar.style.display = '';
             btnCancel.style.display = '';
             btnFull.disabled = true;
+            var backfillBtn = document.getElementById('btnBackfillMagnets');
+            if (backfillBtn) backfillBtn.disabled = true;
             var batchBtn = document.getElementById('batchRecheckBtn');
             if (batchBtn) batchBtn.disabled = true;
             document.getElementById('monitorStatusText').textContent = st.message || '运行中';
-            var unit = st.mode === 'recheck' ? '个' : '页';
+            var unit = (st.mode === 'recheck' || st.mode === 'backfill') ? '个' : '页';
             var etaText = _calcEta(st);
             var cp = st.current_page || 0;
             var planned = st.planned_pages || 0;
             var progressLine;
             if (st.mode === 'recheck') {
                 progressLine = st.current_forum + ' ' + cp + '/' + planned + unit + ' | 发现有种' + st.threads_new + '个' + etaText;
+            } else if (st.mode === 'backfill') {
+                progressLine = st.current_forum + ' ' + cp + '/' + planned + unit + ' | 已补齐' + st.threads_new + '个' + etaText;
             } else {
                 progressLine = st.current_forum + ' 第' + cp + unit + ' | 新增' + st.threads_new + '帖 | ' + st.seeds_downloaded + '种子' + etaText;
             }
@@ -1052,6 +1059,8 @@ async function refreshMonitorStatus() {
             statusBar.style.display = 'none';
             btnCancel.style.display = 'none';
             btnFull.disabled = false;
+            var backfillBtn2 = document.getElementById('btnBackfillMagnets');
+            if (backfillBtn2) backfillBtn2.disabled = false;
             var batchBtn2 = document.getElementById('batchRecheckBtn');
             if (batchBtn2) batchBtn2.disabled = false;
             // 任务刚结束：自动刷新仪表盘和列表
@@ -1320,6 +1329,27 @@ async function startRecheckAll() {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({delay: 3})
+        });
+        var data = await resp.json();
+        if (data.success) {
+            showToast(data.message, 'success');
+            refreshMonitorStatus();
+        } else {
+            showToast(data.message || '启动失败', 'danger');
+        }
+    } catch (e) {
+        showToast('启动失败: ' + e.message, 'danger');
+    }
+}
+
+// 补齐历史帖子的磁力链接（纯本地操作，读已下载的种子文件重算磁链，不访问论坛）
+async function startBackfillMagnets() {
+    if (!confirm('补齐磁力链接：读取本地已下载的种子文件，为早期入库的帖子重新计算磁力链接（不访问论坛，速度较快）。确认开始？')) return;
+    try {
+        var resp = await apiFetch('/baidu/monitor_backfill_magnets', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: '{}'
         });
         var data = await resp.json();
         if (data.success) {

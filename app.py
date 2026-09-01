@@ -2491,6 +2491,21 @@ def baidu_monitor_recheck_all() -> Response:
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/baidu/monitor_backfill_magnets', methods=['POST'])
+def baidu_monitor_backfill_magnets() -> Response:
+    """补齐历史帖子的磁力链接（后台异步执行，纯本地操作不访问论坛）"""
+    try:
+        if forum_monitor.get_status()['running']:
+            return jsonify({'success': False, 'message': '已有监控任务在运行，请先取消'})
+        import threading as _threading
+        t = _threading.Thread(target=forum_monitor.run_backfill_magnets, daemon=True)
+        t.start()
+        return jsonify({'success': True, 'message': '磁力链接补齐已启动，请在状态页查看进度'})
+    except Exception as e:
+        logger.error(f'[论坛监控] 启动磁力链接补齐失败: {e}')
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @app.route('/baidu/monitor_threads')
 def baidu_monitor_threads() -> Response:
     """查询已爬取的帖子/种子列表"""

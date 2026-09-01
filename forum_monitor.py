@@ -1684,10 +1684,11 @@ def search_local_magnets(keyword: str, page: int = 1, page_size: int = 20) -> Di
     # 避免返回无种帖子导致用户点击"获取磁链"时得到"未找到附件"
     magnet_filter = "(magnet_links IS NOT NULL AND magnet_links != '' AND magnet_links != '[]')"
     with _db_ctx() as conn:
-        # 统计匹配总数（仅有种帖子）
+        # 统计匹配总数（仅有种帖子）。LIKE 必须与下方结果查询一致用 %kw% 包含匹配，
+        # 旧代码漏了结尾 % 导致计数偏少、总页数偏小，第2页起的结果翻页不可见
         cur = conn.execute(
             f'SELECT COUNT(*) as c FROM threads WHERE title LIKE ? AND {magnet_filter}',
-            (f'%{keyword}',)
+            (f'%{keyword}%',)
         )
         total_count = cur.fetchone()['c']
 

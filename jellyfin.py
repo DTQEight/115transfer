@@ -63,6 +63,16 @@ def update_config(mutator):
         _save_unlocked(config)
 
 
+def _auth_headers(api_key):
+    """构造认证头
+
+    Jellyfin 12.0 起默认禁用遗留认证（X-Emby-Token 等头被忽略，返回401），
+    必须使用 Authorization: MediaBrowser Token="..."。
+    该格式自 Jellyfin 10.x 起即为官方推荐写法，老版本同样支持。
+    """
+    return {'Authorization': f'MediaBrowser Token="{api_key}"'}
+
+
 def get_library_items(base_url, api_key, library_ids=None):
     """拉取 Jellyfin 影视库全部影片条目
 
@@ -113,7 +123,7 @@ def get_library_items(base_url, api_key, library_ids=None):
             params['ParentId'] = lib_id
             try:
                 resp = _SESSION.get(url, params=params,
-                                     headers={'X-Emby-Token': api_key}, timeout=15)
+                                     headers=_auth_headers(api_key), timeout=15)
                 if resp.status_code != 200:
                     return [], f'请求失败，状态码: {resp.status_code}'
                 data = resp.json()
@@ -127,7 +137,7 @@ def get_library_items(base_url, api_key, library_ids=None):
 
     try:
         resp = _SESSION.get(url, params=params,
-                            headers={'X-Emby-Token': api_key}, timeout=15)
+                            headers=_auth_headers(api_key), timeout=15)
         if resp.status_code == 401:
             return [], 'API Key无效'
         if resp.status_code != 200:
@@ -154,7 +164,7 @@ def get_libraries(base_url, api_key):
         return [], '未配置地址或API Key'
     url = base_url.rstrip('/') + '/Library/MediaFolders'
     try:
-        resp = _SESSION.get(url, headers={'X-Emby-Token': api_key}, timeout=10)
+        resp = _SESSION.get(url, headers=_auth_headers(api_key), timeout=10)
         if resp.status_code == 401:
             return [], 'API Key无效'
         if resp.status_code != 200:

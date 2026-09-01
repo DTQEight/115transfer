@@ -97,6 +97,10 @@ _LAST_PAGE_RE = re.compile(r'class="last"[^>]*>\s*(?:\.\.\.\s*)?(\d+)\s*</a>')
 _TOTAL_PAGES_RE2 = re.compile(r'href="forum-\d+-(\d+)\.html"')
 # 分页：带 filter 的分页链接 ?mod=forumdisplay&fid=44&...&page=N（兼容 &amp; HTML 转义）
 _PAGE_NUM_RE = re.compile(r'(?:&|&amp;)page=(\d+)')
+# 分类筛选链接：filter=sortid&sortid=N（兼容 &amp; 转义），链接文本即分类名
+_SORTID_LINK_RE = re.compile(
+    r'filter=sortid&(?:amp;)?sortid=(\d+)[^>]*>\s*(?:<[^>]+>\s*)*([^<]*?)\s*<'
+)
 
 
 def _now_iso() -> str:
@@ -164,7 +168,8 @@ def _init_db() -> None:
                 last_crawl_at TEXT,
                 total_pages INTEGER,
                 mode TEXT,
-                PRIMARY KEY (fid, mode)
+                sortid TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (fid, sortid, mode)
             );
 
             CREATE TABLE IF NOT EXISTS monitor_log (
@@ -183,14 +188,17 @@ def _init_db() -> None:
                 message TEXT
             );
         ''')
-        # 迁移旧表：旧版 crawl_progress 主键为单 fid，增量和全量共用一行
-        # 导致增量跑完后全量断点续传被污染。检测旧表并重建为 (fid, mode) 复合主键。
+        # 迁移旧表 crawl_progress：统一重建为复合主键 (fid, sortid, mode)
+        # - 最旧版本主键为单 fid，增量和全量共用一行，断点续传被污染
+        # - 旧版主键 (fid, mode)，无 sortid 列：历史上板块列表带 filter=sortid&sortid=1
+        #   过滤，页码基于"仅分类1"视图；新版按分类拆分爬取单元，历史进度归入 sortid='1'
+        #   （sortid='' 表示无过滤视图，与历史行隔离，避免页码错位导致漏帖）
         try:
             cols = conn.execute("PRAGMA table_info(crawl_progress)").fetchall()
-            pk_cols = [c for c in cols if c['pk'] > 0]
-            # 旧表主键只有1列(fid)，新表应有2列(fid, mode)
-            if len(pk_cols) == 1:
-                logger.info('[论坛监控] 迁移 crawl_progress 表：单主键 → 复合主键(fid, mode)')
+            col_names = [c['name'] for c in cols]
+            pk_names = sorted(c['name'] for c in cols if c['pk'] > 0)
+            if 'sortid' not in col_names or pk_names != ['fid', 'mode', 'sortid']:
+                logger.info('[论坛监控] 迁移 crawl_progress 表：重建为复合主键(fid, sortid, mode)')
                 conn.executescript('''
                     ALTER TABLE crawl_progress RENAME TO crawl_progress_old;
                     CREATE TABLE crawl_progress (
@@ -201,15 +209,16 @@ def _init_db() -> None:
                         last_crawl_at TEXT,
                         total_pages INTEGER,
                         mode TEXT,
-                        PRIMARY KEY (fid, mode)
+                        sortid TEXT NOT NULL DEFAULT '',
+                        PRIMARY KEY (fid, sortid, mode)
                     );
                     INSERT OR IGNORE INTO crawl_progress
-                        (fid, forum_name, last_page, last_tid, last_crawl_at, total_pages, mode)
-                    SELECT fid, forum_name, last_page, last_tid, last_crawl_at, total_pages, mode
+                        (fid, forum_name, last_page, last_tid, last_crawl_at, total_pages, mode, sortid)
+                    SELECT fid, forum_name, last_page, last_tid, last_crawl_at, total_pages, mode, '1'
                     FROM crawl_progress_old;
                     DROP TABLE crawl_progress_old;
                 ''')
-                logger.info('[论坛监控] crawl_progress 迁移完成')
+                logger.info('[论坛监控] crawl_progress 迁移完成（历史进度归入 sortid=1）')
         except Exception as e:
             logger.warning(f'[论坛监控] crawl_progress 迁移检查失败（可忽略）: {e}')
 
@@ -557,6 +566,56 @@ def parse_forum_page(html: str, fid: str, forum_name: str) -> Tuple[List[Dict[st
     return threads, total_pages
 
 
+# ==================== 分类发现（板块爬取单元） ====================
+
+def _discover_crawl_units(fid: str, forum_name: str) -> List[Dict[str, str]]:
+    """探测板块的爬取单元（无过滤视图 or 逐分类）
+
+    Discuz 板块页支持 filter=sortid&sortid=N 按分类筛选。
+    旧版硬编码 sortid=1，导致其他分类（及未分类）的帖子永远爬不到。
+
+    策略：
+      1. 先试无过滤视图（覆盖所有分类+未分类帖子），能解析到帖子则直接用
+      2. 无过滤视图解析不到帖子时，从页面提取所有分类筛选链接，逐个分类爬
+      3. 都失败则回退 sortid=1（历史行为，保证不倒退）
+
+    Returns:
+        [{'fid', 'sortid', 'label'}] — sortid 为空串表示无过滤视图
+    """
+    s = baidu_forum._get_session()
+    try:
+        r = s.get(baidu_forum.BASE + f'forum.php?mod=forumdisplay&fid={fid}', timeout=(10, 30))
+        r.encoding = 'gbk'
+    except Exception as e:
+        logger.warning(f'[论坛监控] {forum_name}(fid={fid}) 探测无过滤视图失败，回退sortid=1: {e}')
+        return [{'fid': fid, 'sortid': '1', 'label': forum_name}]
+
+    threads, _ = parse_forum_page(r.text, fid, forum_name)
+    if threads:
+        logger.info(f'[论坛监控] {forum_name}(fid={fid}) 无过滤视图可解析{len(threads)}帖，'
+                    f'覆盖全部分类（含未分类）')
+        return [{'fid': fid, 'sortid': '', 'label': forum_name}]
+
+    # 无过滤视图无帖子：提取页面上所有分类筛选链接
+    units: List[Dict[str, str]] = []
+    seen: set = set()
+    for m in _SORTID_LINK_RE.finditer(r.text):
+        sid = m.group(1)
+        if sid in seen:
+            continue
+        seen.add(sid)
+        name = baidu_forum._strip_html(m.group(2)).strip()
+        label = f'{forum_name}·{name}' if name else f'{forum_name}·分类{sid}'
+        units.append({'fid': fid, 'sortid': sid, 'label': label})
+    if units:
+        logger.info(f'[论坛监控] {forum_name}(fid={fid}) 无过滤视图无帖子，'
+                    f'按分类爬取：{[u["label"] for u in units]}')
+        return units
+
+    logger.warning(f'[论坛监控] {forum_name}(fid={fid}) 未发现分类链接，回退sortid=1')
+    return [{'fid': fid, 'sortid': '1', 'label': forum_name}]
+
+
 # ==================== 种子文件下载与保存 ====================
 
 def _save_seed_file(content: bytes, fid: str, tid: str, aid: str) -> str:
@@ -733,33 +792,41 @@ def _get_known_tids(tids: List[str]) -> set:
 
 
 def _update_progress(fid: str, forum_name: str, last_page: int, last_tid: str,
-                     total_pages: int, mode: str) -> None:
-    """更新板块爬取进度（按 fid+mode 隔离，全量和增量各自独立）"""
+                     total_pages: int, mode: str, sortid: str = '') -> None:
+    """更新板块爬取进度（按 fid+sortid+mode 隔离，各分类、全量和增量各自独立）"""
     with _db_ctx() as conn:
         conn.execute('''
-            INSERT INTO crawl_progress (fid, forum_name, last_page, last_tid, last_crawl_at, total_pages, mode)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(fid, mode) DO UPDATE SET
+            INSERT INTO crawl_progress (fid, forum_name, last_page, last_tid, last_crawl_at, total_pages, mode, sortid)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(fid, sortid, mode) DO UPDATE SET
                 forum_name=excluded.forum_name,
                 last_page=excluded.last_page,
                 last_tid=excluded.last_tid,
                 last_crawl_at=excluded.last_crawl_at,
                 total_pages=excluded.total_pages
-        ''', (fid, forum_name, last_page, last_tid, _now_iso(), total_pages, mode))
+        ''', (fid, forum_name, last_page, last_tid, _now_iso(), total_pages, mode, sortid))
 
 
-def _get_progress(fid: str, mode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _get_progress(fid: str, mode: Optional[str] = None,
+                  sortid: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """获取板块爬取进度
 
     Args:
         mode: 指定模式('full'/'incremental')，返回该模式的独立进度；
               None 则返回任意一行（兼容旧调用）。
+        sortid: 分类ID。'' 表示无过滤视图；None 表示不限（兼容旧调用）。
     """
     with _db_ctx() as conn:
+        where = ['fid=?']
+        params: List[Any] = [fid]
         if mode:
-            cur = conn.execute('SELECT * FROM crawl_progress WHERE fid=? AND mode=?', (fid, mode))
-        else:
-            cur = conn.execute('SELECT * FROM crawl_progress WHERE fid=?', (fid,))
+            where.append('mode=?')
+            params.append(mode)
+        if sortid is not None:
+            where.append('sortid=?')
+            params.append(sortid)
+        cur = conn.execute(
+            f'SELECT * FROM crawl_progress WHERE {" AND ".join(where)}', params)
         row = cur.fetchone()
         return dict(row) if row else None
 
@@ -994,8 +1061,9 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
                 max_pages: int, concurrent_threads: int,
                 run_id: str, started_at: str,
                 status_ref: Optional[Dict[str, Any]] = None,
-                update_fn: Optional[Any] = None) -> Dict[str, Any]:
-    """爬取单个板块
+                update_fn: Optional[Any] = None,
+                sortid: str = '') -> Dict[str, Any]:
+    """爬取单个板块（可指定分类）
 
     Args:
         mode: 'full' 全量 / 'incremental' 增量
@@ -1005,6 +1073,7 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
         update_fn: 状态更新回调，默认 _update_status（主任务）
             增量监控传入 _incremental_status / _update_incremental_status，
             使其与主任务状态隔离、可并发运行。
+        sortid: 分类ID。空串=无过滤视图（覆盖所有分类）；'1'/'2'/...=按分类筛选。
 
     Returns:
         {'pages_crawled', 'threads_found', 'threads_new', 'seeds_downloaded', 'message', 'status'}
@@ -1032,10 +1101,10 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
         update_fn(planned_pages=max_pages)
 
     # 断点续传：全量模式下从上次中断的页码继续，而不是每次都从第1页开始
-    # 只读 mode='full' 的进度，不受增量监控的进度污染
+    # 只读 mode='full' 的进度（按 fid+sortid 隔离），不受增量监控的进度污染
     start_page = 1
     if mode == 'full':
-        prog = _get_progress(fid, 'full')
+        prog = _get_progress(fid, 'full', sortid)
         if prog and prog.get('last_page') and prog.get('total_pages'):
             # 仅当上次未完成时才断点续传（last_page < total_pages）
             # 上次已完成（last_page >= total_pages）则从第1页重新爬取新帖
@@ -1058,7 +1127,10 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
             status = 'cancelled'
             break
 
-        url = baidu_forum.BASE + f'forum.php?mod=forumdisplay&fid={fid}&filter=sortid&sortid=1&page={page}'
+        # 列表页URL：sortid 为空串时不加分类过滤（覆盖所有分类+未分类帖子）
+        url = baidu_forum.BASE + f'forum.php?mod=forumdisplay&fid={fid}&page={page}'
+        if sortid:
+            url = baidu_forum.BASE + f'forum.php?mod=forumdisplay&fid={fid}&filter=sortid&sortid={sortid}&page={page}'
         # 请求+解析合并重试：最多6次尝试（1次原始 + 5次重试）
         # 请求异常或解析到0帖都算失败，重试。5次重试后仍0帖才跳过本页。
         threads: List[Dict[str, str]] = []
@@ -1206,8 +1278,8 @@ def crawl_forum(fid: str, forum_name: str, mode: str,
                 if not stop and page < actual_end:
                     time.sleep(thread_delay)
 
-        # 更新进度（记录本页第一个帖子 tid，即本页最新的帖子）
-        _update_progress(fid, forum_name, page, threads[0]['tid'], total_pages, mode)
+        # 更新进度（记录本页第一个帖子 tid，即本页最新的帖子；按 fid+sortid+mode 隔离）
+        _update_progress(fid, forum_name, page, threads[0]['tid'], total_pages, mode, sortid)
         update_fn(
             current_forum=forum_name,
             current_page=page,
@@ -1277,18 +1349,28 @@ def run_full_crawl() -> Dict[str, Any]:
             if not _monitor_status.get('running', False):
                 _monitor_status['message'] = '已取消'
                 break
-            logger.info(f'[论坛监控] 开始爬取板块: {forum["name"]}(fid={forum["fid"]})')
-            # 全量模式：max_pages 设为 99999 表示爬到论坛最后一页（受 total_pages 自然限制）
-            # 不再受配置的 max_pages_per_run 限制，否则 9099 页的论坛永远爬不完
-            result = crawl_forum(
-                forum['fid'], forum['name'], 'full',
-                cfg['page_delay'], cfg['thread_delay'],
-                99999, cfg['concurrent_threads'],
-                run_id, started_at
-            )
-            total_new += result['threads_new']
-            total_seeds += result['seeds_downloaded']
-            forum_results.append({'fid': forum['fid'], 'name': forum['name'], **result})
+            # 探测爬取单元：无过滤视图（覆盖全部分类）或逐分类爬取
+            units = _discover_crawl_units(forum['fid'], forum['name'])
+            for unit in units:
+                if not _monitor_status.get('running', False):
+                    _monitor_status['message'] = '已取消'
+                    break
+                logger.info(f'[论坛监控] 开始爬取: {unit["label"]}'
+                            f'(fid={forum["fid"]}, 分类={unit["sortid"] or "无过滤"})')
+                # 全量模式：max_pages 设为 99999 表示爬到论坛最后一页（受 total_pages 自然限制）
+                # 不再受配置的 max_pages_per_run 限制，否则 9099 页的论坛永远爬不完
+                result = crawl_forum(
+                    forum['fid'], unit['label'], 'full',
+                    cfg['page_delay'], cfg['thread_delay'],
+                    99999, cfg['concurrent_threads'],
+                    run_id, started_at,
+                    sortid=unit['sortid'],
+                )
+                total_new += result['threads_new']
+                total_seeds += result['seeds_downloaded']
+                forum_results.append({'fid': forum['fid'], 'name': unit['label'], **result})
+            if not _monitor_status.get('running', False):
+                break
 
         cfg['last_full_crawl_at'] = _now_iso()
         save_monitor_config(cfg)
@@ -1371,17 +1453,26 @@ def run_incremental() -> Dict[str, Any]:
             if not _incremental_status.get('running', False):
                 _incremental_status['message'] = '已取消'
                 break
-            result = crawl_forum(
-                forum['fid'], forum['name'], 'incremental',
-                cfg['page_delay'], cfg['thread_delay'],
-                inc_max_pages, cfg['concurrent_threads'],
-                run_id, started_at,
-                status_ref=_incremental_status,
-                update_fn=_update_incremental_status,
-            )
-            total_new += result['threads_new']
-            total_seeds += result['seeds_downloaded']
-            forum_results.append({'fid': forum['fid'], 'name': forum['name'], **result})
+            # 探测爬取单元：无过滤视图（覆盖全部分类）或逐分类爬取
+            units = _discover_crawl_units(forum['fid'], forum['name'])
+            for unit in units:
+                if not _incremental_status.get('running', False):
+                    _incremental_status['message'] = '已取消'
+                    break
+                result = crawl_forum(
+                    forum['fid'], unit['label'], 'incremental',
+                    cfg['page_delay'], cfg['thread_delay'],
+                    inc_max_pages, cfg['concurrent_threads'],
+                    run_id, started_at,
+                    status_ref=_incremental_status,
+                    update_fn=_update_incremental_status,
+                    sortid=unit['sortid'],
+                )
+                total_new += result['threads_new']
+                total_seeds += result['seeds_downloaded']
+                forum_results.append({'fid': forum['fid'], 'name': unit['label'], **result})
+            if not _incremental_status.get('running', False):
+                break
 
         cfg['last_incremental_at'] = _now_iso()
         save_monitor_config(cfg)
@@ -1650,8 +1741,8 @@ def search_local_magnets(keyword: str, page: int = 1, page_size: int = 20) -> Di
 def list_forums_with_progress() -> List[Dict[str, Any]]:
     """列出所有板块及其爬取进度
 
-    复合主键(fid, mode)下每个板块可能有两行（全量+增量），
-    这里按 fid 去重：优先显示全量进度，无全量则显示增量进度。
+    复合主键(fid, sortid, mode)下每个板块可能有多行（全量/增量 × 各分类），
+    这里按 fid 去重：优先显示全量进度（取最近爬取的一行），无全量则显示增量进度。
     """
     with _db_ctx() as conn:
         cur = conn.execute('''
@@ -1659,8 +1750,17 @@ def list_forums_with_progress() -> List[Dict[str, Any]]:
                    p.last_crawl_at, p.total_pages, p.mode,
                    (SELECT COUNT(*) FROM threads t WHERE t.fid=p.fid) as thread_count
             FROM crawl_progress p
-            WHERE p.mode='full'
-               OR p.fid NOT IN (SELECT fid FROM crawl_progress WHERE mode='full')
+            WHERE p.last_crawl_at = (
+                      SELECT MAX(p2.last_crawl_at) FROM crawl_progress p2
+                      WHERE p2.fid=p.fid AND p2.mode='full'
+                  )
+               OR (
+                  p.mode='incremental'
+                  AND p.fid NOT IN (SELECT fid FROM crawl_progress WHERE mode='full')
+                  AND p.last_crawl_at = (
+                      SELECT MAX(p2.last_crawl_at) FROM crawl_progress p2
+                      WHERE p2.fid=p.fid AND p2.mode='incremental'
+                  ))
             ORDER BY p.forum_name
         ''')
         return [dict(r) for r in cur.fetchall()]
@@ -1721,11 +1821,16 @@ def get_dashboard() -> Dict[str, Any]:
         total_seeds = row['total_seeds'] or 0
         seed_rate = round(threads_with_seeds / total_threads * 100, 1) if total_threads > 0 else 0
 
-        # 各板块进度（按 fid 去重，优先全量模式）
+        # 各板块进度（按 fid 去重，优先全量模式，同模式取最近爬取的一行）
         cur = conn.execute(
             'SELECT fid, forum_name, last_page, total_pages, last_crawl_at, mode '
-            'FROM crawl_progress '
-            "WHERE mode='full' OR fid NOT IN (SELECT fid FROM crawl_progress WHERE mode='full') "
+            'FROM crawl_progress p '
+            'WHERE last_crawl_at = (SELECT MAX(p2.last_crawl_at) FROM crawl_progress p2 '
+            "                       WHERE p2.fid=p.fid AND p2.mode='full') "
+            "   OR (mode='incremental' "
+            "       AND fid NOT IN (SELECT fid FROM crawl_progress WHERE mode='full') "
+            '       AND last_crawl_at = (SELECT MAX(p2.last_crawl_at) FROM crawl_progress p2 '
+            '                            WHERE p2.fid=p.fid AND p2.mode=\'incremental\')) '
             'ORDER BY fid'
         )
         progress = []

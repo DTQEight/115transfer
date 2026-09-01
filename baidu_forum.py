@@ -773,8 +773,9 @@ def _get_thread_attachments_with_session(s, tid):
     r.encoding = 'gbk'
 
     attachments = []
+    # 兼容 &amp; 转义与未转义 & 两种输出格式，避免部分页面附件被漏掉
     aids = re.findall(
-        r'href="forum\.php\?mod=attachment&amp;aid=([^"&]+)[^"]*"',
+        r'href="forum\.php\?mod=attachment&(?:amp;)?aid=([^"&]+)[^"]*"',
         r.text
     )
     seen = set()

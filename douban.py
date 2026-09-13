@@ -55,11 +55,23 @@ def update_config(mutator):
 def _get_headers():
     config = load_config()
     cookie = decrypt(config.get('cookie', ''))
+    # 模拟真实浏览器请求头：豆瓣对请求特征不完整的会话会"少渲染"
+    # collect 列表（浏览器 15 条，服务端只返回 13~14 条且不报错），
+    # 补全 Accept-Language / Sec-Fetch-* 等字段降低被降级的概率。
+    # 不显式设置 Accept-Encoding，交由 requests 处理（避免 br 解码问题）。
     return {
         'User-Agent': USER_AGENT,
         'Cookie': cookie,
         'Referer': 'https://movie.douban.com/',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Cache-Control': 'max-age=0',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
     }
 
 
@@ -69,6 +81,10 @@ def _get_headers():
 # 与 baidu_forum 的 trust_env=False 策略一致。
 _SESSION = requests.Session()
 _SESSION.trust_env = False
+
+# 非满页重试次数：豆瓣对部分会话/页码会"少渲染"（末页除外，浏览器 15 条
+# 而服务端只给 13~14 条）。非末页出现非满页时重试，尽量取回被隐藏的条目。
+PARTIAL_PAGE_RETRY = 2
 
 
 def fetch_watched_movies(user_id, start=0, count=15):
@@ -377,6 +393,24 @@ def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
                 continue  # 不推进start，重试当前页
             break
 
+        # 非满页重试：豆瓣对部分页会"少渲染"（浏览器 15 条、服务端仅 13~14 条
+        # 且不报错），非末页出现非满页时重试，尽量取回被隐藏的条目。
+        # 末页天然不满15条（start + per_page >= total），不重试。
+        if 0 < len(movies) < per_page and total is not None and start + per_page < total:
+            for attempt in range(1, PARTIAL_PAGE_RETRY + 1):
+                log.warning(f'[豆瓣] 第{pages+1}页(start={start})非满页({len(movies)}/{per_page})，'
+                            f'重试第{attempt}次')
+                time.sleep(page_delay * 2)
+                retry_movies, _rc, retry_err = fetch_watched_movies(user_id, start, per_page)
+                if retry_err:
+                    log.warning(f'[豆瓣] 第{pages+1}页重试失败: {retry_err}')
+                    break
+                if len(retry_movies) > len(movies):
+                    movies = retry_movies
+                    log.info(f'[豆瓣] 第{pages+1}页重试后获取到{len(movies)}部')
+                if len(movies) >= per_page:
+                    break
+
         empty_retried = False
         all_movies.extend(movies)
         pages += 1
@@ -431,7 +465,11 @@ _CACHE_FULL_REFRESH_DAYS = 7
 # v6: 缺口根因确认——豆瓣对登录态不完整的会话静默隐藏部分条目（总数
 #     照常显示但列表少渲染，不报错）。换完整Cookie后所有页面满15条。
 #     v5缓存（1190条，Cookie降级期间拉取）作废，更新Cookie后全量重拉
-_CACHE_VERSION = 6
+# v7: 中间页"少渲染"缺口确认（第16/23/24/37/42/79页各少1~2条，共8条）。
+#     根因为豆瓣按请求特征降级：浏览器同页满15条、服务端仅13~14条。
+#     已补全浏览器请求头 + 非末页非满页自动重试；v6缓存（少渲染期间
+#     的1210/1211条）作废，部署后全量重拉校验
+_CACHE_VERSION = 7
 
 
 def _load_movies_cache():

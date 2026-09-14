@@ -14,6 +14,7 @@ COPY wechat_work.py .
 COPY douban.py .
 COPY baidu_forum.py .
 COPY forum_monitor.py .
+COPY split_seeds.py .
 COPY transfer_history.py .
 COPY jellyfin.py .
 COPY media/ media/

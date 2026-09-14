@@ -211,6 +211,6 @@ docker-compose up -d
 - 豆瓣配置：`/app/data/douban_config.json`
 - 论坛配置：`/app/data/baidu_forum_config.json`
 - 论坛监控数据库：`/app/data/forum_monitor.db`（SQLite，存储帖子元数据/种子路径/磁力链接/板块进度/运行日志，含 magnet_links 字段，首次启动自动迁移）
-- 论坛种子文件：`/app/data/forum_seeds/`（按板块分目录存放 .torrent 文件）
+- 论坛种子文件：`/app/data/forum_seeds/`（按板块分目录存放 .torrent 文件；单板块文件过多时按 `p01/p02/...` 子目录分片，每片不超过 10000 个，存量数据可用容器内 `python3 /app/split_seeds.py --fid <板块ID>` 迁移）
 - 应用日志：`/app/data/app.log`（轮转：单文件10MB，保留5个备份）
 - 数据备份：`/app/data/backups/`

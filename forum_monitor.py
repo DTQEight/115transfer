@@ -618,11 +618,38 @@ def _discover_crawl_units(fid: str, forum_name: str) -> List[Dict[str, str]]:
 
 # ==================== 种子文件下载与保存 ====================
 
+# 单个分片子目录的最大种子文件数：大板块（如 fid=44 有 27 万+种子）按
+# p01/p02/... 子目录分片存放，避免单目录文件过多导致性能下降
+_SEED_MAX_PER_DIR = 10000
+# 分片子目录名：p + 编号（p01、p02、...）
+_SEED_BUCKET_RE = re.compile(r'^p(\d+)$')
+# 分片保存锁：保证多线程爬取时「选目录→写入」原子，防止并发写超出上限
+_seed_save_lock = threading.Lock()
+
+
+def _seed_bucket_dirs(forum_dir: str) -> List[str]:
+    """返回板块目录下已存在的分片子目录名（按编号升序），无则返回 []"""
+    if not os.path.isdir(forum_dir):
+        return []
+    items = []
+    for name in os.listdir(forum_dir):
+        m = _SEED_BUCKET_RE.match(name)
+        if m and os.path.isdir(os.path.join(forum_dir, name)):
+            items.append((int(m.group(1)), name))
+    return [name for _, name in sorted(items)]
+
+
 def _save_seed_file(content: bytes, fid: str, tid: str, aid: str) -> str:
     """保存种子文件到磁盘
 
+    已分片的板块（存在 pNN 子目录）：新种子写入最后一个未满的子目录，
+    满了自动开下一个；未分片的板块维持原样存根目录。
+    同名文件已存在时原位覆盖（路径不变），保证重复抓取时数据库引用稳定。
+    （存量大批量文件用 split_seeds.py 一次性迁移分片）
+
     Returns:
-        相对路径（相对于 _SEED_DIR），如 '12/12345_67890.torrent'
+        相对路径（相对于 _SEED_DIR），如 '44/p01/12345_67890.torrent'
+        （未分片板块为 '44/12345_67890.torrent'）
     """
     # 安全校验：fid/tid/aid 只允许字母数字下划线短横，防止路径遍历
     safe_fid = re.sub(r'[^a-zA-Z0-9_-]', '', fid)
@@ -630,16 +657,33 @@ def _save_seed_file(content: bytes, fid: str, tid: str, aid: str) -> str:
     safe_aid = re.sub(r'[^a-zA-Z0-9_-]', '', aid)
     if not safe_fid or not safe_tid or not safe_aid:
         raise ValueError('无效的文件标识符')
-    dir_path = os.path.join(_SEED_DIR, safe_fid)
-    os.makedirs(dir_path, exist_ok=True)
+    forum_dir = os.path.join(_SEED_DIR, safe_fid)
     filename = f'{safe_tid}_{safe_aid}.torrent'
-    filepath = os.path.join(dir_path, filename)
-    # 二次校验：确保最终路径未逃出 _SEED_DIR
-    if not os.path.abspath(filepath).startswith(os.path.abspath(_SEED_DIR) + os.sep):
-        raise ValueError('路径遍历攻击')
-    with open(filepath, 'wb') as f:
-        f.write(content)
-    return os.path.join(safe_fid, filename)
+    with _seed_save_lock:
+        buckets = _seed_bucket_dirs(forum_dir)
+        # 同名文件已存在（根目录或任一分片子目录）→ 原位覆盖
+        target_dir = None
+        for d in [forum_dir] + [os.path.join(forum_dir, b) for b in buckets]:
+            if os.path.isfile(os.path.join(d, filename)):
+                target_dir = d
+                break
+        if target_dir is None:
+            if buckets:
+                # 分片板块：写入最后一个未满子目录，满了开下一个
+                target_dir = os.path.join(forum_dir, buckets[-1])
+                if len(os.listdir(target_dir)) >= _SEED_MAX_PER_DIR:
+                    target_dir = os.path.join(
+                        forum_dir, f'p{int(buckets[-1][1:]) + 1:02d}')
+            else:
+                target_dir = forum_dir
+        os.makedirs(target_dir, exist_ok=True)
+        filepath = os.path.join(target_dir, filename)
+        # 二次校验：确保最终路径未逃出 _SEED_DIR
+        if not os.path.abspath(filepath).startswith(os.path.abspath(_SEED_DIR) + os.sep):
+            raise ValueError('路径遍历攻击')
+        with open(filepath, 'wb') as f:
+            f.write(content)
+    return os.path.join(safe_fid, os.path.relpath(filepath, forum_dir))
 
 
 def download_thread_seeds(tid: str, fid: str) -> Tuple[List[str], List[Dict[str, str]]]:

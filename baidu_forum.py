@@ -36,6 +36,8 @@ UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 # 全局Session复用，避免每次操作都重新创建Session和验证登录
 _global_session = None
 _global_session_ts = 0
+# 当前全局Session所用的「手动Cookie+UA」指纹：配置变更时据此重建会话
+_manual_session_fp = None
 _session_lock = threading.Lock()
 
 # 配置文件读写锁：保护 load→modify→save 事务原子性
@@ -199,26 +201,77 @@ def _wrap_ssl_retry(fn, max_ssl_retries=2):
             raise RuntimeError(f'{friendly}（{e.__class__.__name__}: {msg[:200]}）') from e
 
 
+def _is_challenge_page(html):
+    """判断响应是否为防护挑战页（而非论坛真实页面）
+
+    论坛已启用全站 JS 挑战：非浏览器客户端拿到的不是登录页/帖子页，
+    而是 "Slide to Unlock" 挑战页，必须执行 JS 才能放行。
+    requests 无法执行 JS，因此只能靠浏览器手动过一次后复用其 Cookie。
+    """
+    if not html:
+        return True
+    return 'Slide to Unlock' in html or 'Request ID:' in html
+
+
+def _parse_cookie_string(raw):
+    """把浏览器复制的 Cookie 头字符串解析为字典
+
+    支持 "k=v; k2=v2" 和按行分隔两种格式，自动去除引号与空白。
+    """
+    out = {}
+    for part in (raw or '').replace('\n', ';').split(';'):
+        part = part.strip()
+        if not part or '=' not in part:
+            continue
+        k, v = part.split('=', 1)
+        k, v = k.strip(), v.strip().strip('"')
+        if k:
+            out[k] = v
+    return out
+
+
 def _get_session():
     """获取带登录态的全局session（复用，避免每次创建+验证）
 
     策略：
-    - 全局session存在且未过期(6小时)则直接复用，不再每次发请求验证登录态
-    - 失效或不存在则重新登录
-    - 这样单次获取磁力链接从原来的4次HTTP请求(2次验证+1帖子页+1下载)
-      降为2次(1帖子页+1下载)，且复用TCP连接
+    - 已配置「手动 Cookie」时优先走浏览器 Cookie（论坛有 JS 挑战，
+      账号密码登录已不可用）：Cookie 或其 UA 变更时立即重建会话
+    - 未配置手动 Cookie 时走原有账号密码登录 + cookies 缓存
+    - 全局session 6小时内复用；失效时重建
     """
-    global _global_session, _global_session_ts
+    global _global_session, _global_session_ts, _manual_session_fp
     config = load_config()
-    username = config.get('username', '').strip()
-    password = config.get('password', '').strip()
-    if not username or not password:
-        raise ValueError('未配置论坛账号密码')
+    manual_raw = (config.get('manual_cookie') or '').strip()
+    manual_ua = (config.get('manual_ua') or '').strip()
+    manual_fp = (manual_raw, manual_ua)
 
     with _session_lock:
-        # 复用全局session（6小时内有效）
+        # 复用全局session（6小时内有效）；Cookie/UA 或登录模式变更时重建
         if _global_session is not None and (time.time() - _global_session_ts < 21600):
-            return _global_session
+            if _manual_session_fp == manual_fp or (not manual_raw and _manual_session_fp is None):
+                return _global_session
+
+        # ---- 模式一：浏览器手动Cookie ----
+        if manual_raw:
+            s = _build_session()
+            if manual_ua:
+                s.headers.update({'User-Agent': manual_ua})
+            for k, v in _parse_cookie_string(manual_raw).items():
+                s.cookies.set(k, v, domain='10001.baidubaidu.win')
+            if not _is_logged_in(s):
+                raise RuntimeError(
+                    '手动Cookie无效或已过期，请在浏览器重新登录论坛后复制最新Cookie；'
+                    '若刚过完防护验证，请确认Cookie（含防护字段）已完整复制')
+            _global_session = s
+            _global_session_ts = time.time()
+            _manual_session_fp = manual_fp
+            return s
+
+        # ---- 模式二：账号密码登录 ----
+        username = config.get('username', '').strip()
+        password = config.get('password', '').strip()
+        if not username or not password:
+            raise ValueError('未配置论坛账号密码（或改用手动Cookie）')
 
         s = _build_session()
 
@@ -232,6 +285,7 @@ def _get_session():
             if _is_logged_in(s):
                 _global_session = s
                 _global_session_ts = time.time()
+                _manual_session_fp = None
                 return s
 
         # 重新登录（不用缓存cookies兜底，直接走登录流程）
@@ -243,6 +297,7 @@ def _get_session():
         update_config(_update)
         _global_session = s
         _global_session_ts = time.time()
+        _manual_session_fp = None
         return s
 
 
@@ -281,6 +336,10 @@ def _login(s, username, password):
         r.encoding = 'gbk'
         return r
     r = _wrap_ssl_retry(_step1)
+    if _is_challenge_page(r.text):
+        raise RuntimeError(
+            '论坛已启用JS防护（Slide to Unlock），账号密码登录不可用：'
+            '请在电脑浏览器登录论坛并通过防护验证后，复制Cookie填入本页「手动Cookie」')
     m_formhash = re.search(r'name="formhash"\s+value="([^"]+)"', r.text)
     m_loginhash = re.search(r'loginhash=([A-Za-z0-9]+)', r.text)
     if not m_formhash or not m_loginhash:
@@ -771,6 +830,9 @@ def _get_thread_attachments_with_session(s, tid):
     url = BASE + f'forum.php?mod=viewthread&tid={tid}'
     r = _wrap_ssl_retry(lambda: s.get(url, timeout=(5, 15)))
     r.encoding = 'gbk'
+    if _is_challenge_page(r.text):
+        _reset_session()
+        raise RuntimeError('论坛防护拦截：Cookie 已失效，请在浏览器重新登录后更新配置中的手动Cookie')
 
     attachments = []
     # 兼容 &amp; 转义与未转义 & 两种输出格式，避免部分页面附件被漏掉

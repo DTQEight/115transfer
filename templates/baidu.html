@@ -19,12 +19,32 @@
                     <label class="form-label">密码</label>
                     <input type="password" id="forumPass" class="form-control" placeholder="论坛密码">
                 </div>
+                <div class="mb-3">
+                    <label class="form-label">手动Cookie</label>
+                    <textarea id="forumCookie" class="form-control" rows="3" placeholder="从浏览器复制论坛的 Cookie 粘贴到这里"></textarea>
+                    <div class="form-text mt-2">
+                        论坛已启用 JS 防护（Slide to Unlock），账号密码无法登录，<strong>必须使用此方式</strong>。获取步骤：<br>
+                        1. 用 Chrome/Edge 打开论坛，登录并通过滑块验证<br>
+                        2. 按 F12 → Network → 刷新页面 → 点第一个请求 → Request Headers 里复制 <code>Cookie</code> 的完整值<br>
+                        3. 粘贴到上方输入框（建议同时把该浏览器的 User-Agent 填到下面）<br>
+                        4. 保存后点"测试登录"确认生效。Cookie 失效时重复以上步骤
+                    </div>
+                    <div id="cookieStatus" class="mt-2"></div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">浏览器 User-Agent（可选）</label>
+                    <input type="text" id="forumUa" class="form-control" placeholder="留空则使用默认值（建议与复制Cookie的浏览器一致）">
+                    <div class="form-text">部分防护的Cookie与UA绑定，填写后可提高稳定性</div>
+                </div>
                 <div class="d-flex gap-2">
                     <button onclick="saveForumConfig()" class="btn btn-primary">
                         <i class="bi bi-save me-1"></i>保存配置
                     </button>
                     <button onclick="testForumLogin()" class="btn btn-outline-success">
                         <i class="bi bi-check-circle me-1"></i>测试登录
+                    </button>
+                    <button onclick="clearForumCookie()" class="btn btn-outline-danger">
+                        <i class="bi bi-x-circle me-1"></i>清除手动Cookie
                     </button>
                 </div>
                 <div id="configResult" class="mt-3"></div>
@@ -248,7 +268,7 @@
 
 {% block extra_script %}
 // 页面加载时读取配置
-(async function loadForumConfig() {
+async function loadForumConfig() {
     try {
         var resp = await apiFetch('/baidu/config');
         if (!resp.ok) {
@@ -261,11 +281,22 @@
             if (result.config.has_password) {
                 document.getElementById('forumPass').placeholder = '已配置（留空则不修改）';
             }
+            if (result.config.manual_ua) document.getElementById('forumUa').value = result.config.manual_ua;
+            var statusEl = document.getElementById('cookieStatus');
+            if (result.config.has_manual_cookie) {
+                document.getElementById('forumCookie').placeholder =
+                    '已配置（' + result.config.manual_cookie_len + ' 字符，留空则不修改）';
+                statusEl.innerHTML = '<span class="badge bg-success">手动Cookie已配置</span>';
+            } else {
+                document.getElementById('forumCookie').placeholder = '从浏览器复制论坛的 Cookie 粘贴到这里';
+                statusEl.innerHTML = '<span class="badge bg-warning text-dark">未配置手动Cookie（论坛有JS防护，账号密码可能无法登录）</span>';
+            }
         }
     } catch (e) {
         console.error('加载配置失败:', e);
     }
-})();
+}
+loadForumConfig();
 
 function showResult(elId, html, type) {
     var el = document.getElementById(elId);
@@ -276,26 +307,54 @@ function showResult(elId, html, type) {
 async function saveForumConfig() {
     var username = document.getElementById('forumUser').value.trim();
     var password = document.getElementById('forumPass').value.trim();
-    if (!username) {
-        showResult('configResult', '请输入账号', 'danger');
+    var cookie = document.getElementById('forumCookie').value.trim();
+    var ua = document.getElementById('forumUa').value.trim();
+    if (!username && !cookie) {
+        showResult('configResult', '请输入账号，或填写手动Cookie', 'danger');
         return;
     }
     try {
+        var payload = {username: username, password: password, manual_ua: ua};
+        if (cookie) payload.manual_cookie = cookie;
         var resp = await apiFetch('/baidu/config', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({username: username, password: password})
+            body: JSON.stringify(payload)
         });
         var result = await resp.json();
         if (result.success) {
             showResult('configResult', '配置已保存', 'success');
             document.getElementById('forumPass').value = '';
             document.getElementById('forumPass').placeholder = '已配置（留空则不修改）';
+            document.getElementById('forumCookie').value = '';
+            loadForumConfig();
         } else {
             showResult('configResult', result.message || '保存失败', 'danger');
         }
     } catch (e) {
         showResult('configResult', '保存失败: ' + e.message, 'danger');
+    }
+}
+
+async function clearForumCookie() {
+    if (!confirm('确定清除已保存的手动Cookie？\n清除后将回退到账号密码登录，而论坛已启用JS防护，可能无法登录。')) return;
+    try {
+        var resp = await apiFetch('/baidu/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({clear_cookie: true})
+        });
+        var result = await resp.json();
+        if (result.success) {
+            showResult('configResult', '已清除手动Cookie', 'success');
+            document.getElementById('forumCookie').value = '';
+            document.getElementById('forumUa').value = '';
+            loadForumConfig();
+        } else {
+            showResult('configResult', result.message || '清除失败', 'danger');
+        }
+    } catch (e) {
+        showResult('configResult', '清除失败: ' + e.message, 'danger');
     }
 }
 

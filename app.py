@@ -2092,12 +2092,16 @@ def baidu_config():
     if request.method == 'GET':
         try:
             config = baidu_forum.load_config()
-            # 不返回密码明文，前端只需知道是否已配置
+            manual = config.get('manual_cookie', '') or ''
+            # 不返回密码与Cookie明文，前端只需知道是否已配置
             return jsonify({
                 'success': True,
                 'config': {
                     'username': config.get('username', ''),
                     'has_password': bool(config.get('password', '')),
+                    'has_manual_cookie': bool(manual),
+                    'manual_cookie_len': len(manual),
+                    'manual_ua': config.get('manual_ua', ''),
                 }
             })
         except Exception as e:
@@ -2107,17 +2111,37 @@ def baidu_config():
         data = request.get_json(force=True, silent=True) or {}
         username = (data.get('username') or '').strip()
         password = (data.get('password') or '').strip()
-        if not username:
-            return jsonify({'success': False, 'message': '请输入账号'})
+        # manual_cookie 为 None 表示不修改；clear_cookie 为 True 表示清除
+        manual_cookie = data.get('manual_cookie')
+        manual_ua = data.get('manual_ua')
+        clear_cookie = bool(data.get('clear_cookie'))
+        has_manual = bool((manual_cookie or '').strip())
+        if not username and not has_manual and not (
+                baidu_forum.load_config().get('manual_cookie') and not clear_cookie):
+            return jsonify({'success': False, 'message': '请输入账号，或填写手动Cookie'})
 
         def _update(cfg):
-            cfg['username'] = username
+            if username:
+                cfg['username'] = username
             if password:
                 cfg['password'] = password
                 # 账号密码变更后清除旧的cookie缓存
                 cfg.pop('cookies', None)
                 cfg.pop('cookies_ts', None)
+            if clear_cookie:
+                cfg.pop('manual_cookie', None)
+                cfg.pop('manual_ua', None)
+            else:
+                if (manual_cookie or '').strip():
+                    cfg['manual_cookie'] = manual_cookie.strip()
+                    # 手动Cookie优先，旧的账号密码登录缓存不再需要
+                    cfg.pop('cookies', None)
+                    cfg.pop('cookies_ts', None)
+                if manual_ua is not None:
+                    cfg['manual_ua'] = manual_ua.strip()
         baidu_forum.update_config(_update)
+        # 立即生效：丢弃旧会话，下次调用按新配置重建
+        baidu_forum._reset_session()
         return jsonify({'success': True, 'message': '配置已保存'})
     except Exception as e:
         logger.error(f'[百度] 保存配置失败: {e}')

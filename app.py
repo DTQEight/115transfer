@@ -3090,7 +3090,7 @@ def _do_douban_auto_sync():
 
             logger.info(f'[豆瓣自动同步] 拉取到 {len(movies)} 部电影，开始按豆瓣顺序重建数据库...')
 
-            # sanity check：拉取数量相对现有库骤降时中止重建。
+            # sanity check 第一道：拉取数量骤降（跌到一半以下）直接中止。
             # 防止豆瓣限流/解析异常返回残缺列表导致误删本地电影
             # （正常使用中豆瓣"看过"列表只会缓慢变化，不会一夜少一半）
             try:
@@ -3102,7 +3102,30 @@ def _do_douban_auto_sync():
             if existing_count > 100 and len(movies) < existing_count * 0.5:
                 msg = (f'拉取数量异常: 豆瓣返回{len(movies)}部，本地有{existing_count}部，'
                        f'疑似豆瓣限流或数据不完整，本次同步中止（未做任何修改）。'
-                       f'如确属豆瓣大幅删除标记，请手动清理 data/movies_data.xlsx 后重试')
+                       f'如确属豆瓣大幅删除标记，可先备份 data/movies_data.xlsx，'
+                       f'再用豆瓣同步页的"重置缓存（强制全量）"重试')
+                logger.error(f'[豆瓣自动同步] {msg}')
+                _auto_sync_status['last_result'] = msg
+                _auto_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+                return
+
+            # sanity check 第二道：部分缩水保护。
+            # Cookie 半失效（例如只有前若干页可访问）时拉取量可能仍有本地库的
+            # 50%~98%，第一道拦不住，而重建会把"豆瓣里不存在"的差额整段删除。
+            # 因此只要跌幅超过阈值（默认 max(5, 2%)）也中止，宁可不同步也不误删。
+            # 阈值可用 douban_config.json 的 max_shrink 覆盖。
+            try:
+                _max_shrink = int(douban.load_config().get('max_shrink') or 0)
+            except (TypeError, ValueError):
+                _max_shrink = 0
+            if _max_shrink <= 0:
+                _max_shrink = max(5, int(existing_count * 0.02))
+            if existing_count > 0 and existing_count - len(movies) > _max_shrink:
+                msg = (f'拉取数量缩水: 豆瓣返回{len(movies)}部，本地有{existing_count}部，'
+                       f'减少{existing_count - len(movies)}部（超过允许的{_max_shrink}部），'
+                       f'疑似Cookie部分失效或豆瓣限流，本次同步中止（未做任何修改）。'
+                       f'若确实在豆瓣取消了这些标记，可先把 douban_config.json 里的 '
+                       f'max_shrink 调大后重试')
                 logger.error(f'[豆瓣自动同步] {msg}')
                 _auto_sync_status['last_result'] = msg
                 _auto_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
@@ -3229,8 +3252,20 @@ def _do_douban_auto_sync():
                             need_save = True
 
                 if need_save:
-                    save_movies(new_df)
-                    logger.info(f'[豆瓣自动同步] 数据库已重建，共{len(new_rows)}部（豆瓣{len(movies)}部，删除{removed}部）')
+                    # 第三道防线（最后关口）：真正落盘前再确认一次"净减少量"没超阈值。
+                    # 前两道检查基于"豆瓣报告总数"，若豆瓣计数本身也缩水或中途
+                    # Cookie 失效，仍可能走到这里；此处以本地实际条数兜底，
+                    # 超阈值就不写盘，宁可本次不同步也不误删。
+                    _shrink = len(df) - len(new_df) if not df.empty else 0
+                    if _shrink > _max_shrink and len(df) > 0:
+                        logger.error(
+                            f'[豆瓣自动同步] 落盘前拦截: 本次重建将净减少{_shrink}部'
+                            f'（{len(df)} → {len(new_df)}），超过阈值{_max_shrink}部，'
+                            f'疑似Cookie失效/豆瓣限流，已放弃本次写盘，数据保持不变。'
+                            f'若确属豆瓣批量取消标记，可调大 douban_config.json 的 max_shrink')
+                    else:
+                        save_movies(new_df)
+                        logger.info(f'[豆瓣自动同步] 数据库已重建，共{len(new_rows)}部（豆瓣{len(movies)}部，删除{removed}部）')
                 else:
                     logger.info('[豆瓣自动同步] 顺序已一致，无需更新')
 
@@ -3246,6 +3281,16 @@ def _do_douban_auto_sync():
                 logger.warning(f'[豆瓣自动同步] IMDB_ID回填失败（不影响同步）: {imdb_err}')
 
             result_msg = f'成功: 新增{added}部，跳过{skipped}部（已存在），删除{removed}部，共{len(movies)}部'
+            # 如实反映"豆瓣报告数 vs 实际入库数"的缺口，避免状态栏显示成功
+            # 但实际少了几部（缺口由 douban 模块记录，见 _LAST_FETCH_GAP）
+            try:
+                result_msg += douban._format_gap_note(
+                    len(movies),
+                    douban._LAST_FETCH_GAP.get('claimed'),
+                    int(douban._LAST_FETCH_GAP.get('gap') or 0),
+                )
+            except Exception:
+                pass
             logger.info(f'[豆瓣自动同步] {result_msg}')
             _auto_sync_status['last_result'] = result_msg
             _auto_sync_status['last_time'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
@@ -3388,6 +3433,28 @@ def douban_auto_sync_now():
     t = _threading.Thread(target=_do_douban_auto_sync, daemon=True)
     t.start()
     return jsonify({'success': True, 'message': '全量同步已启动，请在日志或状态页查看进度'})
+
+
+@app.route('/douban/cache_reset', methods=['POST'])
+def douban_cache_reset():
+    """丢弃观影列表缓存，下次同步强制全量重拉
+
+    用于缺口导致同步中止后手工复位：删掉 douban_movies_cache.json 即可，
+    不触碰电影库本身（movies_data.xlsx 不动）。
+    """
+    try:
+        cache_file = douban._CACHE_FILE
+        existed = os.path.exists(cache_file)
+        if existed:
+            os.remove(cache_file)
+        logger.info(f'[豆瓣] 缓存已重置（{cache_file}，原文件{"已删除" if existed else "不存在"}），'
+                    f'下次同步将强制全量拉取')
+        return jsonify({'success': True,
+                        'message': ('缓存已删除，下次同步将强制全量拉取'
+                                    if existed else '缓存文件本来就不存在，下次同步即全量拉取')})
+    except Exception as e:
+        logger.error(f'[豆瓣] 缓存重置失败: {e}')
+        return jsonify({'success': False, 'message': f'重置失败: {str(e)}'}), 500
 
 
 @app.route('/douban/auto_sync_status')

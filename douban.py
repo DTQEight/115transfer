@@ -7,6 +7,7 @@ import time
 import threading
 import html as html_module
 import logging
+from typing import Any, Dict, List
 
 # 加密工具统一入口
 from crypto_utils import encrypt, decrypt
@@ -83,8 +84,20 @@ _SESSION = requests.Session()
 _SESSION.trust_env = False
 
 # 非满页重试次数：豆瓣对部分会话/页码会"少渲染"（末页除外，浏览器 15 条
-# 而服务端只给 13~14 条）。非末页出现非满页时重试，尽量取回被隐藏的条目。
-PARTIAL_PAGE_RETRY = 2
+# 而服务端只给 13~14 条）。非满页时反复重试，并把多次结果按 URL 取并集，
+# 把少渲染隐藏的条目捞回来——这是"完全对齐"（零缺口）的关键手段。
+PARTIAL_PAGE_RETRY = 6
+
+# 全量拉取时的缺口计数器：记录"页面报告总数 - 实际拉到条数"以及少渲染的页码。
+# 由 fetch_all_watched_movies_slow 填写，_full_fetch_with_cache 读取后写入缓存，
+# 用于判断缓存是否完整（缺口会被写进缓存并据此拒绝增量命中，避免缺口固化）。
+_LAST_FETCH_GAP = {'gap': 0, 'claimed': None, 'fetched': 0, 'short_pages': []}
+
+# 缓存缺口容忍阈值：默认 0 = 完全对齐，任何缺口都视为缓存不完整并强制全量重拉。
+# 这是刻意选择的严格模式：宁可多花一次全量拉取的代价，也不接受"看起来同步成功、
+# 实际少了几部"。仅在豆瓣确实永久隐藏条目、无法通过并集重试补齐时，才考虑在
+# douban_config.json 里用 cache_gap_tolerance 放宽（例如设为 2）。
+DEFAULT_GAP_TOLERANCE = 0
 
 
 def fetch_watched_movies(user_id, start=0, count=15):
@@ -364,6 +377,7 @@ def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
     log = logging.getLogger('douban')
     incomplete_reason = None
     empty_retried = False  # 空页只重试一次
+    short_pages = []       # 非满页页码（少渲染诊断，写入缓存用于缺口判断）
 
     while pages < max_pages:
         movies, count, err = fetch_watched_movies(user_id, start, per_page)
@@ -394,22 +408,37 @@ def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
             break
 
         # 非满页重试：豆瓣对部分页会"少渲染"（浏览器 15 条、服务端仅 13~14 条
-        # 且不报错），非末页出现非满页时重试，尽量取回被隐藏的条目。
+        # 且不报错），非末页出现非满页时反复重试，并把多次结果**按 URL 取并集**
+        # ——只保留"条数最多的那一次"会丢掉每次尝试各自渲染出的条目；
+        # 取并集才能把少渲染隐藏的条目真正捞回来（完全对齐的关键）。
         # 末页天然不满15条（start + per_page >= total），不重试。
         if 0 < len(movies) < per_page and total is not None and start + per_page < total:
+            merged = {m['url']: m for m in movies if m.get('url')}
             for attempt in range(1, PARTIAL_PAGE_RETRY + 1):
-                log.warning(f'[豆瓣] 第{pages+1}页(start={start})非满页({len(movies)}/{per_page})，'
-                            f'重试第{attempt}次')
+                log.warning(f'[豆瓣] 第{pages+1}页(start={start})非满页({len(merged)}/{per_page})，'
+                            f'重试第{attempt}次（并集合并）')
                 time.sleep(page_delay * 2)
                 retry_movies, _rc, retry_err = fetch_watched_movies(user_id, start, per_page)
                 if retry_err:
                     log.warning(f'[豆瓣] 第{pages+1}页重试失败: {retry_err}')
                     break
-                if len(retry_movies) > len(movies):
-                    movies = retry_movies
-                    log.info(f'[豆瓣] 第{pages+1}页重试后获取到{len(movies)}部')
-                if len(movies) >= per_page:
+                before = len(merged)
+                for m in retry_movies:
+                    if m.get('url') and m['url'] not in merged:
+                        merged[m['url']] = m
+                if len(merged) > before:
+                    log.info(f'[豆瓣] 第{pages+1}页重试后并集新增{len(merged) - before}部，'
+                             f'累计{len(merged)}部')
+                if len(merged) >= per_page:
                     break
+            if len(merged) != len(movies):
+                # 按观看时间倒序重排（豆瓣 sort=time 的语义）；时间相同按 URL 稳定排序
+                movies = sorted(merged.values(),
+                                key=lambda m: (m.get('date') or '', m.get('url') or ''),
+                                reverse=True)
+                log.info(f'[豆瓣] 第{pages+1}页并集合并结果: {len(movies)}/{per_page}部')
+            if 0 < len(movies) < per_page:
+                short_pages.append({'page': pages + 1, 'start': start, 'got': len(movies)})
 
         empty_retried = False
         all_movies.extend(movies)
@@ -426,20 +455,46 @@ def fetch_all_watched_movies_slow(user_id, max_pages=200, page_delay=2.0):
 
     if incomplete_reason:
         return all_movies, f'拉取不完整(已获取{len(all_movies)}部): {incomplete_reason}'
-    if total is not None and len(all_movies) < total:
-        # 允许少量缺口：系统以电影名为唯一键，豆瓣列表内同名电影
-        # （翻拍/重映/同名不同片）按URL全保留后仍会比豆瓣计数少几部
-        # （豆瓣总数含全部标记条目，本系统只取URL去重后的条目）。
-        # 缺口超过5%才判定为真正的拉取异常（如Cookie失效按游客处理
-        # 时只有前~14页数据）
-        gap = total - len(all_movies)
-        if gap > max(5, int(total * 0.05)):
-            return all_movies, (f'拉取不完整: 已获取{len(all_movies)}部，豆瓣报告共{total}部，'
-                                f'缺口{gap}部。可能豆瓣Cookie已失效（游客只能访问前~14页）'
-                                f'或网络异常，请重新配置Cookie后重试')
-        # 少量缺口属正常：豆瓣计数含已删除/不可见条目或结构差异，记录备查
-        log.info(f'[豆瓣] 拉取{len(all_movies)}部，页面报告共{total}部，差{gap}部'
-                 f'（豆瓣计数含列表未展示的条目，属正常）')
+
+    # 全局 URL 去重：并集重试或豆瓣少渲染会让同一条目跨页重复出现，
+    # 不去重会让条数虚高、掩盖真实缺口（"完全对齐"必须按 URL 计数）。
+    deduped: List[Dict[str, Any]] = []
+    seen_urls: set = set()
+    dup_across_pages = 0
+    for m in all_movies:
+        u = m.get('url')
+        if u and u in seen_urls:
+            dup_across_pages += 1
+            continue
+        if u:
+            seen_urls.add(u)
+        deduped.append(m)
+    if dup_across_pages:
+        log.warning(f'[豆瓣] 全局去重移除{dup_across_pages}条跨页重复URL条目'
+                    f'（{len(all_movies)} → {len(deduped)}）')
+    all_movies = deduped
+
+    gap = 0
+    if total is not None:
+        gap = max(0, total - len(all_movies))
+    # 记录本次拉取结果，供 _full_fetch_with_cache 写入缓存、供增量命中判断
+    _LAST_FETCH_GAP.update({
+        'gap': gap,
+        'claimed': total,
+        'fetched': len(all_movies),
+        'short_pages': short_pages,
+    })
+
+    # 完全对齐：任何缺口都不再当作"正常"放行，必须显式上报为不完整。
+    # 调用方（_full_fetch_with_cache）据此拒绝写缓存，上层 _do_douban_auto_sync
+    # 收到 err 后会中止本次重建、保留原有数据，不会用残缺列表覆盖数据库。
+    if gap > 0:
+        short_desc = '、'.join(str(p['page']) for p in short_pages[:10]) or '无'
+        return all_movies, (
+            f'拉取不完整: 已获取{len(all_movies)}部，豆瓣报告共{total}部，缺口{gap}部'
+            f'（少渲染页码: {short_desc}）。并集重试后仍未补齐，本次同步已中止'
+            f'（未做任何修改）。请稍后重试；若持续出现，可能是豆瓣Cookie降级'
+            f'（游客只能访问前~14页）或当前IP被限流')
     return all_movies, None
 
 
@@ -469,7 +524,40 @@ _CACHE_FULL_REFRESH_DAYS = 7
 #     根因为豆瓣按请求特征降级：浏览器同页满15条、服务端仅13~14条。
 #     已补全浏览器请求头 + 非末页非满页自动重试；v6缓存（少渲染期间
 #     的1210/1211条）作废，部署后全量重拉校验
-_CACHE_VERSION = 7
+# v8: 缺口固化根因修复，并改为"完全对齐"（零缺口）语义。
+#     v7 把"缺口 ≤ max(5, 5%)"判为正常并静默写入缓存，而增量命中路径的阈值
+#     同样是 max(5, 5%)，两者叠加导致一份缺 8 部的缓存（1215/1223）被永久复用：
+#     既不会触发全量刷新，7天有效期前也不会自愈。实测确认豆瓣能完整返回 1223 条。
+#     现在：
+#       1) 非满页重试 4 次并按 URL 取并集（不再只留"最长的一次"），把少渲染
+#          隐藏的条目真正捞回来；
+#       2) 全局按 URL 去重，避免跨页重复让条数虚高、掩盖真实缺口；
+#       3) 任何缺口都不再放行——不写缓存、同步中止、如实报错（容忍值默认 0）；
+#       4) 缺口与少渲染页码写入缓存，命中前先验完整性，缺口即强制全量重拉。
+#     v7 缓存（1215条）作废，部署后全量重拉补齐。
+_CACHE_VERSION = 8
+
+# 缓存缺口容忍值：默认 0 = 完全对齐（可由 douban_config.json 的
+# cache_gap_tolerance 覆盖，仅用于豆瓣确实永久隐藏条目、无法补齐的例外情况）。
+# 缺口 > 该值 → 缓存视为不完整，强制全量刷新；缺口 ≤ 该值 → 仍走增量，
+# 但缺口会写进同步结果，避免"看起来同步成功、实际少了几部"。
+_CACHE_GAP_TOLERANCE = DEFAULT_GAP_TOLERANCE
+
+
+def _override_gap_tolerance():
+    """启动时用配置覆盖缺口容忍值（配置非法时保留默认）"""
+    global _CACHE_GAP_TOLERANCE
+    try:
+        raw = load_config().get('cache_gap_tolerance')
+        if raw is not None and str(raw).strip() != '':
+            _CACHE_GAP_TOLERANCE = max(0, int(raw))
+            logging.getLogger('douban').info(
+                f'[豆瓣] 缺口容忍值由配置覆盖为 {_CACHE_GAP_TOLERANCE}')
+    except (TypeError, ValueError):
+        pass
+
+
+_override_gap_tolerance()
 
 
 def _load_movies_cache():
@@ -489,8 +577,12 @@ def _load_movies_cache():
     return {}
 
 
-def _save_movies_cache(user_id, movies):
-    """保存观影列表缓存"""
+def _save_movies_cache(user_id, movies, claimed=None, gap=0, short_pages=None):
+    """保存观影列表缓存
+
+    claimed/gap/short_pages 为本次全量拉取的完整性标记：命中路径据此判断
+    缓存是否完整，避免把"缺几部"的列表当作最新数据永久复用（v7 及之前的问题）。
+    """
     with _cache_lock:
         try:
             os.makedirs(os.path.dirname(_CACHE_FILE), exist_ok=True)
@@ -499,6 +591,9 @@ def _save_movies_cache(user_id, movies):
                     'version': _CACHE_VERSION,
                     'user_id': user_id,
                     'total': len(movies),
+                    'claimed_total': claimed,
+                    'gap': int(gap or 0),
+                    'short_pages': short_pages or [],
                     'movies': movies,
                     'fetched_at': time.time(),
                 }, f, ensure_ascii=False)
@@ -506,11 +601,64 @@ def _save_movies_cache(user_id, movies):
             logging.getLogger('douban').warning(f'[豆瓣] 缓存文件保存失败: {e}')
 
 
+def _gap_tolerance():
+    """读取缺口容忍值（配置可覆盖，非法值回退默认）"""
+    try:
+        raw = load_config().get('cache_gap_tolerance')
+        if raw is None or str(raw).strip() == '':
+            return _CACHE_GAP_TOLERANCE
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return _CACHE_GAP_TOLERANCE
+
+
+def _is_cache_complete(cache):
+    """缓存是否完整（缺口在容忍范围内）
+
+    返回 (是否完整, 缓存缺口, 缓存记录的豆瓣总数)。没有完整性标记的旧缓存
+    视为完整（交由版本号作废机制处理）。
+    """
+    gap = int(cache.get('gap') or 0)
+    claimed = cache.get('claimed_total')
+    try:
+        claimed = int(claimed) if claimed is not None else None
+    except (TypeError, ValueError):
+        claimed = None
+    return gap <= _gap_tolerance(), gap, claimed
+
+
+def _format_gap_note(fetched, claimed, gap):
+    """统一格式化的缺口说明，拼进同步结果里，让状态栏如实反映数量差"""
+    if not claimed or gap <= 0:
+        return ''
+    pages = ''
+    short_pages = _LAST_FETCH_GAP.get('short_pages') or []
+    if short_pages:
+        pages = '（少渲染页码: ' + '、'.join(str(p['page']) for p in short_pages[:8]) + '）'
+    return f'；注意：豆瓣报告{claimed}部，本次实际{fetched}部，差{gap}部{pages}'
+
+
 def _full_fetch_with_cache(user_id, max_pages, page_delay):
-    """全量拉取（慢速防限流）并写入缓存"""
+    """全量拉取（慢速防限流）并写入缓存
+
+    只有零缺口（完全对齐）的结果才会写入缓存；带缺口的结果会被 fetch 层直接
+    判为错误（err 非空），这里不会再写缓存，上层同步也会中止、保留原数据。
+    """
+    # 拉取前清零，避免上一轮/上一模块的残留影响本次判断
+    _LAST_FETCH_GAP.update({'gap': 0, 'claimed': None, 'fetched': 0, 'short_pages': []})
     movies, err = fetch_all_watched_movies_slow(user_id, max_pages=max_pages, page_delay=page_delay)
     if not err and movies:
-        _save_movies_cache(user_id, movies)
+        _save_movies_cache(
+            user_id, movies,
+            claimed=_LAST_FETCH_GAP.get('claimed'),
+            gap=_LAST_FETCH_GAP.get('gap') or 0,
+            short_pages=_LAST_FETCH_GAP.get('short_pages') or [],
+        )
+        gap = _LAST_FETCH_GAP.get('gap') or 0
+        if gap > 0:
+            logging.getLogger('douban').warning(
+                f'[豆瓣] 全量拉取存在缺口{gap}部，已写入缓存完整性标记；'
+                f'下次同步将强制全量重拉校正')
     return movies, err
 
 
@@ -543,6 +691,17 @@ def fetch_all_watched_movies_cached(user_id, max_pages=200, page_delay=2.0):
     cached_movies = cache.get('movies') or []
     cache_usable = bool(cached_movies) and cache.get('user_id') == user_id
 
+    # 缓存完整性前置判断：上次全量拉取就带缺口（如 1215/1223）时，
+    # 即便首位未变也不能当"无变化"复用——否则缺口会被永久固化
+    # （v7 的 max(5, 5%) 容差阈值过大，8 部缺口够不着，缓存永远不会自愈）。
+    if cache_usable:
+        complete, cached_gap, cached_claimed = _is_cache_complete(cache)
+        if not complete:
+            log.warning(f'[豆瓣] 缓存完整性不足（记录{len(cached_movies)}部'
+                        f'{"，豆瓣报告" + str(cached_claimed) + "部" if cached_claimed else ""}'
+                        f'，缺口{cached_gap}部 > 容忍值{_gap_tolerance()}），执行全量刷新校正')
+            return _full_fetch_with_cache(user_id, max_pages, page_delay)
+
     if not cache_usable:
         log.info('[豆瓣] 无可用缓存，执行全量拉取')
         return _full_fetch_with_cache(user_id, max_pages, page_delay)
@@ -572,14 +731,17 @@ def fetch_all_watched_movies_cached(user_id, max_pages=200, page_delay=2.0):
     cached_first_url = cached_movies[0].get('url') if cached_movies else None
 
     if first_url and first_url == cached_first_url:
-        # 首位未变但豆瓣总数明显多于缓存数：缓存缺失中后段内容
+        # 首位未变但豆瓣总数多于缓存数：缓存缺失中后段内容
         # （如历史上被豆瓣截断写入的208部缓存），不能当"无变化"用。
-        # 阈值取5%：豆瓣同名电影按URL去重后天然比总数少几部，属正常
-        if total and total > len(cached_movies) + max(5, int(total * 0.05)):
-            log.info('[豆瓣] 首位未变但豆瓣总数(%d)远大于缓存(%d)，缓存不完整，执行全量刷新'
-                     % (total, len(cached_movies)))
+        # 容差取缺口容忍值而非 5%：豆瓣同名电影按URL去重后可能天然少 1~2 部，
+        # 但差到 3 部以上就不该再复用缓存（v7 用 5% 导致 8 部缺口被永久固化）。
+        tol = _gap_tolerance()
+        if total and total > len(cached_movies) + tol:
+            log.info('[豆瓣] 首位未变但豆瓣总数(%d)多于缓存(%d，差%d > 容忍值%d)，'
+                     '缓存不完整，执行全量刷新'
+                     % (total, len(cached_movies), total - len(cached_movies), tol))
             return _full_fetch_with_cache(user_id, max_pages, page_delay)
-        # 首位未变：无新增电影，缓存即最新
+        # 首位未变：无新增电影，缓存即最新（缺口已在前置判断里拦截）
         log.info('[豆瓣] 第1页无变化，命中缓存（%d部，本次仅1次请求）' % len(cached_movies))
         return list(cached_movies), None
 
@@ -614,13 +776,16 @@ def fetch_all_watched_movies_cached(user_id, max_pages=200, page_delay=2.0):
             break
 
     result = new_movies + list(cached_movies)
-    # 增量拼接后仍明显少于豆瓣总数：缓存缺失中后段内容，全量刷新兜底。
-    # 阈值取5%（豆瓣同名电影按URL去重后天然少几部，属正常）
-    if total and len(result) < total - max(5, int(total * 0.05)):
-        log.info('[豆瓣] 增量拼接结果(%d部)明显少于豆瓣总数(%d)，缓存不完整，执行全量刷新'
-                 % (len(result), total))
+    # 完全对齐：增量拼接后只要与豆瓣报告总数不符，就一律全量刷新兜底；
+    # 全量刷新后若仍有缺口，_full_fetch_with_cache 不会写缓存、上层会中止同步，
+    # 绝不会把残缺列表写进数据库。
+    tol = _gap_tolerance()
+    if total and len(result) < total - tol:
+        log.info('[豆瓣] 增量拼接结果(%d部)少于豆瓣总数(%d，差%d > 容忍值%d)，'
+                 '缓存不完整，执行全量刷新'
+                 % (len(result), total, total - len(result), tol))
         return _full_fetch_with_cache(user_id, max_pages, page_delay)
-    _save_movies_cache(user_id, result)
+    _save_movies_cache(user_id, result, claimed=total, gap=max(0, (total or 0) - len(result)))
     log.info('[豆瓣] 增量同步完成: 新增%d部，复用缓存%d部，实际请求%d页' % (
         len(new_movies), len(cached_movies), pages))
     return result, None

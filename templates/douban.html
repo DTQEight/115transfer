@@ -66,6 +66,13 @@
                     <button onclick="loadAutoSyncStatus()" class="btn btn-outline-secondary btn-sm">
                         <i class="bi bi-arrow-clockwise me-1"></i>刷新状态
                     </button>
+                    <button onclick="resetDoubanCache()" class="btn btn-outline-danger btn-sm">
+                        <i class="bi bi-trash me-1"></i>重置缓存（强制全量）
+                    </button>
+                </div>
+                <div class="form-text mb-2">
+                    同步严格要求与豆瓣完全对齐：只要拉取数量与豆瓣报告数不一致，本次同步就会中止且不修改数据库。
+                    若因此反复失败，可点"重置缓存"后重新全量拉取。
                 </div>
                 <div id="autoSyncStatus" class="small"></div>
             </div>
@@ -186,6 +193,17 @@ async function triggerAutoSyncNow() {
     } finally {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-play-circle me-1"></i>立即同步一次';
+    }
+}
+
+async function resetDoubanCache() {
+    if (!confirm('确定重置豆瓣观影列表缓存？\n\n下次同步将强制全量拉取（约82页，需数分钟）。\n电影库 movies_data.xlsx 不受影响。')) return;
+    try {
+        var resp = await apiFetch('/douban/cache_reset', { method: 'POST' });
+        var result = await resp.json();
+        showToast(result.message || '已重置', result.success ? 'success' : 'danger');
+    } catch (e) {
+        showToast('重置失败: ' + e.message, 'danger');
     }
 }
 

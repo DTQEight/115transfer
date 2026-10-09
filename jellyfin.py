@@ -234,6 +234,11 @@ def build_in_library_set(movies, jellyfin_items):
     不做标题/前缀模糊匹配——避免系列片、同名片误判（宁缺毋滥）。
     两个编号都缺即判未入库，待回填后再刷新。
 
+    诊断输出（日志，不影响返回值）：
+      - "Jellyfin侧未对应本地电影"：镜像上面的核心匹配语义，任一权威 ID 命中
+        即算对应；只带单个 ID 的条目（仅 IMDb / 仅 TMDB）同样会被统计到。
+      - 单 ID 条目数量单独列出，便于发现"只带一个 ID"这类容易被漏看的条目。
+
     Args:
         movies: [{'title', 'url',
                   'imdb_id'(可选), 'imdb_media_type'(可选, 'movie'/'tv'),
@@ -300,22 +305,40 @@ def build_in_library_set(movies, jellyfin_items):
             unmatched_local.append((m.get('title', ''), m_imdb, m_tmdb, m_tmdb_type))
 
     # 诊断：Jellyfin 侧未对应任何本地电影的条目
+    # 判定必须镜像上面的核心匹配语义（任一权威 ID 命中即算对应），
+    # 注意不能用 AND：那会要求 IMDb 和 TMDB "两个都缺失"才记一条，
+    # 导致只带一个 ID 的条目（例如只有 TMDB 的条目）永远不进名单。
     local_imdb_ids = {str(m.get('imdb_id') or '').strip() for m in movies if str(m.get('imdb_id') or '').strip()}
     local_tmdb_ids = {str(m.get('tmdb_id') or '').strip() for m in movies if str(m.get('tmdb_id') or '').strip()}
+
+    def _jf_unmatched(it):
+        imdb = str(it.get('imdb_id') or '').strip()
+        tmdb = str(it.get('tmdb_id') or '').strip()
+        if not imdb and not tmdb:
+            return True  # 无任何权威 ID → 无法匹配
+        return not ((imdb and imdb in local_imdb_ids) or (tmdb and tmdb in local_tmdb_ids))
+
     jf_no_id = [it for it in jellyfin_items if not it.get('imdb_id') and not it.get('tmdb_id')]
-    jf_unmatched = [
-        it for it in jellyfin_items
-        if (it.get('imdb_id') and it['imdb_id'] not in local_imdb_ids)
-        and (it.get('tmdb_id') and it['tmdb_id'] not in local_tmdb_ids)
-    ]
+    jf_unmatched = [it for it in jellyfin_items if _jf_unmatched(it)]
+    # 单 ID 条目单列计数：只带 IMDb 或只带 TMDB 的条目最容易在诊断里被漏掉
+    jf_imdb_only = [it for it in jellyfin_items
+                    if it.get('imdb_id') and not it.get('tmdb_id')]
+    jf_tmdb_only = [it for it in jellyfin_items
+                    if it.get('tmdb_id') and not it.get('imdb_id')]
 
     logger.info(f'[Jellyfin] 匹配完成：IMDb{imdb_n} TMDB{tmdb_n} 共命中{len(in_lib)}/{len(movies)}，'
-                f'Jellyfin共{len(jellyfin_items)}条（有ID{len(jellyfin_items)-len(jf_no_id)} 无ID{len(jf_no_id)}），'
+                f'Jellyfin共{len(jellyfin_items)}条（有ID{len(jellyfin_items)-len(jf_no_id)} 无ID{len(jf_no_id)}，'
+                f'仅IMDb{len(jf_imdb_only)} 仅TMDB{len(jf_tmdb_only)}），'
                 f'Jellyfin侧未对应本地电影{len(jf_unmatched)}条')
     for title, imdb, tmdb, tmdb_type in unmatched_local[:20]:
         logger.info(f'[Jellyfin] 本地未匹配: "{title}" IMDb="{imdb or "无"}" TMDB="{tmdb or "无"}" TMDB类型={tmdb_type or "未指定"}')
     for it in jf_unmatched[:20]:
         logger.info(f'[Jellyfin] Jellyfin侧未对应本地: "{it["title"]}" ({it.get("media_type") or "未知类型"}) IMDb="{it["imdb_id"] or "无"}" TMDB="{it["tmdb_id"] or "无"}"')
+    # 仅带单个 ID 的条目单独提示，避免它们混在总数里被忽略
+    for it in jf_tmdb_only[:20]:
+        logger.info(f'[Jellyfin] 仅带TMDB（无IMDb）: "{it["title"]}" ({it.get("media_type") or "未知类型"}) TMDB="{it["tmdb_id"]}"')
+    for it in jf_imdb_only[:20]:
+        logger.info(f'[Jellyfin] 仅带IMDb（无TMDB）: "{it["title"]}" ({it.get("media_type") or "未知类型"}) IMDb="{it["imdb_id"]}"')
     return in_lib
 
 

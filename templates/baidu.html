@@ -36,12 +36,34 @@
                     <input type="text" id="forumUa" class="form-control" placeholder="留空则使用默认值（建议与复制Cookie的浏览器一致）">
                     <div class="form-text">部分防护的Cookie与UA绑定，填写后可提高稳定性</div>
                 </div>
+
+                <hr class="my-3">
+                <h6 class="mb-2"><i class="bi bi-hdd-network me-1"></i>2bt0 局域网资源库（本地搜不到磁力时自动回退）</h6>
+                <div class="row g-2 mb-2">
+                    <div class="col-md-7">
+                        <label class="form-label">服务地址</label>
+                        <input type="text" id="bt0BaseUrl" class="form-control" placeholder="http://192.168.31.52:8000">
+                    </div>
+                    <div class="col-md-5">
+                        <label class="form-label">API 密钥</label>
+                        <input type="password" id="bt0ApiKey" class="form-control" placeholder="未配置则回退功能不生效">
+                    </div>
+                </div>
+                <div class="form-check form-switch mb-2">
+                    <input class="form-check-input" type="checkbox" id="bt0Enabled">
+                    <label class="form-check-label" for="bt0Enabled">启用资源库回退（本地数据库无结果时自动搜索）</label>
+                </div>
+                <div id="bt0Status" class="mb-2"></div>
+
                 <div class="d-flex gap-2">
                     <button onclick="saveForumConfig()" class="btn btn-primary">
                         <i class="bi bi-save me-1"></i>保存配置
                     </button>
                     <button onclick="testForumLogin()" class="btn btn-outline-success">
                         <i class="bi bi-check-circle me-1"></i>测试登录
+                    </button>
+                    <button onclick="testBt0Library()" class="btn btn-outline-info">
+                        <i class="bi bi-hdd-network me-1"></i>测试资源库
                     </button>
                     <button onclick="clearForumCookie()" class="btn btn-outline-danger">
                         <i class="bi bi-x-circle me-1"></i>清除手动Cookie
@@ -57,10 +79,10 @@
                 <i class="bi bi-search me-2"></i>搜索电影
             </div>
             <div class="card-body">
-                <div class="form-text mb-2">本地搜索：从已爬取的帖子数据库查询（毫秒级，附带磁力链接）<br>论坛搜索：实时访问论坛搜索（可能较慢，包含最新帖子）</div>
+                <div class="form-text mb-2">本地搜索：本地数据库无磁力时，自动回退 2bt0 局域网资源库，再回退论坛实时搜索<br>论坛搜索：只查论坛（需配置手动Cookie）</div>
                 <div class="input-group mb-3">
-                    <input type="text" id="searchKeyword" class="form-control" placeholder="输入电影名称（中文或英文）" onkeydown="if(event.key==='Enter'){searchMovies('local');}">
-                    <button onclick="searchMovies('local')" class="btn btn-primary" title="从本地数据库搜索（快）">
+                    <input type="text" id="searchKeyword" class="form-control" placeholder="输入电影名称（中文或英文）" onkeydown="if(event.key==='Enter'){searchMovies('auto');}">
+                    <button onclick="searchMovies('auto')" class="btn btn-primary" title="本地 → 2bt0资源库 → 论坛（自动回退）">
                         <i class="bi bi-database me-1"></i>本地搜索
                     </button>
                     <button onclick="searchMovies('remote')" class="btn btn-warning" title="实时访问论坛搜索（慢）">
@@ -282,6 +304,18 @@ async function loadForumConfig() {
                 document.getElementById('forumPass').placeholder = '已配置（留空则不修改）';
             }
             if (result.config.manual_ua) document.getElementById('forumUa').value = result.config.manual_ua;
+            if (result.config.bt0_base_url) document.getElementById('bt0BaseUrl').value = result.config.bt0_base_url;
+            document.getElementById('bt0Enabled').checked = !!result.config.bt0_enabled;
+            document.getElementById('bt0ApiKey').placeholder = result.config.bt0_has_api_key
+                ? '已配置（留空则不修改）' : '未配置则回退功能不生效';
+            var bt0StatusEl = document.getElementById('bt0Status');
+            if (result.config.bt0_enabled && result.config.bt0_has_api_key) {
+                bt0StatusEl.innerHTML = '<span class="badge bg-success">资源库回退已启用</span>';
+            } else if (result.config.bt0_has_api_key) {
+                bt0StatusEl.innerHTML = '<span class="badge bg-secondary">资源库已配置但未启用</span>';
+            } else {
+                bt0StatusEl.innerHTML = '<span class="badge bg-warning text-dark">未配置资源库密钥，本地无结果时将直接回退论坛</span>';
+            }
             var statusEl = document.getElementById('cookieStatus');
             if (result.config.has_manual_cookie) {
                 document.getElementById('forumCookie').placeholder =
@@ -309,13 +343,24 @@ async function saveForumConfig() {
     var password = document.getElementById('forumPass').value.trim();
     var cookie = document.getElementById('forumCookie').value.trim();
     var ua = document.getElementById('forumUa').value.trim();
-    if (!username && !cookie) {
-        showResult('configResult', '请输入账号，或填写手动Cookie', 'danger');
+    var bt0Base = document.getElementById('bt0BaseUrl').value.trim();
+    var bt0Key = document.getElementById('bt0ApiKey').value.trim();
+    var bt0Enabled = document.getElementById('bt0Enabled').checked;
+    // 只保存资源库配置时，不要求填论坛账号/Cookie
+    var hasForumInput = !!(username || cookie || password || ua);
+    if (!hasForumInput && !bt0Base && !bt0Key) {
+        showResult('configResult', '请输入账号/手动Cookie，或填写 2bt0 资源库地址与密钥', 'danger');
         return;
     }
     try {
-        var payload = {username: username, password: password, manual_ua: ua};
-        if (cookie) payload.manual_cookie = cookie;
+        var payload = {bt0_base_url: bt0Base, bt0_enabled: bt0Enabled};
+        if (bt0Key) payload.bt0_api_key = bt0Key;
+        if (hasForumInput) {
+            payload.username = username;
+            payload.password = password;
+            payload.manual_ua = ua;
+            if (cookie) payload.manual_cookie = cookie;
+        }
         var resp = await apiFetch('/baidu/config', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -327,12 +372,25 @@ async function saveForumConfig() {
             document.getElementById('forumPass').value = '';
             document.getElementById('forumPass').placeholder = '已配置（留空则不修改）';
             document.getElementById('forumCookie').value = '';
+            document.getElementById('bt0ApiKey').value = '';
             loadForumConfig();
         } else {
             showResult('configResult', result.message || '保存失败', 'danger');
         }
     } catch (e) {
         showResult('configResult', '保存失败: ' + e.message, 'danger');
+    }
+}
+
+async function testBt0Library() {
+    showResult('configResult', '正在测试 2bt0 资源库连接...', 'info');
+    try {
+        var resp = await apiFetch('/baidu/bt0/test', {method: 'POST'});
+        var result = await resp.json();
+        showResult('configResult', result.message || (result.success ? '连接成功' : '连接失败'),
+            result.success ? 'success' : 'danger');
+    } catch (e) {
+        showResult('configResult', '测试失败: ' + e.message, 'danger');
     }
 }
 
@@ -460,12 +518,12 @@ async function searchMovies(modeOrPage, page) {
     //   searchMovies('local') / searchMovies('remote') - 首次搜索
     //   searchMovies(2) - 翻页（沿用 currentSearchMode）
     var mode;
-    if (modeOrPage === 'local' || modeOrPage === 'remote') {
+    if (modeOrPage === 'local' || modeOrPage === 'remote' || modeOrPage === 'auto') {
         mode = modeOrPage;
         currentSearchMode = mode;
     } else {
         // modeOrPage 是页码数字
-        mode = currentSearchMode || 'local';
+        mode = currentSearchMode || 'auto';
         if (typeof modeOrPage === 'number') page = modeOrPage;
     }
     page = page || 1;
@@ -477,13 +535,17 @@ async function searchMovies(modeOrPage, page) {
     }
     if (keyword) searchKeyword = keyword;
     var el = document.getElementById('searchResult');
-    var modeText = mode === 'local' ? '本地数据库' : '论坛实时';
+    var modeText = mode === 'local' ? '本地数据库'
+        : (mode === 'remote' ? '论坛实时' : '本地 → 2bt0资源库 → 论坛（自动回退）');
     el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>正在' + modeText + '搜索...</p>';
     try {
+        // auto 模式不传 source，后端按「本地 → 2bt0资源库 → 论坛」链式回退
+        var body = 'keyword=' + encodeURIComponent(searchKeyword) + '&page=' + page;
+        if (mode === 'local' || mode === 'remote') body += '&source=' + mode;
         var resp = await apiFetch('/baidu/search', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'keyword=' + encodeURIComponent(searchKeyword) + '&page=' + page + '&source=' + mode
+            body: body
         });
         var result = await resp.json();
         if (!result.success) {
@@ -493,7 +555,9 @@ async function searchMovies(modeOrPage, page) {
         if (!result.results || result.results.length === 0) {
             var hint = mode === 'local'
                 ? '本地数据库未找到结果。可尝试点击"论坛搜索"访问论坛实时搜索'
-                : '论坛未找到结果';
+                : (mode === 'remote'
+                    ? '论坛未找到结果'
+                    : '本地数据库、2bt0 资源库均未找到结果，论坛也未找到');
             el.innerHTML = '<div class="alert alert-info">' + hint + '</div>';
             return;
         }
@@ -505,6 +569,8 @@ async function searchMovies(modeOrPage, page) {
         var html = '<p class="text-muted mb-2">共 ' + totalCount + ' 个结果，当前第 ' + result.page + '/' + result.total_pages + ' 页（每页约30条）';
         if (result.source === 'local') {
             html += ' · <span class="badge bg-info">来源：本地数据库</span>';
+        } else if (result.source === 'bt0') {
+            html += ' · <span class="badge bg-success">来源：2bt0 局域网资源库</span>';
         } else if (result.source === 'remote') {
             html += ' · <span class="badge bg-warning text-dark">来源：论坛实时搜索</span>';
         }
@@ -519,6 +585,7 @@ async function searchMovies(modeOrPage, page) {
             var fmt = r._format || '其他';
             var badgeColor = getFormatBadgeColor(fmt);
             var meta = (r.forum || '') + ' · ' + (r.replies || '0') + '回复 · ' + (r.views || '0') + '查看';
+            if (r.size) meta = (r.forum || '') + ' · ' + r.size;
             if (r.date) meta += ' · ' + r.date;
             if (r.author) meta += ' · ' + escapeHtml(r.author);
             var tid = parseInt(r.tid, 10);
@@ -535,6 +602,11 @@ async function searchMovies(modeOrPage, page) {
                 magnetBtnHtml = '<button class="btn btn-sm btn-outline-primary" onclick="getMagnet(' + tid + ', this)" title="获取磁力链接">' +
                     '<i class="bi bi-magnet"></i></button>';
             }
+            // 外部资源库结果自带磁力，直接传给后端，避免按 tid 回论坛取链
+            var directMagnet = (r.source === 'bt0' && r.magnet) ? r.magnet : '';
+            var saveBtnHtml = directMagnet
+                ? '<button class="btn btn-sm btn-outline-success" onclick="saveTo115(' + tid + ', this, \'' + escapeHtml(directMagnet) + '\')" title="添加到115离线下载"><i class="bi bi-cloud-plus"></i></button>'
+                : '<button class="btn btn-sm btn-outline-success" onclick="saveTo115(' + tid + ', this)" title="添加到115离线下载"><i class="bi bi-cloud-plus"></i></button>';
             html += '<div class="list-group-item list-group-item-action search-item" data-format="' + escapeHtml(fmt) + '" data-magnets="' + (cachedMagnets ? escapeHtml(JSON.stringify(cachedMagnets)) : '') + '">' +
                 '<div class="d-flex justify-content-between align-items-start">' +
                     '<div class="me-2 flex-grow-1">' +
@@ -543,9 +615,7 @@ async function searchMovies(modeOrPage, page) {
                     '</div>' +
                     '<div class="d-flex gap-1 flex-shrink-0">' +
                         magnetBtnHtml +
-                        '<button class="btn btn-sm btn-outline-success" onclick="saveTo115(' + tid + ', this)" title="添加到115离线下载">' +
-                            '<i class="bi bi-cloud-plus"></i>' +
-                        '</button>' +
+                        saveBtnHtml +
                     '</div>' +
                 '</div>' +
                 '<div class="mt-2" id="magnet-' + tid + '"></div>' +
@@ -752,15 +822,18 @@ async function getMagnet(tid, btn) {
     }
 }
 
-async function saveTo115(tid, btn) {
+async function saveTo115(tid, btn, magnet) {
     btn.disabled = true;
     var original = btn.innerHTML;
     btn.innerHTML = '<i class="bi bi-arrow-repeat"></i>';
     try {
+        var body = magnet
+            ? 'magnet=' + encodeURIComponent(magnet)
+            : 'tid=' + tid;
         var resp = await apiFetch('/baidu/save', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'tid=' + tid
+            body: body
         });
         var result = await resp.json();
         if (result.success) {

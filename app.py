@@ -2080,6 +2080,7 @@ def media_tree():
 # ===== 论坛电影搜索 =====
 
 import baidu_forum
+import bt0_library
 
 
 @app.route('/baidu')
@@ -2093,6 +2094,7 @@ def baidu_config():
         try:
             config = baidu_forum.load_config()
             manual = config.get('manual_cookie', '') or ''
+            bt0_base, bt0_key, bt0_enabled = bt0_library.get_settings()
             # 不返回密码与Cookie明文，前端只需知道是否已配置
             return jsonify({
                 'success': True,
@@ -2102,6 +2104,9 @@ def baidu_config():
                     'has_manual_cookie': bool(manual),
                     'manual_cookie_len': len(manual),
                     'manual_ua': config.get('manual_ua', ''),
+                    'bt0_base_url': bt0_base,
+                    'bt0_enabled': bt0_enabled,
+                    'bt0_has_api_key': bool(bt0_key),
                 }
             })
         except Exception as e:
@@ -2115,8 +2120,22 @@ def baidu_config():
         manual_cookie = data.get('manual_cookie')
         manual_ua = data.get('manual_ua')
         clear_cookie = bool(data.get('clear_cookie'))
+        # 2bt0 资源库配置（字段缺省表示不修改）
+        bt0_base_url = data.get('bt0_base_url')
+        bt0_api_key = data.get('bt0_api_key')
+        bt0_enabled = data.get('bt0_enabled')
         has_manual = bool((manual_cookie or '').strip())
-        if not username and not has_manual and not (
+        forum_dirty = bool(
+            username or password or has_manual or clear_cookie
+            or manual_ua is not None
+        )
+        bt0_dirty = bool(
+            bt0_base_url is not None or bt0_api_key is not None
+            or bt0_enabled is not None
+        )
+        if not forum_dirty and not bt0_dirty:
+            return jsonify({'success': False, 'message': '没有需要保存的配置'})
+        if forum_dirty and not username and not has_manual and not (
                 baidu_forum.load_config().get('manual_cookie') and not clear_cookie):
             return jsonify({'success': False, 'message': '请输入账号，或填写手动Cookie'})
 
@@ -2139,9 +2158,20 @@ def baidu_config():
                     cfg.pop('cookies_ts', None)
                 if manual_ua is not None:
                     cfg['manual_ua'] = manual_ua.strip()
-        baidu_forum.update_config(_update)
-        # 立即生效：丢弃旧会话，下次调用按新配置重建
-        baidu_forum._reset_session()
+        if forum_dirty:
+            baidu_forum.update_config(_update)
+            # 立即生效：丢弃旧会话，下次调用按新配置重建
+            baidu_forum._reset_session()
+
+        if bt0_dirty:
+            def _update_bt0(cfg):
+                if bt0_base_url is not None and bt0_base_url.strip():
+                    cfg['base_url'] = bt0_base_url.strip()
+                if bt0_api_key is not None and bt0_api_key.strip():
+                    cfg['api_key'] = bt0_api_key.strip()
+                if bt0_enabled is not None:
+                    cfg['enabled'] = bool(bt0_enabled)
+            bt0_library.update_config(_update_bt0)
         return jsonify({'success': True, 'message': '配置已保存'})
     except Exception as e:
         logger.error(f'[百度] 保存配置失败: {e}')
@@ -2181,17 +2211,41 @@ def baidu_search():
             logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 强制本地:{local_result.get("total_count", 0)}个')
             return jsonify({'success': True, **local_result})
         else:
-            # 默认：本地优先，无结果回退论坛
+            # 默认：本地优先 → 2bt0 局域网资源库 → 论坛实时搜索
             local_result = forum_monitor.search_local_magnets(keyword, page=page)
             if local_result.get('total_count', 0) > 0:
                 logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 本地命中:{local_result.get("total_count", 0)}个')
                 return jsonify({'success': True, **local_result})
+
+            # 本地无磁力链接 → 回退 2bt0 资源库（局域网磁力库，结果自带 magnet）
+            if bt0_library.is_configured():
+                try:
+                    bt0_result = bt0_library.search(keyword, page=page)
+                    if bt0_result.get('total_count', 0) > 0:
+                        logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 本地无结果，'
+                                    f'回退2bt0资源库:{bt0_result.get("total_count", 0)}个')
+                        return jsonify({'success': True, **bt0_result})
+                    logger.info(f'[搜索] 关键词:{keyword}, 2bt0资源库无结果，继续回退论坛')
+                except Exception as bt0_err:
+                    # 资源库故障不应阻断论坛回退
+                    logger.warning(f'[搜索] 2bt0资源库搜索失败: {bt0_err}')
+
             result = baidu_forum.search(keyword, page=page)
             result.setdefault('source', 'remote')
-            logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 本地无结果，回退论坛:{result.get("total_count", 0)}个')
+            logger.info(f'[搜索] 关键词:{keyword}, 页:{page}, 本地与资源库均无结果，回退论坛:{result.get("total_count", 0)}个')
             return jsonify({'success': True, **result})
     except Exception as e:
         logger.error(f'[搜索] 失败: {keyword} - {str(e)}')
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/baidu/bt0/test', methods=['POST'])
+def baidu_bt0_test():
+    """测试 2bt0 资源库连通性"""
+    try:
+        ok, msg = bt0_library.test_connection()
+        return jsonify({'success': ok, 'message': msg})
+    except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
 

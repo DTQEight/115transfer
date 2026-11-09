@@ -613,7 +613,7 @@ async function searchMovies(modeOrPage, page) {
             var saveBtnHtml = directMagnet
                 ? '<button class="btn btn-sm btn-outline-success" onclick="saveTo115(' + tid + ', this, \'' + escapeHtml(directMagnet) + '\')" title="添加到115离线下载"><i class="bi bi-cloud-plus"></i></button>'
                 : '<button class="btn btn-sm btn-outline-success" onclick="saveTo115(' + tid + ', this)" title="添加到115离线下载"><i class="bi bi-cloud-plus"></i></button>';
-            html += '<div class="list-group-item list-group-item-action search-item" data-format="' + escapeHtml(fmt) + '" data-magnets="' + (cachedMagnets ? escapeHtml(JSON.stringify(cachedMagnets)) : '') + '">' +
+            html += '<div class="list-group-item list-group-item-action search-item" data-format="' + escapeHtml(fmt) + '" data-title="' + escapeHtml(r.title) + '" data-source="' + escapeHtml(r.source || '') + '" data-magnets="' + (cachedMagnets ? escapeHtml(JSON.stringify(cachedMagnets)) : '') + '">' +
                 '<div class="d-flex justify-content-between align-items-start">' +
                     '<div class="me-2 flex-grow-1">' +
                         '<h6 class="mb-1"><span class="badge bg-' + badgeColor + ' me-1">' + escapeHtml(fmt) + '</span>' + title + sizeBadge + '</h6>' +
@@ -670,7 +670,7 @@ async function batchGetMagnets() {
 
     // 优先处理本地已缓存的磁力链接（瞬间完成）
     var cachedCount = 0;
-    var missingTids = [];
+    var missingItems = [];
     currentResults.forEach(function(r) {
         var tid = parseInt(r.tid, 10);
         if (isNaN(tid)) return;
@@ -678,9 +678,10 @@ async function batchGetMagnets() {
         if (!el) return;
         var magnets = (r.magnets && r.magnets.length > 0) ? r.magnets : null;
         if (magnets) {
-            // 本地缓存直接渲染
+            // 本地库 / 资源库缓存直接渲染
             cachedCount++;
-            var html = '<small class="text-info mb-1 d-block"><i class="bi bi-lightning-charge me-1"></i>本地缓存</small>';
+            var cachedLabel = r.source === 'bt0' ? '2bt0 资源库' : '本地缓存';
+            var html = '<small class="text-info mb-1 d-block"><i class="bi bi-lightning-charge me-1"></i>' + cachedLabel + '</small>';
             magnets.forEach(function(m, idx) {
                 var magnet = m.magnet || '';
                 var name = m.name || '';
@@ -696,14 +697,14 @@ async function batchGetMagnets() {
         } else if (r.source === 'bt0') {
             // 资源库条目无可用磁力，跳过，避免向论坛发无意义的请求
         } else {
-            // 未缓存，加入待远端获取列表
-            missingTids.push(tid);
+            // 未缓存，加入待获取列表（带上标题，供 2bt0 资源库查询）
+            missingItems.push({tid: tid, title: r.title || ''});
             el.innerHTML = '<small class="text-muted"><i class="bi bi-arrow-repeat me-1"></i>排队中...</small>';
         }
     });
 
     // 全部命中本地缓存：无需远端请求
-    if (missingTids.length === 0) {
+    if (missingItems.length === 0) {
         statusEl.textContent = '完成: 全部 ' + cachedCount + ' 个命中本地缓存（瞬间）';
         showToast('已展示全部本地缓存的磁力链接', 'success');
         btn.innerHTML = '<i class="bi bi-lightning-charge me-1"></i>批量获取本页磁力链接';
@@ -711,13 +712,13 @@ async function batchGetMagnets() {
         return;
     }
 
-    // 对未命中的部分调远端接口
-    statusEl.textContent = '本地缓存命中 ' + cachedCount + ' 个，正在远端获取剩余 ' + missingTids.length + ' 个...';
+    // 对未命中的部分调后端（本地 → 2bt0 → 论坛）
+    statusEl.textContent = '本地缓存命中 ' + cachedCount + ' 个，正在按 本地库 → 2bt0 → 论坛 获取剩余 ' + missingItems.length + ' 个...';
     try {
         var resp = await apiFetch('/baidu/batch_magnets', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'tids=' + missingTids.join(',')
+            body: 'items=' + encodeURIComponent(JSON.stringify(missingItems))
         });
         var result = await resp.json();
         if (!result.success) {
@@ -794,20 +795,23 @@ function showCachedMagnet(tid, btn) {
         el.innerHTML = '<small class="text-danger">缓存数据无效</small>';
         return;
     }
-    el.innerHTML = '<small class="text-info mb-1 d-block"><i class="bi bi-lightning-charge me-1"></i>本地缓存（瞬间加载）</small>' + html;
+    el.innerHTML = '<small class="text-info mb-1 d-block"><i class="bi bi-lightning-charge me-1"></i>' +
+        (item && item.getAttribute('data-source') === 'bt0' ? '2bt0 资源库' : '本地缓存') + '（瞬间加载）</small>' + html;
     // 已展开后，按钮变为隐藏
     btn.disabled = false;
 }
 
 async function getMagnet(tid, btn) {
     var el = document.getElementById('magnet-' + tid);
-    el.innerHTML = '<small class="text-muted"><i class="bi bi-arrow-repeat me-1"></i>获取磁力链接中...</small>';
+    el.innerHTML = '<small class="text-muted"><i class="bi bi-arrow-repeat me-1"></i>按 本地库 → 2bt0 资源库 → 论坛 获取中...</small>';
     btn.disabled = true;
+    var item = btn.closest('.search-item');
+    var title = item ? (item.getAttribute('data-title') || '') : '';
     try {
         var resp = await apiFetch('/baidu/magnet', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'tid=' + tid
+            body: 'tid=' + tid + '&title=' + encodeURIComponent(title)
         });
         var result = await resp.json();
         if (!result.success) {
@@ -834,10 +838,13 @@ async function saveTo115(tid, btn, magnet) {
     btn.disabled = true;
     var original = btn.innerHTML;
     btn.innerHTML = '<i class="bi bi-arrow-repeat"></i>';
+    // 未直接带磁力时，把标题一并传给后端，供 2bt0 资源库中间层匹配
+    var item = btn.closest('.search-item');
+    var title = item ? (item.getAttribute('data-title') || '') : '';
     try {
         var body = magnet
             ? 'magnet=' + encodeURIComponent(magnet)
-            : 'tid=' + tid;
+            : 'tid=' + tid + '&title=' + encodeURIComponent(title);
         var resp = await apiFetch('/baidu/save', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},

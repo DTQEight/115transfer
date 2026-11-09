@@ -1877,7 +1877,7 @@
                     var magnetBtnTitle = directMagnet
                         ? (isBt0 ? '磁力来自 2bt0 资源库（本地缓存）' : '磁力来自本地数据库缓存')
                         : '本地无缓存，需访问论坛获取';
-                    html += '<div class="list-group-item list-group-item-action magnet-search-item" data-format="' + fmt + '" data-tid="' + r.tid + '" data-magnet="' + escapeHtml(directMagnet) + '" id="magnet-item-' + r.tid + '" style="cursor:pointer;" onclick="fetchMagnetFromItem(\'' + r.tid + '\', this)">' +
+                    html += '<div class="list-group-item list-group-item-action magnet-search-item" data-format="' + fmt + '" data-tid="' + r.tid + '" data-title="' + escapeHtml(r.title) + '" data-magnet="' + escapeHtml(directMagnet) + '" id="magnet-item-' + r.tid + '" style="cursor:pointer;" onclick="fetchMagnetFromItem(\'' + r.tid + '\', this)">' +
                         '<div class="d-flex justify-content-between align-items-center">' +
                             '<div class="me-2">' +
                                 '<div class="fw-bold small"><span class="badge bg-' + badgeColor + ' me-1">' + fmt + '</span>' + title + sizeBadge + '</div>' +
@@ -1926,11 +1926,11 @@
                 showToast('当前没有搜索结果', 'danger');
                 return;
             }
-            var tids = [];
+            var items = [];
             var btn = document.getElementById('magnetBatchBtn');
             var statusEl = document.getElementById('magnetBatchStatus');
             btn.disabled = true;
-            btn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>并发获取中...';
+            btn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>获取中...';
             magnetCurrentResults.forEach(function(r) {
                 var el = document.getElementById('magnet-detail-' + r.tid);
                 if (r.magnet) {
@@ -1939,21 +1939,21 @@
                     if (el) el.innerHTML = '<small class="text-success text-break">' + srcLabel + '：' + escapeHtml(r.magnet) + '</small>';
                     return;
                 }
-                tids.push(r.tid);
+                items.push({tid: r.tid, title: r.title || ''});
                 if (el) el.innerHTML = '<small class="text-muted">排队中...</small>';
             });
-            if (tids.length === 0) {
+            if (items.length === 0) {
                 statusEl.textContent = '本页结果均已缓存磁力，点击条目即可直接保存';
                 btn.disabled = false;
                 btn.innerHTML = '<i class="bi bi-lightning-charge me-1"></i>批量获取本页磁力';
                 return;
             }
-            statusEl.textContent = '正在并发获取 ' + tids.length + ' 个，请稍候...';
+            statusEl.textContent = '正在按 本地库 → 2bt0 资源库 → 论坛 获取 ' + items.length + ' 个...';
             try {
                 var resp = await apiFetch('/baidu/batch_magnets', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: 'tids=' + tids.join(',')
+                    body: 'items=' + encodeURIComponent(JSON.stringify(items))
                 });
                 var result = await resp.json();
                 if (!result.success) {
@@ -1965,9 +1965,20 @@
                 (result.magnets || []).forEach(function(m) {
                     ok++;
                     var el = document.getElementById('magnet-detail-' + m.tid);
+                    // 回写缓存，避免再次点击条目时重复请求
+                    var itemEl = document.getElementById('magnet-item-' + m.tid);
+                    if (itemEl) {
+                        itemEl.setAttribute('data-magnet', m.magnet);
+                        var badge = itemEl.querySelector('.fetch-magnet-badge');
+                        if (badge) {
+                            badge.className = 'badge bg-success fetch-magnet-badge';
+                            badge.textContent = m.source === 'bt0' ? '资源库' : '本地';
+                        }
+                    }
                     if (!el) return;
                     var magnet = m.magnet;
-                    el.innerHTML = '<div class="input-group input-group-sm">' +
+                    var srcLabel = m.source === 'bt0' ? '2bt0 资源库磁力' : (m.source === 'local' ? '本地缓存磁力' : '论坛磁力');
+                    el.innerHTML = '<small class="text-success text-break d-block">' + srcLabel + '：' + escapeHtml(magnet) + '</small>' + '<div class="input-group input-group-sm">' +
                         '<input type="text" class="form-control" value="' + escapeHtml(magnet) + '" readonly onclick="event.stopPropagation();this.select()">' +
                         '<button class="btn btn-outline-secondary" data-magnet="' + escapeHtml(magnet) + '" onclick="event.stopPropagation();copyText(this.dataset.magnet)">复制</button>' +
                         '<button class="btn btn-success" data-magnet="' + escapeHtml(magnet) + '" onclick="event.stopPropagation();applyMagnetToMovie(this.dataset.magnet)">应用</button>' +
@@ -2024,10 +2035,11 @@
         }
 
         async function fetchMagnetFromItem(tid, el) {
-            // 2bt0 资源库条目已自带磁力，点击直接用，不再按 tid 去论坛取链
+            // 已缓存磁力（本地库 / 2bt0 资源库）直接用，不再发起请求
             var magnet = el.getAttribute('data-magnet');
+            var title = el.getAttribute('data-title') || '';
             if (!magnet) {
-                return fetchMagnetAndApply(tid, el);
+                return fetchMagnetAndApply(tid, el, title);
             }
             var badge = el.querySelector('.fetch-magnet-badge');
             if (badge) {
@@ -2046,18 +2058,21 @@
             }
         }
 
-        async function fetchMagnetAndApply(tid, btn) {
+        async function fetchMagnetAndApply(tid, btn, title) {
             var badge = btn.querySelector('.fetch-magnet-badge');
             if (badge) {
                 badge.className = 'badge bg-warning fetch-magnet-badge';
                 badge.textContent = '获取中...';
             }
-            btn.disabled = true;
+            var detailEl = document.getElementById('magnet-detail-' + tid);
+            if (detailEl) {
+                detailEl.innerHTML = '<small class="text-muted"><i class="bi bi-arrow-repeat me-1"></i>按 本地库 → 资源库 → 论坛 获取中...</small>';
+            }
             try {
                 var resp = await apiFetch('/baidu/magnet', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: 'tid=' + tid
+                    body: 'tid=' + tid + '&title=' + encodeURIComponent(title || '')
                 });
                 var result = await resp.json();
                 if (!result.success) {

@@ -2262,27 +2262,59 @@ def baidu_bt0_test():
         return jsonify({'success': False, 'message': str(e)})
 
 
+def _magnet_from_bt0(title: str) -> Optional[Dict[str, Any]]:
+    """按标题在 2bt0 资源库找一条磁力链接，未配置或未命中返回 None"""
+    if not title or not bt0_library.is_configured():
+        return None
+    try:
+        res = bt0_library.search(title, page=1)
+    except Exception as e:
+        logger.warning(f'[磁力] 2bt0 资源库查询失败: {e}')
+        return None
+    for item in res.get('results') or []:
+        if item.get('magnet'):
+            return {
+                'magnet': item['magnet'],
+                'magnets': item.get('magnets') or [{'magnet': item['magnet'], 'name': item.get('title', '')}],
+                'name': item.get('title', ''),
+                'source': 'bt0',
+            }
+    return None
+
+
+def _resolve_magnet(tid: str, title: str = '') -> Dict[str, Any]:
+    """统一取链顺序：本地数据库 → 2bt0 资源库 → 论坛实时"""
+    magnets = forum_monitor.get_local_thread_magnets(tid)
+    if magnets:
+        logger.info(f'[磁力] 帖子:{tid}, 本地缓存命中 {len(magnets)} 条')
+        return {
+            'magnet': magnets[0].get('magnet', ''),
+            'magnets': magnets,
+            'name': magnets[0].get('name', ''),
+            'source': 'local',
+        }
+    bt0_hit = _magnet_from_bt0(title)
+    if bt0_hit:
+        logger.info(f'[磁力] 帖子:{tid}, 本地无缓存, 2bt0 资源库命中: {bt0_hit["name"][:40]}')
+        return bt0_hit
+    logger.info(f'[磁力] 帖子:{tid}, 本地与资源库均未命中, 回退论坛')
+    result = baidu_forum.get_magnet_from_thread(tid)
+    result.setdefault('source', 'remote')
+    return result
+
+
 @app.route('/baidu/magnet', methods=['POST'])
 def baidu_magnet():
     tid = (request.form.get('tid') or '').strip()
+    title = (request.form.get('title') or '').strip()
     if not tid:
         return jsonify({'success': False, 'message': '缺少帖子ID'})
     # 2bt0 资源库条目用的是合成 tid，不存在于论坛，直接给出明确提示
     if tid.isdigit() and int(tid) >= 900000000:
         return jsonify({'success': False, 'message': '该条目来自 2bt0 资源库，磁力链接已在搜索结果的条目中展示'})
-    # 本地库已缓存磁力时直接返回，避免无谓的论坛请求
-    local_magnets = forum_monitor.get_local_thread_magnets(tid)
-    if local_magnets:
-        logger.info(f'[磁力] 帖子:{tid}, 本地缓存命中 {len(local_magnets)} 条')
-        return jsonify({
-            'success': True,
-            'magnet': local_magnets[0].get('magnet', ''),
-            'magnets': local_magnets,
-            'source': 'local',
-        })
     try:
-        result = baidu_forum.get_magnet_from_thread(tid)
-        logger.info(f'[磁力] 帖子:{tid}, 获取成功')
+        result = _resolve_magnet(tid, title)
+        logger.info(f'[磁力] 帖子:{tid}, 获取成功, 来源:{result.get("source")}')
         return jsonify({'success': True, **result})
     except Exception as e:
         logger.error(f'[磁力] 帖子:{tid}, 失败: {str(e)}')
@@ -2291,35 +2323,72 @@ def baidu_magnet():
 
 @app.route('/baidu/batch_magnets', methods=['POST'])
 def baidu_batch_magnets():
-    """并发批量获取多个帖子的磁力链接"""
-    tids_raw = (request.form.get('tids') or '').strip()
-    if not tids_raw:
-        return jsonify({'success': False, 'message': '缺少帖子ID列表'})
-    tids = [t.strip() for t in tids_raw.split(',') if t.strip()]
-    # 2bt0 资源库条目使用合成 tid，论坛没有对应帖子，直接剔除
-    tids = [t for t in tids if not (t.isdigit() and int(t) >= 900000000)]
-    if not tids:
-        return jsonify({'success': False, 'message': '所选条目均来自 2bt0 资源库，磁力链接已在结果中展示'})
-    if not tids:
-        return jsonify({'success': False, 'message': '帖子ID列表为空'})
-    if len(tids) > 30:
-        return jsonify({'success': False, 'message': '单次最多30个'})
+    """批量取链：逐条按 本地数据库 → 2bt0 资源库 → 论坛 的顺序解析"""
+    items_raw = (request.form.get('items') or '').strip()
+    if not items_raw:
+        return jsonify({'success': False, 'message': '缺少待获取列表'})
     try:
-        import time as _t
-        start = _t.time()
-        result = baidu_forum.batch_get_magnets(tids, max_workers=6)
-        cost = round(_t.time() - start, 1)
-        logger.info(f'[批量磁力] 共:{len(tids)}, 成功:{len(result["success"])}, 失败:{len(result["failed"])}, 耗时:{cost}s')
-        return jsonify({
-            'success': True,
-            'magnets': result['success'],
-            'failed': result['failed'],
-            'total': len(tids),
-            'cost': cost,
-        })
-    except Exception as e:
-        logger.error(f'[批量磁力] 失败: {str(e)}')
-        return jsonify({'success': False, 'message': str(e)})
+        items = json.loads(items_raw)
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'message': '参数格式错误'})
+    if not isinstance(items, list) or not items:
+        return jsonify({'success': False, 'message': '待获取列表为空'})
+    if len(items) > 30:
+        return jsonify({'success': False, 'message': '单次最多30个'})
+
+    start = time.time()
+    success: List[Dict[str, Any]] = []
+    failed: List[Dict[str, Any]] = []
+    pending: List[Tuple[str, str]] = []
+    for it in items:
+        tid = str(it.get('tid') or '').strip()
+        title = str(it.get('title') or '').strip()
+        if not tid:
+            continue
+        # 资源库条目使用合成 tid，本身已带磁力，无需再取
+        if tid.isdigit() and int(tid) >= 900000000:
+            failed.append({'tid': tid, 'error': '资源库条目，磁力已在结果中展示'})
+            continue
+        magnets = forum_monitor.get_local_thread_magnets(tid)
+        if magnets:
+            success.append({
+                'tid': tid,
+                'magnet': magnets[0].get('magnet', ''),
+                'name': magnets[0].get('name', ''),
+                'source': 'local',
+            })
+        else:
+            pending.append((tid, title))
+
+    still: List[str] = []
+    for tid, title in pending:
+        hit = _magnet_from_bt0(title)
+        if hit:
+            success.append({'tid': tid, 'magnet': hit['magnet'], 'name': hit.get('name', ''), 'source': 'bt0'})
+        else:
+            still.append(tid)
+
+    if still:
+        try:
+            remote = baidu_forum.batch_get_magnets(still, max_workers=6)
+            success.extend(remote.get('success') or [])
+            failed.extend(remote.get('failed') or [])
+        except Exception as e:
+            for tid in still:
+                failed.append({'tid': tid, 'error': str(e)})
+
+    cost = round(time.time() - start, 1)
+    logger.info(
+        f'[批量磁力] 共:{len(items)}, 成功:{len(success)}, 失败:{len(failed)}, '
+        f'本地/资源库命中:{sum(1 for m in success if m.get("source") in ("local", "bt0"))}, 耗时:{cost}s'
+    )
+    return jsonify({
+        'success': True,
+        'magnets': success,
+        'failed': failed,
+        'total': len(items),
+        'cost': cost,
+    })
 
 
 @app.route('/baidu/save', methods=['POST'])
@@ -2327,12 +2396,13 @@ def baidu_save():
     """获取磁力链接并添加到115离线下载"""
     tid = (request.form.get('tid') or '').strip()
     magnet = (request.form.get('magnet') or '').strip()
+    title = (request.form.get('title') or '').strip()
     try:
         if not magnet:
-            # 没有直接传磁力链接，从帖子获取
+            # 没有直接传磁力链接，按 本地 → 2bt0 → 论坛 的顺序取链
             if not tid:
                 return jsonify({'success': False, 'message': '缺少帖子ID或磁力链接'})
-            result = baidu_forum.get_magnet_from_thread(tid)
+            result = _resolve_magnet(tid, title)
             magnet = result['magnet']
         success, msg = cloud115.add_offline_task(magnet)
         # 记录转存历史

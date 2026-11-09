@@ -1811,9 +1811,21 @@
             await doSearchForumMagnet(query, 1);
         }
 
+        var _magnetSearchTimer = null;
+
         async function doSearchForumMagnet(query, page) {
             var el = document.getElementById('magnetSearchResults');
-            el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>搜索中...</p>';
+            var t0 = Date.now();
+            el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>正在查询本地数据库…</p>';
+            if (_magnetSearchTimer) clearInterval(_magnetSearchTimer);
+            _magnetSearchTimer = setInterval(function() {
+                var s = ((Date.now() - t0) / 1000).toFixed(1);
+                var tip = parseFloat(s) < 0.8
+                    ? '正在查询本地数据库…'
+                    : '本地无结果，正在查询 2bt0 资源库与论坛（论坛较慢）…';
+                el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>' +
+                    tip + ' <span class="text-secondary">已用时 ' + s + 's</span></p>';
+            }, 200);
             try {
                 var resp = await apiFetch('/baidu/search', {
                     method: 'POST',
@@ -1826,15 +1838,24 @@
                     return;
                 }
                 if (!result.results || result.results.length === 0) {
-                    el.innerHTML = '<p class="text-muted text-center">未找到结果</p>';
+                    el.innerHTML = '<p class="text-muted text-center">未找到结果（本地数据库、2bt0 资源库、论坛均无匹配）</p>';
                     return;
                 }
                 var totalCount = result.total_count || result.results.length;
+                var cost = ((Date.now() - t0) / 1000).toFixed(2);
+                var srcMap = {
+                    local: ['本地数据库', 'success'],
+                    bt0: ['2bt0 局域网资源库', 'info'],
+                    remote: ['论坛实时搜索', 'warning']
+                };
+                var src = srcMap[result.source] || [result.source || '未知来源', 'secondary'];
                 magnetCurrentResults = result.results;
                 magnetCurrentResults.forEach(function(r) { r._format = detectFormat(r.title); });
                 magnetActiveFormat = '';
                 renderMagnetFormatFilter();
-                var html = '<p class="text-muted small mb-2">共 ' + totalCount + ' 个结果，第 ' + result.page + '/' + result.total_pages + ' 页</p>';
+                var html = '<p class="text-muted small mb-2">共 ' + totalCount + ' 个结果，第 ' + result.page + '/' + result.total_pages + ' 页' +
+                    ' · <span class="badge bg-' + src[1] + '">来源：' + src[0] + '</span>' +
+                    ' <span class="text-secondary">耗时 ' + cost + 's</span></p>';
                 html += '<div class="mb-2 d-flex gap-2 flex-wrap align-items-center">';
                 html += '<button class="btn btn-sm btn-warning" onclick="batchFetchMagnets()" id="magnetBatchBtn"><i class="bi bi-lightning-charge me-1"></i>批量获取本页磁力</button>';
                 html += '<span class="text-muted small" id="magnetBatchStatus"></span>';
@@ -1892,6 +1913,8 @@
                 el.innerHTML = html;
             } catch (e) {
                 el.innerHTML = '<p class="text-danger text-center">搜索失败: ' + escapeHtml(e.message) + '</p>';
+            } finally {
+                if (_magnetSearchTimer) { clearInterval(_magnetSearchTimer); _magnetSearchTimer = null; }
             }
         }
 

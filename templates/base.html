@@ -1872,15 +1872,18 @@
                     if (r.date) metaParts.push(r.date);
                     var meta = metaParts.join(' · ');
                     var sizeBadge = r.size ? '<span class="badge bg-secondary ms-1">' + escapeHtml(r.size) + '</span>' : '';
-                    // 资源库条目自带磁力，直接放在 data-magnet 上，点击即可保存，不再请求论坛
-                    var directMagnet = (isBt0 && r.magnet) ? r.magnet : '';
+                    // 本地库/资源库结果在搜索时已带回磁力，直接放在 data-magnet 上，点击即用，不再请求论坛
+                    var directMagnet = r.magnet || '';
+                    var magnetBtnTitle = directMagnet
+                        ? (isBt0 ? '磁力来自 2bt0 资源库（本地缓存）' : '磁力来自本地数据库缓存')
+                        : '本地无缓存，需访问论坛获取';
                     html += '<div class="list-group-item list-group-item-action magnet-search-item" data-format="' + fmt + '" data-tid="' + r.tid + '" data-magnet="' + escapeHtml(directMagnet) + '" id="magnet-item-' + r.tid + '" style="cursor:pointer;" onclick="fetchMagnetFromItem(\'' + r.tid + '\', this)">' +
                         '<div class="d-flex justify-content-between align-items-center">' +
                             '<div class="me-2">' +
                                 '<div class="fw-bold small"><span class="badge bg-' + badgeColor + ' me-1">' + fmt + '</span>' + title + sizeBadge + '</div>' +
                                 '<small class="text-muted">' + escapeHtml(meta) + '</small>' +
                             '</div>' +
-                            '<span class="badge bg-info fetch-magnet-badge">' + (directMagnet ? '使用' : '获取') + '</span>' +
+                            '<span class="badge ' + (directMagnet ? 'bg-success' : 'bg-info') + ' fetch-magnet-badge" title="' + magnetBtnTitle + '">' + (directMagnet ? '本地' : '获取') + '</span>' +
                         '</div>' +
                         '<div class="mt-1" id="magnet-detail-' + r.tid + '"></div>' +
                     '</div>';
@@ -1930,16 +1933,17 @@
             btn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>并发获取中...';
             magnetCurrentResults.forEach(function(r) {
                 var el = document.getElementById('magnet-detail-' + r.tid);
-                if (r.source === 'bt0' && r.magnet) {
-                    // 资源库条目自带磁力，直接展示，无需请求论坛
-                    if (el) el.innerHTML = '<small class="text-success text-break">资源库磁力：' + escapeHtml(r.magnet) + '</small>';
+                if (r.magnet) {
+                    // 本地库 / 资源库已缓存磁力，直接展示，无需远端请求
+                    var srcLabel = r.source === 'bt0' ? '资源库磁力' : '本地缓存磁力';
+                    if (el) el.innerHTML = '<small class="text-success text-break">' + srcLabel + '：' + escapeHtml(r.magnet) + '</small>';
                     return;
                 }
                 tids.push(r.tid);
                 if (el) el.innerHTML = '<small class="text-muted">排队中...</small>';
             });
             if (tids.length === 0) {
-                statusEl.textContent = '本页结果均来自 2bt0 资源库，点击条目即可直接保存';
+                statusEl.textContent = '本页结果均已缓存磁力，点击条目即可直接保存';
                 btn.disabled = false;
                 btn.innerHTML = '<i class="bi bi-lightning-charge me-1"></i>批量获取本页磁力';
                 return;
@@ -2036,8 +2040,8 @@
             } finally {
                 el.style.pointerEvents = '';
                 if (badge) {
-                    badge.className = 'badge bg-info fetch-magnet-badge';
-                    badge.textContent = '使用';
+                    badge.className = 'badge bg-success fetch-magnet-badge';
+                    badge.textContent = '本地';
                 }
             }
         }

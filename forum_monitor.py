@@ -1806,6 +1806,27 @@ def list_threads(fid: Optional[str] = None, keyword: str = '',
         return rows, total
 
 
+def get_local_thread_magnets(tid: str) -> List[Dict[str, Any]]:
+    """按帖子 tid 读取本地库已缓存的磁力链接，无缓存返回空列表"""
+    if not tid:
+        return []
+    try:
+        with _db_ctx() as conn:
+            row = conn.execute(
+                'SELECT magnet_links FROM threads WHERE tid=?', (str(tid),)
+            ).fetchone()
+    except Exception as e:
+        logger.warning(f'[本地磁力] 查询 tid={tid} 失败: {e}')
+        return []
+    if not row or not row['magnet_links']:
+        return []
+    try:
+        magnets = json.loads(row['magnet_links'])
+    except (ValueError, TypeError):
+        return []
+    return magnets if isinstance(magnets, list) else []
+
+
 def search_local_magnets(keyword: str, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
     """从本地数据库搜索帖子，返回与 baidu_forum.search 兼容的结构并附带磁力链接
 

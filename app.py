@@ -2270,6 +2270,16 @@ def baidu_magnet():
     # 2bt0 资源库条目用的是合成 tid，不存在于论坛，直接给出明确提示
     if tid.isdigit() and int(tid) >= 900000000:
         return jsonify({'success': False, 'message': '该条目来自 2bt0 资源库，磁力链接已在搜索结果的条目中展示'})
+    # 本地库已缓存磁力时直接返回，避免无谓的论坛请求
+    local_magnets = forum_monitor.get_local_thread_magnets(tid)
+    if local_magnets:
+        logger.info(f'[磁力] 帖子:{tid}, 本地缓存命中 {len(local_magnets)} 条')
+        return jsonify({
+            'success': True,
+            'magnet': local_magnets[0].get('magnet', ''),
+            'magnets': local_magnets,
+            'source': 'local',
+        })
     try:
         result = baidu_forum.get_magnet_from_thread(tid)
         logger.info(f'[磁力] 帖子:{tid}, 获取成功')

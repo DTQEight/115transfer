@@ -592,8 +592,14 @@ async function searchMovies(modeOrPage, page) {
             if (isNaN(tid)) return;
             // 检查本地是否已缓存磁力链接
             var cachedMagnets = (r.magnets && r.magnets.length > 0) ? r.magnets : null;
+            var isBt0 = (r.source === 'bt0');
+            var sizeBadge = r.size ? '<span class="badge bg-secondary ms-1">' + escapeHtml(r.size) + '</span>' : '';
             var magnetBtnHtml;
-            if (cachedMagnets) {
+            if (isBt0) {
+                // 资源库结果自带磁力，永远不请求论坛
+                magnetBtnHtml = '<button class="btn btn-sm btn-outline-info" onclick="showCachedMagnet(' + tid + ', this)" title="磁力链接来自 2bt0 资源库">' +
+                    '<i class="bi bi-magnet"></i><i class="bi bi-check-circle ms-1"></i></button>';
+            } else if (cachedMagnets) {
                 // 本地已缓存：显示"已缓存"标记，点击直接展示无需远端请求
                 magnetBtnHtml = '<button class="btn btn-sm btn-outline-info" onclick="showCachedMagnet(' + tid + ', this)" title="磁力链接已缓存，点击查看">' +
                     '<i class="bi bi-magnet"></i><i class="bi bi-check-circle ms-1"></i></button>';
@@ -610,7 +616,7 @@ async function searchMovies(modeOrPage, page) {
             html += '<div class="list-group-item list-group-item-action search-item" data-format="' + escapeHtml(fmt) + '" data-magnets="' + (cachedMagnets ? escapeHtml(JSON.stringify(cachedMagnets)) : '') + '">' +
                 '<div class="d-flex justify-content-between align-items-start">' +
                     '<div class="me-2 flex-grow-1">' +
-                        '<h6 class="mb-1"><span class="badge bg-' + badgeColor + ' me-1">' + escapeHtml(fmt) + '</span>' + title + '</h6>' +
+                        '<h6 class="mb-1"><span class="badge bg-' + badgeColor + ' me-1">' + escapeHtml(fmt) + '</span>' + title + sizeBadge + '</h6>' +
                         '<small class="text-muted">' + escapeHtml(meta) + '</small>' +
                     '</div>' +
                     '<div class="d-flex gap-1 flex-shrink-0">' +
@@ -687,6 +693,8 @@ async function batchGetMagnets() {
                 (name ? '<small class="text-muted mt-1 d-block">' + escapeHtml(name) + '</small>' : '');
             });
             el.innerHTML = html;
+        } else if (r.source === 'bt0') {
+            // 资源库条目无可用磁力，跳过，避免向论坛发无意义的请求
         } else {
             // 未缓存，加入待远端获取列表
             missingTids.push(tid);

@@ -278,6 +278,19 @@ def _security_check() -> Optional[Union[Response, Tuple[Response, int]]]:
         return csrf_resp
 
 
+@app.after_request
+def _no_cache_html(resp: Response) -> Response:
+    """HTML 页面禁用浏览器缓存
+
+    页面内联了大量业务 JS，若浏览器沿用旧的 HTML 缓存，升级后会出现
+    「新界面有入口但旧逻辑仍在跑」的错乱（例如 2bt0 结果仍去论坛取磁链）。
+    """
+    if resp.mimetype == 'text/html':
+        resp.headers['Cache-Control'] = 'no-store, max-age=0'
+        resp.headers['Pragma'] = 'no-cache'
+    return resp
+
+
 @app.context_processor
 def _inject_csrf_token() -> Dict[str, Callable[[], str]]:
     """向所有模板注入 csrf_token 函数"""
@@ -2254,6 +2267,9 @@ def baidu_magnet():
     tid = (request.form.get('tid') or '').strip()
     if not tid:
         return jsonify({'success': False, 'message': '缺少帖子ID'})
+    # 2bt0 资源库条目用的是合成 tid，不存在于论坛，直接给出明确提示
+    if tid.isdigit() and int(tid) >= 900000000:
+        return jsonify({'success': False, 'message': '该条目来自 2bt0 资源库，磁力链接已在搜索结果的条目中展示'})
     try:
         result = baidu_forum.get_magnet_from_thread(tid)
         logger.info(f'[磁力] 帖子:{tid}, 获取成功')

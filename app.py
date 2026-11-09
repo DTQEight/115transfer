@@ -2286,6 +2286,10 @@ def baidu_batch_magnets():
     if not tids_raw:
         return jsonify({'success': False, 'message': '缺少帖子ID列表'})
     tids = [t.strip() for t in tids_raw.split(',') if t.strip()]
+    # 2bt0 资源库条目使用合成 tid，论坛没有对应帖子，直接剔除
+    tids = [t for t in tids if not (t.isdigit() and int(t) >= 900000000)]
+    if not tids:
+        return jsonify({'success': False, 'message': '所选条目均来自 2bt0 资源库，磁力链接已在结果中展示'})
     if not tids:
         return jsonify({'success': False, 'message': '帖子ID列表为空'})
     if len(tids) > 30:

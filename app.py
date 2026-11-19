@@ -193,10 +193,13 @@ CORS(app, origins=origins, supports_credentials=True)
 DATA_DIR: str = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
 os.makedirs(DATA_DIR, exist_ok=True)
 EXCEL_FILE: str = os.path.join(DATA_DIR, 'movies_data.xlsx')
+# 豆瓣想看独立的 Excel 数据文件（与主页数据完全隔离）
+WISHLIST_EXCEL_FILE: str = os.path.join(DATA_DIR, 'wishlist_data.xlsx')
 BACKUP_DIR: str = os.path.join(DATA_DIR, 'backups')
 MAX_BACKUPS: int = 10
 data_lock: threading.Lock = threading.Lock()
 _movie_cache: Dict[str, Any] = {'hash': None, 'data': None}
+_wishlist_movie_cache: Dict[str, Any] = {'hash': None, 'data': None}
 
 # ==================== 登录 & CSRF 配置 ====================
 
@@ -689,19 +692,30 @@ def _backfill_imdb_ids(df: pd.DataFrame) -> None:
     _apply_imdb_ids(url_to_imdb)  # 写入剩余
 
 
-def load_movies() -> pd.DataFrame:
-    if not os.path.exists(EXCEL_FILE):
-        df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'IMDB_ID', 'TMDB_ID', '来源'])
-        df.to_excel(EXCEL_FILE, index=False)
+MOVIE_COLUMNS: List[str] = ['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'IMDB_ID', 'TMDB_ID', '来源']
+
+
+def _empty_movie_df(extra_cols: Optional[List[str]] = None) -> pd.DataFrame:
+    return pd.DataFrame(columns=MOVIE_COLUMNS + list(extra_cols or []))
+
+
+def _load_movies_df(file_path: str, cache: Dict[str, Any],
+                    extra_cols: Optional[List[str]] = None) -> pd.DataFrame:
+    """通用 Excel 读取：主页与想看页各用一套文件+缓存。
+
+    缓存键使用 mtime+size，避免每次读整个文件算哈希。
+    """
+    if not os.path.exists(file_path):
+        df = _empty_movie_df(extra_cols)
+        df.to_excel(file_path, index=False)
         return df
 
-    # 使用文件 mtime+size 作为缓存键，避免读取整个文件计算哈希
-    stat = os.stat(EXCEL_FILE)
+    stat = os.stat(file_path)
     current_sig = f'{stat.st_mtime}:{stat.st_size}'
-    if _movie_cache['hash'] == current_sig and _movie_cache['data'] is not None:
-        return _movie_cache['data'].copy()
+    if cache['hash'] == current_sig and cache['data'] is not None:
+        return cache['data'].copy()
 
-    df = pd.read_excel(EXCEL_FILE)
+    df = pd.read_excel(file_path)
     # 兼容旧数据文件：无"豆瓣链接"列时自动补空列（同名电影独立入库的关键）
     if '豆瓣链接' not in df.columns:
         df['豆瓣链接'] = ''
@@ -717,6 +731,16 @@ def load_movies() -> pd.DataFrame:
     # 兼容旧数据文件：无"来源"列时默认全部视为豆瓣同步条目；"手动"条目在同步时豁免删除
     if '来源' not in df.columns:
         df['来源'] = '豆瓣'
+    # 调用方额外需要的列（想看页：年份）
+    for col in (extra_cols or []):
+        if col not in df.columns:
+            df[col] = ''
+    # 文本列强制 object dtype：空 Excel 读回时整列是 float64(NaN)，
+    # 直接写入字符串会触发 pandas 的 LossySetitemError
+    text_cols = ['电影名', '磁力链接', '保存时间', '豆瓣链接', 'IMDB_ID', 'TMDB_ID', '来源'] + list(extra_cols or [])
+    for col in text_cols:
+        if col in df.columns and df[col].dtype != object:
+            df[col] = df[col].astype(object)
     # 规范化 TMDB_ID：支持 "tv:85436" / "movie:xxx" 前缀格式；旧浮点 1732766.0 → 1732766
     def _norm_tmdb(v):
         if pd.isna(v):
@@ -737,22 +761,35 @@ def load_movies() -> pd.DataFrame:
         except (ValueError, TypeError):
             # 序号列有非数字行，过滤掉
             df = df[pd.to_numeric(df['序号'], errors='coerce').notna()].reset_index(drop=True)
-    _movie_cache['hash'] = current_sig
-    _movie_cache['data'] = df
+    cache['hash'] = current_sig
+    cache['data'] = df
     return df.copy()
 
-def backup_movies() -> None:
-    if not os.path.exists(EXCEL_FILE):
+
+def load_movies() -> pd.DataFrame:
+    return _load_movies_df(EXCEL_FILE, _movie_cache)
+
+
+def load_wishlist_movies() -> pd.DataFrame:
+    """读取豆瓣想看 Excel（独立文件 wishlist_data.xlsx）"""
+    return _load_movies_df(WISHLIST_EXCEL_FILE, _wishlist_movie_cache, extra_cols=['年份'])
+
+
+def backup_movies(file_path: Optional[str] = None, prefix: str = 'movies_data') -> None:
+    src = file_path or EXCEL_FILE
+    if not os.path.exists(src):
         return
     os.makedirs(BACKUP_DIR, exist_ok=True)
     timestamp: str = get_beijing_time().strftime('%Y%m%d_%H%M%S')
-    backup_file: str = os.path.join(BACKUP_DIR, f'movies_data_{timestamp}.xlsx')
-    shutil.copy2(EXCEL_FILE, backup_file)
-    backups: List[str] = sorted(glob_mod.glob(os.path.join(BACKUP_DIR, 'movies_data_*.xlsx')))
+    backup_file: str = os.path.join(BACKUP_DIR, f'{prefix}_{timestamp}.xlsx')
+    shutil.copy2(src, backup_file)
+    backups: List[str] = sorted(glob_mod.glob(os.path.join(BACKUP_DIR, f'{prefix}_*.xlsx')))
     while len(backups) > MAX_BACKUPS:
         os.remove(backups.pop(0))
 
-def save_movies(df: pd.DataFrame) -> None:
+
+def _save_movies_df(df: pd.DataFrame, file_path: str, cache: Dict[str, Any],
+                    prefix: str = 'movies_data') -> None:
     # 写盘前强制把 TMDB_ID / IMDB_ID 转为文本，防止 pandas 存为数值导致下次读回变成 xxx.0
     for col in ('TMDB_ID', 'IMDB_ID'):
         if col in df.columns:
@@ -776,10 +813,18 @@ def save_movies(df: pd.DataFrame) -> None:
                         pass
                 return s
             df[col] = df[col].apply(_norm_col)
-    backup_movies()
-    df.to_excel(EXCEL_FILE, index=False)
-    _movie_cache['hash'] = None
-    _movie_cache['data'] = None
+    backup_movies(file_path, prefix)
+    df.to_excel(file_path, index=False)
+    cache['hash'] = None
+    cache['data'] = None
+
+
+def save_movies(df: pd.DataFrame) -> None:
+    _save_movies_df(df, EXCEL_FILE, _movie_cache, 'movies_data')
+
+
+def save_wishlist_movies(df: pd.DataFrame) -> None:
+    _save_movies_df(df, WISHLIST_EXCEL_FILE, _wishlist_movie_cache, 'wishlist_data')
 
 def build_movie_list(df: pd.DataFrame) -> List[Dict[str, Any]]:
     movies: List[Dict[str, Any]] = []
@@ -805,6 +850,30 @@ def build_movie_list(df: pd.DataFrame) -> List[Dict[str, Any]]:
             'douban_url': str(row['豆瓣链接']) if '豆瓣链接' in row.index and not pd.isna(row['豆瓣链接']) else '',
             'in_library': ('是' == str(row['已入库'])) if '已入库' in row.index and not pd.isna(row['已入库']) else False,
             'is_manual': ('手动' == str(row['来源'])) if '来源' in row.index and not pd.isna(row['来源']) else False,
+        })
+    return movies
+
+
+def build_wish_movie_list(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """想看列表行数据（多带年份字段）"""
+    movies: List[Dict[str, Any]] = []
+    for _, row in df.iterrows():
+        magnet = row['磁力链接']
+        if pd.isna(magnet) or str(magnet).strip() == '':
+            magnet = ''
+            is_empty: bool = True
+        else:
+            magnet = str(magnet)
+            is_empty = False
+        movies.append({
+            'id': int(row['序号']) if not pd.isna(row['序号']) else 0,
+            'page': int(row['页码']) if not pd.isna(row['页码']) else 0,
+            'name': str(row['电影名']) if not pd.isna(row['电影名']) else '',
+            'year': str(row['年份']) if '年份' in row.index and not pd.isna(row['年份']) else '',
+            'magnet': magnet,
+            'is_empty': is_empty,
+            'save_time': row['保存时间'] if not pd.isna(row['保存时间']) else '',
+            'douban_url': str(row['豆瓣链接']) if '豆瓣链接' in row.index and not pd.isna(row['豆瓣链接']) else '',
         })
     return movies
 
@@ -2892,49 +2961,230 @@ def douban_page():
     return render_template('douban.html', version=VERSION)
 
 
-_WISHLIST_CACHE_FILE: str = os.path.join(DATA_DIR, 'douban_wishlist_cache.json')
-_WISHLIST_CACHE_TTL: int = 1800
-_wishlist_lock: threading.Lock = threading.Lock()
+# ===== 豆瓣想看（独立 Excel：wishlist_data.xlsx） =====
+
+_wishlist_sync_lock: threading.Lock = threading.Lock()
+_wishlist_sync_status: Dict[str, Any] = {'running': False, 'last_result': '', 'last_time': ''}
+
+
+def _reindex_movies(df: pd.DataFrame) -> pd.DataFrame:
+    """按当前行顺序重排 页码/序号（每页 15 条）"""
+    if df.empty:
+        return df
+    df = df.reset_index(drop=True).copy()
+    per_page = 15
+    df['页码'] = [i // per_page + 1 for i in range(len(df))]
+    df['序号'] = [i % per_page + 1 for i in range(len(df))]
+    return df
+
+
+def _do_wishlist_sync() -> None:
+    """抓取豆瓣想看并合并进 wishlist_data.xlsx（磁力链接等本地字段按豆瓣链接保留）"""
+    if not _wishlist_sync_lock.acquire(blocking=False):
+        return
+    try:
+        _wishlist_sync_status['running'] = True
+        _wishlist_sync_status['last_result'] = ''
+        user_id = douban.load_config().get('user_id', '')
+        if not user_id:
+            _wishlist_sync_status['last_result'] = '未配置豆瓣账号，请先到「豆瓣同步」页配置'
+            return
+        movies, err = douban.fetch_all_wish_movies(user_id)
+        if err and not movies:
+            _wishlist_sync_status['last_result'] = f'抓取失败：{err}'
+            logger.error(f'[想看] 抓取失败: {err}')
+            return
+
+        now_str = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+        with data_lock:
+            old = load_wishlist_movies()
+            old_by_url: Dict[str, Any] = {}
+            if not old.empty and '豆瓣链接' in old.columns:
+                for _, r in old.iterrows():
+                    u = str(r['豆瓣链接']).strip() if not pd.isna(r['豆瓣链接']) else ''
+                    if u:
+                        old_by_url[u] = r
+
+            rows: List[Dict[str, Any]] = []
+            new_cnt = 0
+            kept_cnt = 0
+            for m in movies:
+                name = (m.get('title') or '').strip()
+                url = (m.get('url') or '').strip()
+                if not name:
+                    continue
+                prev = old_by_url.get(url) if url else None
+                if prev is not None:
+                    kept_cnt += 1
+
+                    def _pv(col):
+                        if col not in prev.index or pd.isna(prev[col]):
+                            return ''
+                        return str(prev[col])
+
+                    rows.append({
+                        '序号': 0,
+                        '页码': 0,
+                        '电影名': name,
+                        '磁力链接': _pv('磁力链接'),
+                        '保存时间': _pv('保存时间'),
+                        '豆瓣链接': url,
+                        '已入库': _pv('已入库') or '否',
+                        'IMDB_ID': _pv('IMDB_ID'),
+                        'TMDB_ID': _pv('TMDB_ID'),
+                        '来源': '豆瓣',
+                        '年份': (m.get('year') or _pv('年份')),
+                    })
+                else:
+                    new_cnt += 1
+                    rows.append({
+                        '序号': 0,
+                        '页码': 0,
+                        '电影名': name,
+                        '磁力链接': '',
+                        '保存时间': now_str,
+                        '豆瓣链接': url,
+                        '已入库': '否',
+                        'IMDB_ID': '',
+                        'TMDB_ID': '',
+                        '来源': '豆瓣',
+                        '年份': m.get('year') or '',
+                    })
+            removed = max(0, len(old) - kept_cnt)
+            df = pd.DataFrame(rows, columns=MOVIE_COLUMNS + ['年份']) if rows else _empty_movie_df(['年份'])
+            df = _reindex_movies(df)
+            save_wishlist_movies(df)
+
+        _wishlist_sync_status['last_result'] = (
+            f'同步完成：共{len(df)}部（新增{new_cnt}，保留{kept_cnt}，移除{removed}）')
+        _wishlist_sync_status['last_time'] = now_str
+        logger.info(f'[想看] {_wishlist_sync_status["last_result"]}')
+    except Exception as e:
+        logger.error(f'[想看] 同步异常: {e}', exc_info=True)
+        _wishlist_sync_status['last_result'] = f'同步异常：{e}'
+    finally:
+        _wishlist_sync_status['running'] = False
+        _wishlist_sync_lock.release()
 
 
 @app.route('/wishlist')
 def wishlist_page():
-    """豆瓣想看独立页面"""
-    return render_template('wishlist.html', version=VERSION)
-
-
-@app.route('/wishlist/data')
-def wishlist_data():
-    """想看列表数据：默认读缓存（30分钟内），refresh=1 时实时抓取"""
-    refresh = request.args.get('refresh') == '1'
+    """豆瓣想看独立页面：数据存放在 wishlist_data.xlsx，可保存磁力链接"""
+    page_num = request.args.get('page', 1)
     try:
-        with open(_WISHLIST_CACHE_FILE, 'r', encoding='utf-8') as f:
-            cached: Dict[str, Any] = json.load(f)
-    except (OSError, ValueError):
-        cached = {}
-    if (not refresh and cached.get('movies') is not None
-            and time.time() - float(cached.get('fetched_at') or 0) < _WISHLIST_CACHE_TTL):
-        return jsonify({'success': True, 'cached': True, **cached})
+        page_num = int(page_num)
+    except (ValueError, TypeError):
+        page_num = 1
+    keyword = (request.args.get('q') or '').strip()
 
-    user_id = douban.load_config().get('user_id', '')
-    if not user_id:
-        return jsonify({'success': False, 'message': '未配置豆瓣账号，请先到「豆瓣同步」页配置'})
-    with _wishlist_lock:
-        try:
-            movies, err = douban.fetch_all_wish_movies(user_id)
-        except Exception as e:
-            logger.error(f'[想看] 抓取异常: {e}')
-            return jsonify({'success': False, 'message': f'抓取失败: {e}'})
-        if err and not movies:
-            return jsonify({'success': False, 'message': err})
-        data = {'total': len(movies), 'movies': movies, 'fetched_at': time.time()}
-        try:
-            with open(_WISHLIST_CACHE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False)
-        except OSError as e:
-            logger.warning(f'[想看] 缓存写入失败: {e}')
-    logger.info(f'[想看] 抓取完成，共 {len(movies)} 部')
-    return jsonify({'success': True, 'cached': False, **data})
+    empty_stats = {'total': 0, 'pages': 0, 'filled': 0, 'empty': 0, 'complete_rate': 0}
+    try:
+        with data_lock:
+            df = load_wishlist_movies()
+
+        if keyword and not df.empty:
+            mask = (df['电影名'].astype(str).str.contains(keyword, case=False, na=False, regex=False)
+                    | df['年份'].astype(str).str.contains(keyword, na=False, regex=False))
+            df = df[mask]
+
+        if df.empty:
+            return render_template('wishlist.html', movies=[], current_page=0, all_page_nums=[],
+                                   version=VERSION, stats=empty_stats, keyword=keyword,
+                                   sync_status=_wishlist_sync_status)
+
+        all_page_nums = sorted(int(p) for p in df['页码'].unique())
+        if page_num not in all_page_nums:
+            page_num = all_page_nums[0]
+
+        movies = build_wish_movie_list(df[df['页码'] == page_num])
+        total = len(df)
+        filled = sum(1 for _, row in df.iterrows()
+                     if not pd.isna(row['磁力链接']) and str(row['磁力链接']).strip())
+        stats = {
+            'total': total,
+            'pages': len(all_page_nums),
+            'filled': filled,
+            'empty': total - filled,
+            'complete_rate': round(filled / total * 100, 1) if total else 0,
+        }
+        return render_template('wishlist.html', movies=movies, current_page=page_num,
+                               all_page_nums=all_page_nums, version=VERSION, stats=stats,
+                               keyword=keyword, sync_status=_wishlist_sync_status)
+    except Exception as e:
+        logger.error(f'[想看] 页面加载失败: {e}', exc_info=True)
+        return render_template('wishlist.html', movies=[], current_page=0, all_page_nums=[],
+                               version=VERSION, stats=empty_stats, keyword=keyword,
+                               sync_status=_wishlist_sync_status,
+                               error='加载数据失败，请检查日志'), 500
+
+
+@app.route('/wishlist/update/<int:movie_id>', methods=['POST'])
+def wishlist_update(movie_id):
+    """保存想看电影的磁力链接（只改 wishlist_data.xlsx）"""
+    page = request.form.get('page', '').strip()
+    magnet = request.form.get('magnet')
+    url_param = request.form.get('url', '').strip()
+    if magnet is not None and magnet.strip() and not magnet.strip().startswith('magnet:'):
+        return jsonify({'success': False, 'message': '磁力链接需以 magnet: 开头'})
+    try:
+        with data_lock:
+            df = load_wishlist_movies()
+            if df.empty:
+                return jsonify({'success': False, 'message': '想看列表为空'})
+            if url_param and '豆瓣链接' in df.columns:
+                mask = df['豆瓣链接'].astype(str) == url_param
+            elif page:
+                mask = (df['序号'] == movie_id) & (df['页码'] == int(page))
+            else:
+                mask = df['序号'] == movie_id
+            if not mask.any():
+                return jsonify({'success': False, 'message': '记录不存在'})
+            if magnet is not None:
+                df.loc[mask, '磁力链接'] = magnet.strip()
+            df.loc[mask, '保存时间'] = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+            save_wishlist_movies(df)
+        return jsonify({'success': True, 'message': '磁力链接已保存'})
+    except Exception as e:
+        logger.error(f'[想看] 保存磁力失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'message': f'保存失败: {e}'})
+
+
+@app.route('/wishlist/delete/<int:movie_id>', methods=['POST'])
+def wishlist_delete(movie_id):
+    page = request.args.get('page', type=int)
+    url_param = (request.args.get('url', '') or request.form.get('url', '')).strip()
+    try:
+        with data_lock:
+            df = load_wishlist_movies()
+            if url_param and '豆瓣链接' in df.columns:
+                mask = df['豆瓣链接'].astype(str) == url_param
+            elif page is not None:
+                mask = (df['序号'] == movie_id) & (df['页码'] == page)
+            else:
+                mask = df['序号'] == movie_id
+            if not mask.any():
+                return jsonify({'success': False, 'message': '记录不存在'})
+            df = df[~mask].reset_index(drop=True)
+            df = _reindex_movies(df)
+            save_wishlist_movies(df)
+        return jsonify({'success': True, 'message': '删除成功'})
+    except Exception as e:
+        logger.error(f'[想看] 删除失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'message': f'删除失败: {e}'})
+
+
+@app.route('/wishlist/sync', methods=['POST'])
+def wishlist_sync():
+    """后台抓取豆瓣想看并写入 Excel"""
+    if _wishlist_sync_status['running']:
+        return jsonify({'success': False, 'message': '同步正在进行中，请稍候'})
+    threading.Thread(target=_do_wishlist_sync, daemon=True).start()
+    return jsonify({'success': True, 'message': '同步已开始'})
+
+
+@app.route('/wishlist/sync_status')
+def wishlist_sync_status():
+    return jsonify({'success': True, **_wishlist_sync_status})
 
 
 @app.route('/douban/config', methods=['GET', 'POST'])

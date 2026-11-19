@@ -2,37 +2,214 @@
 
 {% block title %}豆瓣想看 - 115Transfer{% endblock %}
 
+{% block extra_style %}
+<style>
+    @media (max-width: 768px) {
+        .hide-mobile { display: none !important; }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="row">
     <div class="col-12">
-        <div class="card">
-            <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
-                <span>
-                    <i class="bi bi-bookmark-star me-2"></i>豆瓣想看
-                    <span id="wishCount" class="badge bg-secondary ms-2">-</span>
-                </span>
-                <div class="d-flex align-items-center gap-2">
-                    <input type="text" id="wishFilter" class="form-control form-control-sm" style="width: 200px;"
-                           placeholder="筛选片名/年份" oninput="renderWishlist()">
-                    <button class="btn btn-sm btn-outline-primary" onclick="loadWishlist(true)" id="wishRefreshBtn">
-                        <i class="bi bi-arrow-clockwise me-1"></i>刷新
-                    </button>
+        {% if error %}
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            <i class="bi bi-exclamation-triangle me-2"></i>{{ error }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+        {% endif %}
+
+        <!-- 统计 -->
+        <div class="card mb-4">
+            <div class="card-body py-3">
+                <div class="row g-3">
+                    <div class="col-6 col-md-3">
+                        <div class="border rounded-3 p-2 text-center h-100">
+                            <div class="text-muted small">想看总数</div>
+                            <div class="fs-4 fw-bold text-primary">{{ stats.total }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="border rounded-3 p-2 text-center h-100">
+                            <div class="text-muted small">页码数</div>
+                            <div class="fs-4 fw-bold text-info">{{ stats.pages }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="border rounded-3 p-2 text-center h-100">
+                            <div class="text-muted small">已填磁链</div>
+                            <div class="fs-4 fw-bold text-success">{{ stats.filled }}</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="border rounded-3 p-2 text-center h-100">
+                            <div class="text-muted small">空磁链</div>
+                            <div class="fs-4 fw-bold text-warning">{{ stats.empty }}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="text-muted small">磁链完整度</span>
+                        <span class="fw-bold small">{{ stats.complete_rate }}%</span>
+                    </div>
+                    <div class="progress" style="height: 6px;">
+                        <div class="progress-bar bg-success" role="progressbar" style="width: {{ stats.complete_rate }}%"></div>
+                    </div>
                 </div>
             </div>
-            <div class="card-body">
-                <div class="small text-muted mb-3" id="wishMeta">加载中...</div>
-                <div id="wishMsg"></div>
-                <div class="table-responsive" id="wishTableWrap" style="display:none;">
-                    <table class="table table-hover align-middle mb-0">
+        </div>
+
+        <!-- 工具栏 -->
+        <div class="card mb-4">
+            <div class="card-body py-3">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <span class="text-muted small">页码:</span>
+                        <select id="pageSelect" class="form-select form-select-sm" style="width: auto;" onchange="wishSelectPage(this.value)">
+                            {% for p in all_page_nums %}
+                            <option value="{{ p }}" {{ 'selected' if p == current_page else '' }}>{{ p }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="input-group input-group-sm" style="width: 150px;">
+                            <input type="number" id="goPage" class="form-control" placeholder="跳转页码" autocomplete="off"
+                                   onkeydown="if(event.key==='Enter'){event.preventDefault();wishGoToPage();}">
+                            <button onclick="wishGoToPage()" class="btn btn-outline-secondary">
+                                <i class="bi bi-arrow-right"></i>
+                            </button>
+                        </div>
+                        <div class="vr d-none d-md-block"></div>
+                        <form action="/wishlist" method="get" class="d-flex align-items-center gap-2">
+                            <div class="input-group input-group-sm search-box" style="width: 220px;">
+                                <input type="text" name="q" class="form-control" placeholder="筛选片名/年份" value="{{ keyword }}" autocomplete="off">
+                                <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-search"></i></button>
+                            </div>
+                            {% if keyword %}
+                            <a href="/wishlist" class="btn btn-sm btn-outline-secondary">清除</a>
+                            {% endif %}
+                        </form>
+                        <div class="vr d-none d-md-block"></div>
+                        <button onclick="syncWishlist()" class="btn btn-sm btn-primary" id="wishSyncBtn"
+                                title="从豆瓣抓取最新想看列表，已填磁力链接会保留">
+                            <i class="bi bi-arrow-repeat me-1"></i>同步豆瓣想看
+                        </button>
+                    </div>
+                    <div class="d-flex align-items-center gap-3">
+                        <span class="text-muted small">
+                            <i class="bi bi-file-earmark me-1"></i>页码 <strong>{{ current_page }}</strong> / {{ all_page_nums|length }}
+                        </span>
+                        <nav>
+                            <ul class="pagination pagination-sm justify-content-end mb-0">
+                                <li class="page-item {{ 'disabled' if current_page == 0 or (all_page_nums and current_page == all_page_nums[0]) else '' }}">
+                                    <a class="page-link" href="{{ url_for('wishlist_page', page=all_page_nums[0] if all_page_nums else 1, q=keyword) }}">
+                                        <i class="bi bi-chevron-double-left"></i>
+                                    </a>
+                                </li>
+                                <li class="page-item {{ 'disabled' if current_page == 0 or not all_page_nums or current_page == all_page_nums[0] else '' }}">
+                                    <a class="page-link" href="{{ url_for('wishlist_page', page=all_page_nums[all_page_nums.index(current_page)-1] if all_page_nums and current_page in all_page_nums and current_page != all_page_nums[0] else (all_page_nums[0] if all_page_nums else 1), q=keyword) }}">
+                                        <i class="bi bi-chevron-left"></i>
+                                    </a>
+                                </li>
+                                <li class="page-item {{ 'disabled' if current_page == 0 or not all_page_nums or current_page == all_page_nums[-1] else '' }}">
+                                    <a class="page-link" href="{{ url_for('wishlist_page', page=all_page_nums[all_page_nums.index(current_page)+1] if all_page_nums and current_page in all_page_nums and current_page != all_page_nums[-1] else (all_page_nums[-1] if all_page_nums else 1), q=keyword) }}">
+                                        <i class="bi bi-chevron-right"></i>
+                                    </a>
+                                </li>
+                                <li class="page-item {{ 'disabled' if current_page == 0 or (all_page_nums and current_page == all_page_nums[-1]) else '' }}">
+                                    <a class="page-link" href="{{ url_for('wishlist_page', page=all_page_nums[-1] if all_page_nums else 1, q=keyword) }}">
+                                        <i class="bi bi-chevron-double-right"></i>
+                                    </a>
+                                </li>
+                            </ul>
+                        </nav>
+                    </div>
+                </div>
+                <div class="small text-muted mt-2" id="wishSyncStatus">
+                    {% if sync_status.running %}
+                    <span class="spinner-border spinner-border-sm me-1"></span>正在同步豆瓣想看...
+                    {% elif sync_status.last_result %}
+                    上次同步：{{ sync_status.last_result }}{% if sync_status.last_time %}（{{ sync_status.last_time }}）{% endif %}
+                    {% else %}
+                    数据保存在独立的 wishlist_data.xlsx，点击「同步豆瓣想看」首次导入
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- 列表 -->
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <span>
+                    <i class="bi bi-bookmark-star me-2"></i>想看电影列表
+                    <span class="text-muted small ms-2">(回车保存磁力，双击复制)</span>
+                </span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
                         <thead>
                             <tr>
-                                <th style="width:60px;">#</th>
-                                <th>片名</th>
-                                <th style="width:90px;">年份</th>
-                                <th style="width:90px;">豆瓣</th>
+                                <th style="width:60px">#</th>
+                                <th class="hide-mobile" style="width:70px">页码</th>
+                                <th>电影名</th>
+                                <th>磁力链接</th>
+                                <th class="hide-mobile" style="width:100px">保存时间</th>
+                                <th style="width:150px">操作</th>
                             </tr>
                         </thead>
-                        <tbody id="wishTableBody"></tbody>
+                        <tbody>
+                            {% for movie in movies %}
+                            <tr class="movie-row" data-id="{{ movie.id }}" data-url="{{ movie.douban_url }}">
+                                <td class="text-muted">{{ movie.id }}</td>
+                                <td class="hide-mobile"><span class="badge-page">{{ movie.page }}</span></td>
+                                <td class="fw-medium">
+                                    {{ movie.name }}
+                                    {% if movie.year %}<span class="badge bg-light text-secondary ms-1">{{ movie.year }}</span>{% endif %}
+                                    {% if movie.douban_url %}
+                                    <a href="{{ movie.douban_url }}" target="_blank" rel="noopener"
+                                       class="btn btn-sm btn-outline-success py-0 px-2 ms-1" title="打开豆瓣页面">豆瓣</a>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <input type="text" class="form-control form-control-sm magnet-input {% if movie.is_empty %}border-warning{% endif %}"
+                                           value="{{ movie.magnet }}"
+                                           data-id="{{ movie.id }}"
+                                           data-page="{{ movie.page }}"
+                                           data-url="{{ movie.douban_url }}"
+                                           data-name="{{ movie.name }}"
+                                           placeholder="输入磁力链接"
+                                           autocomplete="off"
+                                           readonly onfocus="this.removeAttribute('readonly')"
+                                           onblur="saveWishMagnet(this)"
+                                           ondblclick="copyWishMagnet(this)"
+                                           onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
+                                </td>
+                                <td class="text-muted small hide-mobile">{{ movie.save_time }}</td>
+                                <td>
+                                    <div class="btn-group btn-group-sm">
+                                        <button type="button" class="btn btn-outline-secondary action-btn"
+                                                onclick="copyWishMagnet(this.closest('tr').querySelector('.magnet-input'))"
+                                                title="复制磁力链接">
+                                            <i class="bi bi-clipboard"></i>
+                                        </button>
+                                        <button type="button" class="btn btn-outline-danger action-btn"
+                                                onclick="deleteWish({{ movie.id }}, {{ movie.page }}, '{{ movie.douban_url }}')"
+                                                title="从想看列表删除">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="6" class="text-center text-muted py-5">
+                                    <i class="bi bi-bookmark-star" style="font-size: 2rem; display: block; margin-bottom: 0.5rem;"></i>
+                                    {% if keyword %}没有匹配的条目{% else %}还没有想看数据，点上方「同步豆瓣想看」导入{% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
                     </table>
                 </div>
             </div>
@@ -42,79 +219,179 @@
 {% endblock %}
 
 {% block extra_script %}
-<script>
-    var _wishMovies = [];
-    var _wishLoading = false;
+const wishKeyword = '{{ keyword or "" }}';
 
-    function escapeWishHtml(s) {
-        return String(s == null ? '' : s)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+function wishUrl(page) {
+    let url = '/wishlist?page=' + page;
+    if (wishKeyword) url += '&q=' + encodeURIComponent(wishKeyword);
+    return url;
+}
+
+function wishGoToPage() {
+    const page = document.getElementById('goPage').value;
+    if (page) {
+        showLoading();
+        location.href = wishUrl(page);
     }
+}
 
-    async function loadWishlist(force) {
-        if (_wishLoading) return;
-        _wishLoading = true;
-        var btn = document.getElementById('wishRefreshBtn');
-        var msg = document.getElementById('wishMsg');
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>抓取中';
-        msg.innerHTML = '';
-        try {
-            var url = '/wishlist/data' + (force ? '?refresh=1' : '');
-            var resp = await apiFetch(url);
-            var r = await resp.json();
-            if (!r.success) {
-                msg.innerHTML = '<div class="alert alert-warning py-2 small mb-3">' + escapeWishHtml(r.message || '获取失败') + '</div>';
-                document.getElementById('wishTableWrap').style.display = 'none';
-                document.getElementById('wishMeta').textContent = '未取到数据';
-                return;
-            }
-            _wishMovies = r.movies || [];
-            var t = new Date((r.fetched_at || 0) * 1000);
-            var timeStr = isNaN(t.getTime()) ? '-' : t.toLocaleString('zh-CN', {hour12: false});
-            document.getElementById('wishCount').textContent = _wishMovies.length + ' 部';
-            document.getElementById('wishMeta').textContent =
-                '数据时间：' + timeStr + (r.cached ? '（缓存，30分钟内不重复抓取）' : '（实时抓取）');
-            document.getElementById('wishTableWrap').style.display = '';
-            renderWishlist();
-        } catch (e) {
-            msg.innerHTML = '<div class="alert alert-danger py-2 small mb-3">请求失败：' + escapeWishHtml(e) + '</div>';
-        } finally {
-            _wishLoading = false;
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>刷新';
-        }
+function wishSelectPage(page) {
+    if (page) {
+        showLoading();
+        location.href = wishUrl(page);
     }
+}
 
-    function renderWishlist() {
-        var kw = (document.getElementById('wishFilter').value || '').trim().toLowerCase();
-        var list = _wishMovies.filter(function (m) {
-            if (!kw) return true;
-            return (String(m.title || '') + ' ' + String(m.year || '')).toLowerCase().indexOf(kw) >= 0;
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+        const prev = document.querySelector('.pagination .page-item:nth-child(2):not(.disabled) .page-link');
+        if (prev) location.href = prev.href;
+    } else if (e.key === 'ArrowRight' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+        const next = document.querySelector('.pagination .page-item:nth-child(3):not(.disabled) .page-link');
+        if (next) location.href = next.href;
+    }
+});
+
+// 保存磁力链接
+async function saveWishMagnet(input) {
+    const id = input.dataset.id;
+    const page = input.dataset.page;
+    const url = input.dataset.url || '';
+    const magnet = input.value.trim();
+    const originalValue = input.defaultValue;
+    if (magnet === originalValue) return;
+    if (magnet && !magnet.startsWith('magnet:')) {
+        showToast('磁力链接需以 magnet: 开头', 'warning');
+        input.value = originalValue;
+        return;
+    }
+    const name = input.dataset.name || '';
+    try {
+        let body = 'page=' + encodeURIComponent(page) +
+                   '&name=' + encodeURIComponent(name) +
+                   '&magnet=' + encodeURIComponent(magnet);
+        if (url) body += '&url=' + encodeURIComponent(url);
+        const resp = await apiFetch('/wishlist/update/' + id, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: body
         });
-        var body = document.getElementById('wishTableBody');
-        if (!list.length) {
-            body.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">' +
-                (_wishMovies.length ? '没有匹配的条目' : '想看列表为空') + '</td></tr>';
+        const result = await resp.json();
+        if (result.success) {
+            input.defaultValue = magnet;
+            if (magnet) input.classList.remove('border-warning');
+            else input.classList.add('border-warning');
+            showToast('磁力链接已保存', 'success');
+        } else {
+            showToast(result.message || '保存失败', 'danger');
+            input.value = originalValue;
+        }
+    } catch (e) {
+        showToast('保存失败：' + e.message, 'danger');
+        input.value = originalValue;
+    }
+}
+
+// 复制磁力链接（优先读取输入框内容）
+async function copyWishMagnet(input) {
+    if (!input) return;
+    const magnet = (input.value || '').trim();
+    if (!magnet) {
+        showToast('该条目还没有磁力链接', 'warning');
+        return;
+    }
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(magnet);
+        } else {
+            input.removeAttribute('readonly');
+            input.select();
+            document.execCommand('copy');
+            window.getSelection().removeAllRanges();
+        }
+        showToast('已复制磁力链接', 'success');
+    } catch (e) {
+        showToast('复制失败，请手动复制', 'danger');
+    }
+}
+
+// 删除
+async function deleteWish(id, page, doubanUrl) {
+    if (!confirm('确定从想看列表删除这条吗？')) return;
+    showLoading();
+    try {
+        let url = '/wishlist/delete/' + id + '?page=' + page;
+        if (doubanUrl) url += '&url=' + encodeURIComponent(doubanUrl);
+        const resp = await apiFetch(url, { method: 'POST' });
+        const result = await resp.json();
+        showToast(result.message, result.success ? 'success' : 'danger');
+        if (result.success) location.reload();
+    } catch (e) {
+        showToast(e.message, 'danger');
+    } finally {
+        hideLoading();
+    }
+}
+
+// 同步豆瓣想看（后台线程 + 轮询状态）
+let _wishPolling = false;
+
+async function syncWishlist() {
+    if (_wishPolling) return;
+    const btn = document.getElementById('wishSyncBtn');
+    const status = document.getElementById('wishSyncStatus');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>同步中';
+    status.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>正在从豆瓣抓取想看列表...';
+    try {
+        const resp = await apiFetch('/wishlist/sync', { method: 'POST' });
+        const result = await resp.json();
+        if (!result.success) {
+            showToast(result.message || '同步失败', 'warning');
+            resetSyncBtn();
             return;
         }
-        var html = '';
-        for (var i = 0; i < list.length; i++) {
-            var m = list[i];
-            var link = m.url
-                ? '<a href="' + escapeWishHtml(m.url) + '" target="_blank" rel="noopener" class="btn btn-sm btn-outline-success py-0 px-2">豆瓣</a>'
-                : '<span class="text-muted small">-</span>';
-            html += '<tr>' +
-                '<td class="text-muted small">' + (i + 1) + '</td>' +
-                '<td class="fw-medium">' + escapeWishHtml(m.title || '') + '</td>' +
-                '<td class="small text-muted">' + escapeWishHtml(m.year || '') + '</td>' +
-                '<td>' + link + '</td>' +
-                '</tr>';
-        }
-        body.innerHTML = html;
+        pollWishlistSync();
+    } catch (e) {
+        showToast('同步请求失败：' + e.message, 'danger');
+        resetSyncBtn();
     }
+}
 
-    loadWishlist(false);
-</script>
+function resetSyncBtn() {
+    _wishPolling = false;
+    const btn = document.getElementById('wishSyncBtn');
+    if (!btn) return;
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>同步豆瓣想看';
+}
+
+async function pollWishlistSync() {
+    _wishPolling = true;
+    const status = document.getElementById('wishSyncStatus');
+    for (let i = 0; i < 120; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+            const resp = await apiFetch('/wishlist/sync_status');
+            const r = await resp.json();
+            if (r.running) {
+                status.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>正在从豆瓣抓取想看列表...';
+                continue;
+            }
+            resetSyncBtn();
+            status.textContent = '上次同步：' + (r.last_result || '完成') + (r.last_time ? '（' + r.last_time + '）' : '');
+            showToast(r.last_result || '同步完成', 'success');
+            setTimeout(() => location.reload(), 800);
+            return;
+        } catch (e) {
+            // 忽略单次轮询失败，继续等待
+        }
+    }
+    resetSyncBtn();
+    status.textContent = '同步超时，请刷新页面查看结果';
+}
+
+if ({{ 'true' if sync_status.running else 'false' }}) {
+    pollWishlistSync();
+}
 {% endblock %}

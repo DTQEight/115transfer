@@ -865,11 +865,18 @@ def build_wish_movie_list(df: pd.DataFrame) -> List[Dict[str, Any]]:
         else:
             magnet = str(magnet)
             is_empty = False
+        _y = row['年份'] if '年份' in row.index else ''
+        if pd.isna(_y):
+            year_str = ''
+        elif isinstance(_y, float) and _y.is_integer():
+            year_str = str(int(_y))  # Excel 读回 2011.0 → 2011
+        else:
+            year_str = str(_y).strip()
         movies.append({
             'id': int(row['序号']) if not pd.isna(row['序号']) else 0,
             'page': int(row['页码']) if not pd.isna(row['页码']) else 0,
             'name': str(row['电影名']) if not pd.isna(row['电影名']) else '',
-            'year': str(row['年份']) if '年份' in row.index and not pd.isna(row['年份']) else '',
+            'year': year_str,
             'magnet': magnet,
             'is_empty': is_empty,
             'save_time': row['保存时间'] if not pd.isna(row['保存时间']) else '',

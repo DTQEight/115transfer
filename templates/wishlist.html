@@ -94,6 +94,10 @@
                                 title="从豆瓣抓取最新想看列表，已填磁力链接会保留">
                             <i class="bi bi-arrow-repeat me-1"></i>同步豆瓣想看
                         </button>
+                        <button onclick="wishBatchTransfer()" class="btn btn-sm btn-outline-success"
+                                title="批量转存当前页所有磁力链接到115网盘">
+                            <i class="bi bi-cloud-upload me-1"></i>批量转存
+                        </button>
                     </div>
                     <div class="d-flex align-items-center gap-3">
                         <span class="text-muted small">
@@ -193,6 +197,20 @@
                                                 title="复制磁力链接">
                                             <i class="bi bi-clipboard"></i>
                                         </button>
+                                        <button type="button" class="btn btn-outline-info action-btn search-magnet-btn"
+                                                data-name="{{ movie.name }}"
+                                                data-id="{{ movie.id }}"
+                                                data-page="{{ movie.page }}"
+                                                title="搜索磁力链接（本地库/资源库/论坛）">
+                                            <i class="bi bi-magnet"></i>
+                                        </button>
+                                        <button type="button"
+                                                onclick="wishTransferTo115({{ movie.id }}, {{ movie.page }})"
+                                                class="btn btn-outline-success action-btn transfer-btn{% if movie.is_empty %} disabled opacity-50{% endif %}"
+                                                title="{% if movie.is_empty %}请先填写磁力链接{% else %}转存到115网盘{% endif %}"
+                                                {% if movie.is_empty %}disabled{% endif %}>
+                                            <i class="bi bi-cloud-upload"></i>
+                                        </button>
                                         <button type="button" class="btn btn-outline-danger action-btn"
                                                 onclick="deleteWish({{ movie.id }}, {{ movie.page }}, '{{ movie.douban_url }}')"
                                                 title="从想看列表删除">
@@ -281,6 +299,7 @@ async function saveWishMagnet(input) {
             input.defaultValue = magnet;
             if (magnet) input.classList.remove('border-warning');
             else input.classList.add('border-warning');
+            syncTransferBtn(input, magnet);
             showToast('磁力链接已保存', 'success');
         } else {
             showToast(result.message || '保存失败', 'danger');
@@ -289,6 +308,90 @@ async function saveWishMagnet(input) {
     } catch (e) {
         showToast('保存失败：' + e.message, 'danger');
         input.value = originalValue;
+    }
+}
+
+// 磁力搜索弹窗"应用"时由 base.html 调用：保存到想看表
+async function saveMagnetInlineDirect(input, magnet) {
+    const id = input.dataset.id;
+    const page = input.dataset.page;
+    const name = input.dataset.name || '';
+    const url = input.dataset.url || '';
+    try {
+        let body = 'page=' + encodeURIComponent(page) +
+                   '&name=' + encodeURIComponent(name) +
+                   '&magnet=' + encodeURIComponent(magnet);
+        if (url) body += '&url=' + encodeURIComponent(url);
+        const resp = await apiFetch('/wishlist/update/' + id, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: body
+        });
+        const result = await resp.json();
+        if (result.success) {
+            input.defaultValue = magnet;
+            if (magnet) input.classList.remove('border-warning');
+            else input.classList.add('border-warning');
+            syncTransferBtn(input, magnet);
+        } else {
+            showToast(result.message || '保存失败', 'danger');
+        }
+    } catch (e) {
+        console.error('保存失败', e);
+        showToast('保存失败：' + e.message, 'danger');
+    }
+}
+
+// 保存磁力后同步"转存115"按钮可用状态
+function syncTransferBtn(input, magnet) {
+    const row = input.closest('tr');
+    const tBtn = row ? row.querySelector('.transfer-btn') : null;
+    if (!tBtn) return;
+    if (magnet) {
+        tBtn.disabled = false;
+        tBtn.classList.remove('disabled', 'opacity-50');
+        tBtn.title = '转存到115网盘';
+    } else {
+        tBtn.disabled = true;
+        tBtn.classList.add('disabled', 'opacity-50');
+        tBtn.title = '请先填写磁力链接';
+    }
+}
+
+// 单条转存到115（只读想看表）
+async function wishTransferTo115(movieId, page) {
+    showLoading();
+    try {
+        const resp = await apiFetch('/cloud115/transfer/' + movieId + '/' + page + '?source=wishlist', { method: 'POST' });
+        const result = await resp.json();
+        showToast(result.message, result.success ? 'success' : 'danger');
+    } catch (e) {
+        showToast('转存失败：' + e.message, 'danger');
+    } finally {
+        hideLoading();
+    }
+}
+
+// 批量转存当前页
+async function wishBatchTransfer() {
+    const page = {{ current_page or 0 }};
+    if (!page) {
+        showToast('当前页没有数据', 'warning');
+        return;
+    }
+    showLoading();
+    try {
+        const resp = await apiFetch('/cloud115/batch_transfer?source=wishlist', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'page=' + page
+        });
+        const result = await resp.json();
+        showToast(result.message, result.success ? 'success' : 'danger');
+    } catch (e) {
+        showToast('批量转存失败：' + e.message, 'danger');
+    } finally {
+        hideLoading();
     }
 }
 

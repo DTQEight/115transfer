@@ -1201,8 +1201,10 @@ def cloud115_verify():
 @app.route('/cloud115/transfer/<int:movie_id>/<int:page>', methods=['POST'])
 def cloud115_transfer(movie_id, page):
     try:
+        # source=wishlist 时从独立想看 Excel 读取，与主页数据互不影响
+        is_wish = (request.args.get('source') or request.form.get('source') or '') == 'wishlist'
         with data_lock:
-            df = load_movies()
+            df = load_wishlist_movies() if is_wish else load_movies()
 
         row = df[(df['序号'] == movie_id) & (df['页码'] == page)]
         if row.empty:
@@ -1213,10 +1215,11 @@ def cloud115_transfer(movie_id, page):
         if pd.isna(magnet) or str(magnet).strip() == '':
             return jsonify({'success': False, 'message': '磁力链接为空'})
 
-        # 获取或创建页码子目录
-        save_path = get_or_create_page_dir(page)
+        # 获取或创建页码子目录（想看页用「想看第N页」，避免与主页目录混在一起）
+        save_path = get_or_create_page_dir(page, '想看' if is_wish else '')
         success, msg = cloud115.add_offline_task(str(magnet), save_path_id=save_path)
-        dir_info = f'（保存到: 第{page}页）' if save_path else ''
+        dir_name = f"{'想看' if is_wish else ''}第{page}页"
+        dir_info = f'（保存到: {dir_name}）' if save_path else ''
         if success:
             logger.info(f'[转存] 成功: {movie_name} (ID:{movie_id}, 页:{page})')
         else:
@@ -1226,7 +1229,7 @@ def cloud115_transfer(movie_id, page):
             transfer_history.add_record(
                 movie_id=movie_id, page=page, movie_name=str(movie_name),
                 magnet=str(magnet), success=success,
-                message=msg + dir_info, source='single'
+                message=msg + dir_info, source='wishlist' if is_wish else 'single'
             )
         except Exception as hist_err:
             logger.error(f'[转存历史] 记录失败: {hist_err}')
@@ -1236,13 +1239,13 @@ def cloud115_transfer(movie_id, page):
         return jsonify({'success': False, 'message': f'转存失败: {str(e)}'})
 
 
-def get_or_create_page_dir(page_num):
+def get_or_create_page_dir(page_num, prefix=''):
     """获取或创建页码子目录，返回目录cid"""
     root_cid, root_name = cloud115.get_default_save_path()
     if not root_cid or root_cid == '0':
         return None  # 使用根目录
 
-    dir_name = f'第{page_num}页'
+    dir_name = f'{prefix}第{page_num}页'
     # 先查找是否已存在
     success, msg, items = cloud115.list_files(root_cid, show_dir=1)
     if success:
@@ -1273,12 +1276,13 @@ def cloud115_batch_transfer():
     except (ValueError, TypeError):
         return jsonify({'success': False, 'message': '页码格式错误'})
 
-    # 获取或创建页码子目录
-    save_path = get_or_create_page_dir(page_num)
+    # 获取或创建页码子目录（想看页用「想看第N页」）
+    is_wish = (request.args.get('source') or request.form.get('source') or '') == 'wishlist'
+    save_path = get_or_create_page_dir(page_num, '想看' if is_wish else '')
 
     try:
         with data_lock:
-            df = load_movies()
+            df = load_wishlist_movies() if is_wish else load_movies()
 
         if df.empty:
             return jsonify({'success': False, 'message': '没有电影数据'})
@@ -1302,11 +1306,12 @@ def cloud115_batch_transfer():
         results = cloud115.batch_add_offline_tasks(magnets, save_path_id=save_path)
         success_count = sum(1 for r in results if r['success'])
         fail_count = len(results) - success_count
-        dir_info = f'（保存到: 第{page_num}页）' if save_path else ''
+        dir_info = f"（保存到: {'想看' if is_wish else ''}第{page_num}页）" if save_path else ''
         logger.info(f'[批量转存] 页码:{page_num}, 成功:{success_count}, 失败:{fail_count}')
         # 记录转存历史
         try:
-            transfer_history.add_batch_records(results, page=page_num, movie_map=movie_map, source='batch')
+            transfer_history.add_batch_records(results, page=page_num, movie_map=movie_map,
+                                              source='batch-wishlist' if is_wish else 'batch')
         except Exception as hist_err:
             logger.error(f'[转存历史] 批量记录失败: {hist_err}')
         return jsonify({

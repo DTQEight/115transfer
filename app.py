@@ -3497,7 +3497,8 @@ def _do_douban_auto_sync():
             except Exception as imdb_err:
                 logger.warning(f'[豆瓣自动同步] IMDB_ID回填失败（不影响同步）: {imdb_err}')
 
-            result_msg = f'成功: 新增{added}部，跳过{skipped}部（已存在），删除{removed}部，共{len(movies)}部'
+            manual_note = f'（含手动{len(manual_rows)}部）' if manual_rows else ''
+            result_msg = f'成功: 新增{added}部，跳过{skipped}部（已存在），删除{removed}部，共{len(new_df)}部{manual_note}'
             # 如实反映"豆瓣报告数 vs 实际入库数"的缺口，避免状态栏显示成功
             # 但实际少了几部（缺口由 douban 模块记录，见 _LAST_FETCH_GAP）
             try:

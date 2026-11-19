@@ -691,7 +691,7 @@ def _backfill_imdb_ids(df: pd.DataFrame) -> None:
 
 def load_movies() -> pd.DataFrame:
     if not os.path.exists(EXCEL_FILE):
-        df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'IMDB_ID', 'TMDB_ID'])
+        df = pd.DataFrame(columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'IMDB_ID', 'TMDB_ID', '来源'])
         df.to_excel(EXCEL_FILE, index=False)
         return df
 
@@ -714,6 +714,9 @@ def load_movies() -> pd.DataFrame:
     # 兼容旧数据文件：无"TMDB_ID"列时自动补空列（手动识别的备用匹配主键，国产片常见无IMDb）
     if 'TMDB_ID' not in df.columns:
         df['TMDB_ID'] = ''
+    # 兼容旧数据文件：无"来源"列时默认全部视为豆瓣同步条目；"手动"条目在同步时豁免删除
+    if '来源' not in df.columns:
+        df['来源'] = '豆瓣'
     # 规范化 TMDB_ID：支持 "tv:85436" / "movie:xxx" 前缀格式；旧浮点 1732766.0 → 1732766
     def _norm_tmdb(v):
         if pd.isna(v):
@@ -801,6 +804,7 @@ def build_movie_list(df: pd.DataFrame) -> List[Dict[str, Any]]:
             'save_time': row['保存时间'],
             'douban_url': str(row['豆瓣链接']) if '豆瓣链接' in row.index and not pd.isna(row['豆瓣链接']) else '',
             'in_library': ('是' == str(row['已入库'])) if '已入库' in row.index and not pd.isna(row['已入库']) else False,
+            'is_manual': ('手动' == str(row['来源'])) if '来源' in row.index and not pd.isna(row['来源']) else False,
         })
     return movies
 
@@ -904,7 +908,42 @@ def search():
         return render_template('search.html', movies=[], keyword=keyword, version=VERSION,
                               error=f'搜索失败，请重试'), 500
 
-# 注：原 /add 手动添加电影接口已移除，电影列表严格同步豆瓣"看过"列表
+@app.route('/add', methods=['POST'])
+def add_movie():
+    """手动添加电影：标记"来源=手动"，豆瓣自动同步会保留并始终排在豆瓣列表之后"""
+    name = (request.form.get('name') or '').strip()
+    magnet = (request.form.get('magnet') or '').strip()
+    if not name:
+        return jsonify({'success': False, 'message': '电影名不能为空'})
+    if len(name) > 200:
+        return jsonify({'success': False, 'message': '电影名过长（最多200字）'})
+    if magnet and not magnet.startswith('magnet:'):
+        return jsonify({'success': False, 'message': '磁力链接需以 magnet: 开头'})
+    try:
+        with data_lock:
+            df = load_movies()
+            per_page = 15
+            idx = len(df)
+            page = idx // per_page + 1
+            new_row = {
+                '序号': idx % per_page + 1,
+                '页码': page,
+                '电影名': name,
+                '磁力链接': magnet,
+                '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S'),
+                '豆瓣链接': '',
+                '已入库': '否',
+                'IMDB_ID': '',
+                'TMDB_ID': '',
+                '来源': '手动',
+            }
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            save_movies(df)
+        logger.info(f'[手动添加] {name} → 第{page}页（同步豁免）')
+        return jsonify({'success': True, 'message': f'已添加「{name}」，位于第{page}页', 'page': page})
+    except Exception as e:
+        logger.error(f'[手动添加] 失败 {name}: {e}')
+        return jsonify({'success': False, 'message': f'添加失败: {e}'})
 
 @app.route('/delete/<int:movie_id>', methods=['POST'])
 def delete_movie(movie_id):
@@ -3035,6 +3074,7 @@ def douban_sync():
                         '磁力链接': '',
                         '保存时间': get_beijing_time().strftime('%Y-%m-%d %H:%M:%S'),
                         '豆瓣链接': url,
+                        '来源': '豆瓣',
                     }
                     df = pd.concat([df, pd.DataFrame([new_movie])], ignore_index=True)
                     if url:
@@ -3303,6 +3343,7 @@ def _do_douban_auto_sync():
                 # 旧数据无URL的按电影名建回退映射（名字→第一条记录），本次同步后即全部有URL
                 existing_by_url: Dict[str, Dict[str, str]] = {}
                 existing_by_name: Dict[str, Dict[str, str]] = {}
+                manual_rows: List[Dict[str, str]] = []
                 if not df.empty:
                     for _, row in df.iterrows():
                         name = str(row['电影名']) if not pd.isna(row['电影名']) else ''
@@ -3316,6 +3357,10 @@ def _do_douban_auto_sync():
                         tmdb_id = str(row['TMDB_ID']) if 'TMDB_ID' in row.index and not pd.isna(row['TMDB_ID']) else ''
                         rec = {'磁力链接': magnet, '保存时间': save_time, '电影名': name, '已入库': in_lib,
                                'imdb_id': imdb_id, 'tmdb_id': tmdb_id}
+                        # 手动添加的条目同步豁免：不参与豆瓣匹配，也不参与删除
+                        if '来源' in row.index and not pd.isna(row['来源']) and str(row['来源']) == '手动':
+                            manual_rows.append(rec)
+                            continue
                         if url:
                             existing_by_url[url] = rec
                         elif name not in existing_by_name:
@@ -3377,6 +3422,24 @@ def _do_douban_auto_sync():
                         '已入库': in_lib,
                         'IMDB_ID': imdb_id,
                         'TMDB_ID': tmdb_id,
+                        '来源': '豆瓣',
+                    })
+
+                # 手动添加的条目：同步豁免，始终追加在豆瓣列表之后，页码/序号按总长度重排
+                manual_base = len(new_rows)
+                for j, rec in enumerate(manual_rows):
+                    m_idx = manual_base + j
+                    new_rows.append({
+                        '序号': m_idx % per_page + 1,
+                        '页码': m_idx // per_page + 1,
+                        '电影名': rec['电影名'],
+                        '磁力链接': rec['磁力链接'],
+                        '保存时间': rec['保存时间'],
+                        '豆瓣链接': '',
+                        '已入库': rec['已入库'],
+                        'IMDB_ID': rec.get('imdb_id', ''),
+                        'TMDB_ID': rec.get('tmdb_id', ''),
+                        '来源': '手动',
                     })
 
                 # 豆瓣中不存在的本地电影 → 删除（不追加）
@@ -3392,7 +3455,7 @@ def _do_douban_auto_sync():
                     ]
                     logger.info(f'[豆瓣自动同步] 删除{removed}部豆瓣已不存在的电影: {removed_items[:10]}')
 
-                new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'IMDB_ID', 'TMDB_ID'])
+                new_df = pd.DataFrame(new_rows, columns=['序号', '页码', '电影名', '磁力链接', '保存时间', '豆瓣链接', '已入库', 'IMDB_ID', 'TMDB_ID', '来源'])
 
                 # 判断是否需要保存：有新增/删除 或 顺序/页码/URL发生变化
                 need_save = added > 0 or removed > 0

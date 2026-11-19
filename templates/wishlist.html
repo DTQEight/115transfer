@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+
+{% block title %}豆瓣想看 - 115Transfer{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+                <span>
+                    <i class="bi bi-bookmark-star me-2"></i>豆瓣想看
+                    <span id="wishCount" class="badge bg-secondary ms-2">-</span>
+                </span>
+                <div class="d-flex align-items-center gap-2">
+                    <input type="text" id="wishFilter" class="form-control form-control-sm" style="width: 200px;"
+                           placeholder="筛选片名/年份" oninput="renderWishlist()">
+                    <button class="btn btn-sm btn-outline-primary" onclick="loadWishlist(true)" id="wishRefreshBtn">
+                        <i class="bi bi-arrow-clockwise me-1"></i>刷新
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="small text-muted mb-3" id="wishMeta">加载中...</div>
+                <div id="wishMsg"></div>
+                <div class="table-responsive" id="wishTableWrap" style="display:none;">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th style="width:60px;">#</th>
+                                <th>片名</th>
+                                <th style="width:90px;">年份</th>
+                                <th style="width:90px;">豆瓣</th>
+                            </tr>
+                        </thead>
+                        <tbody id="wishTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_script %}
+<script>
+    var _wishMovies = [];
+    var _wishLoading = false;
+
+    function escapeWishHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    async function loadWishlist(force) {
+        if (_wishLoading) return;
+        _wishLoading = true;
+        var btn = document.getElementById('wishRefreshBtn');
+        var msg = document.getElementById('wishMsg');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>抓取中';
+        msg.innerHTML = '';
+        try {
+            var url = '/wishlist/data' + (force ? '?refresh=1' : '');
+            var resp = await apiFetch(url);
+            var r = await resp.json();
+            if (!r.success) {
+                msg.innerHTML = '<div class="alert alert-warning py-2 small mb-3">' + escapeWishHtml(r.message || '获取失败') + '</div>';
+                document.getElementById('wishTableWrap').style.display = 'none';
+                document.getElementById('wishMeta').textContent = '未取到数据';
+                return;
+            }
+            _wishMovies = r.movies || [];
+            var t = new Date((r.fetched_at || 0) * 1000);
+            var timeStr = isNaN(t.getTime()) ? '-' : t.toLocaleString('zh-CN', {hour12: false});
+            document.getElementById('wishCount').textContent = _wishMovies.length + ' 部';
+            document.getElementById('wishMeta').textContent =
+                '数据时间：' + timeStr + (r.cached ? '（缓存，30分钟内不重复抓取）' : '（实时抓取）');
+            document.getElementById('wishTableWrap').style.display = '';
+            renderWishlist();
+        } catch (e) {
+            msg.innerHTML = '<div class="alert alert-danger py-2 small mb-3">请求失败：' + escapeWishHtml(e) + '</div>';
+        } finally {
+            _wishLoading = false;
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>刷新';
+        }
+    }
+
+    function renderWishlist() {
+        var kw = (document.getElementById('wishFilter').value || '').trim().toLowerCase();
+        var list = _wishMovies.filter(function (m) {
+            if (!kw) return true;
+            return (String(m.title || '') + ' ' + String(m.year || '')).toLowerCase().indexOf(kw) >= 0;
+        });
+        var body = document.getElementById('wishTableBody');
+        if (!list.length) {
+            body.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">' +
+                (_wishMovies.length ? '没有匹配的条目' : '想看列表为空') + '</td></tr>';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < list.length; i++) {
+            var m = list[i];
+            var link = m.url
+                ? '<a href="' + escapeWishHtml(m.url) + '" target="_blank" rel="noopener" class="btn btn-sm btn-outline-success py-0 px-2">豆瓣</a>'
+                : '<span class="text-muted small">-</span>';
+            html += '<tr>' +
+                '<td class="text-muted small">' + (i + 1) + '</td>' +
+                '<td class="fw-medium">' + escapeWishHtml(m.title || '') + '</td>' +
+                '<td class="small text-muted">' + escapeWishHtml(m.year || '') + '</td>' +
+                '<td>' + link + '</td>' +
+                '</tr>';
+        }
+        body.innerHTML = html;
+    }
+
+    loadWishlist(false);
+</script>
+{% endblock %}

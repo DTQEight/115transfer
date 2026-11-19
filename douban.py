@@ -100,8 +100,10 @@ _LAST_FETCH_GAP = {'gap': 0, 'claimed': None, 'fetched': 0, 'short_pages': []}
 DEFAULT_GAP_TOLERANCE = 0
 
 
-def fetch_watched_movies(user_id, start=0, count=15):
-    """获取用户看过的电影列表（单页）
+def fetch_watched_movies(user_id, start=0, count=15, list_type='collect'):
+    """获取用户影视列表（单页）
+
+    list_type: 'collect'=看过, 'wish'=想看
     返回: (movie_list, total_count, error_msg)
     movie_list: [{'title': '电影名', 'year': '2019', 'rating': '', 'url': '...'}, ...]
     """
@@ -110,7 +112,7 @@ def fetch_watched_movies(user_id, start=0, count=15):
     if not cookie:
         return [], 0, '未配置豆瓣Cookie'
 
-    url = f'https://movie.douban.com/people/{user_id}/collect'
+    url = f'https://movie.douban.com/people/{user_id}/{list_type}'
     # 注意：不要使用 mode=list，默认 grid 模式才能拿到电影名
     params = {
         'start': start,
@@ -315,6 +317,31 @@ def fetch_all_watched_movies(user_id, max_pages=200):
         start += per_page
         time.sleep(0.5)  # 避免请求过快
 
+    return all_movies, None
+
+
+def fetch_all_wish_movies(user_id, max_pages=40, page_delay=0.6):
+    """获取用户所有"想看"的电影（分页拉取，最多 max_pages 页）
+
+    返回: (movie_list, error_msg)
+    """
+    all_movies = []
+    start = 0
+    per_page = 15
+    total = None
+    for _ in range(max_pages):
+        movies, count, err = fetch_watched_movies(user_id, start, per_page, list_type='wish')
+        if err:
+            if all_movies:
+                break
+            return [], err
+        if total is None:
+            total = count
+        all_movies.extend(movies)
+        if len(all_movies) >= total or len(movies) < per_page or not movies:
+            break
+        start += per_page
+        time.sleep(page_delay)
     return all_movies, None
 
 

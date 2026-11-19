@@ -2892,6 +2892,51 @@ def douban_page():
     return render_template('douban.html', version=VERSION)
 
 
+_WISHLIST_CACHE_FILE: str = os.path.join(DATA_DIR, 'douban_wishlist_cache.json')
+_WISHLIST_CACHE_TTL: int = 1800
+_wishlist_lock: threading.Lock = threading.Lock()
+
+
+@app.route('/wishlist')
+def wishlist_page():
+    """豆瓣想看独立页面"""
+    return render_template('wishlist.html', version=VERSION)
+
+
+@app.route('/wishlist/data')
+def wishlist_data():
+    """想看列表数据：默认读缓存（30分钟内），refresh=1 时实时抓取"""
+    refresh = request.args.get('refresh') == '1'
+    try:
+        with open(_WISHLIST_CACHE_FILE, 'r', encoding='utf-8') as f:
+            cached: Dict[str, Any] = json.load(f)
+    except (OSError, ValueError):
+        cached = {}
+    if (not refresh and cached.get('movies') is not None
+            and time.time() - float(cached.get('fetched_at') or 0) < _WISHLIST_CACHE_TTL):
+        return jsonify({'success': True, 'cached': True, **cached})
+
+    user_id = douban.load_config().get('user_id', '')
+    if not user_id:
+        return jsonify({'success': False, 'message': '未配置豆瓣账号，请先到「豆瓣同步」页配置'})
+    with _wishlist_lock:
+        try:
+            movies, err = douban.fetch_all_wish_movies(user_id)
+        except Exception as e:
+            logger.error(f'[想看] 抓取异常: {e}')
+            return jsonify({'success': False, 'message': f'抓取失败: {e}'})
+        if err and not movies:
+            return jsonify({'success': False, 'message': err})
+        data = {'total': len(movies), 'movies': movies, 'fetched_at': time.time()}
+        try:
+            with open(_WISHLIST_CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+        except OSError as e:
+            logger.warning(f'[想看] 缓存写入失败: {e}')
+    logger.info(f'[想看] 抓取完成，共 {len(movies)} 部')
+    return jsonify({'success': True, 'cached': False, **data})
+
+
 @app.route('/douban/config', methods=['GET', 'POST'])
 def douban_config():
     if request.method == 'GET':

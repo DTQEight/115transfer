@@ -12,6 +12,7 @@ import threading
 import logging
 import time
 import queue
+import concurrent.futures
 from typing import List, Dict, Any, Optional, Tuple, Callable, Union
 from logging.handlers import RotatingFileHandler
 
@@ -2333,6 +2334,76 @@ def baidu_test():
         return jsonify({'success': False, 'message': '登录态验证失败（cookies可能已失效），请稍后重试或在网页退出后重新登录'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/baidu/search_all', methods=['POST'])
+def baidu_search_all():
+    """一次性并行查询三个来源，供前端分 tab 展示（不分页）
+
+    返回:
+        {success, local: {...}, bt0: {...}, remote: {...}}
+    每个来源结构与 /baidu/search 相同（results/total_count/source）。
+    """
+    keyword = (request.form.get('keyword') or '').strip()
+    if not keyword:
+        return jsonify({'success': False, 'message': '请输入搜索关键词'})
+
+    def _search_local():
+        return forum_monitor.search_local_magnets(keyword, page=1, page_size=60)
+
+    def _search_bt0():
+        if not bt0_library.is_configured():
+            return {'results': [], 'total_count': 0, 'source': 'bt0', 'disabled': True}
+        first = bt0_library.search(keyword, page=1)
+        results = list(first.get('results') or [])
+        total_pages = first.get('total_pages') or 0
+        page = 2
+        # 页面不再翻页，多抓两页让用户在 tab 内滚动查看
+        while results and page <= min(3, total_pages) and len(results) < 60:
+            try:
+                more = bt0_library.search(keyword, page=page)
+            except Exception:
+                break
+            batch = more.get('results') or []
+            if not batch:
+                break
+            results.extend(batch)
+            page += 1
+        return {'results': results[:60], 'total_count': first.get('total_count') or len(results),
+                'source': 'bt0'}
+
+    def _search_remote():
+        result = baidu_forum.search(keyword, page=1)
+        result.setdefault('source', 'remote')
+        results = list(result.get('results') or [])
+        # 论坛单页结果较少，再补一页，仍不做前端分页
+        if results and (result.get('total_pages') or 0) > 1:
+            try:
+                more = baidu_forum.search(keyword, page=2)
+                seen = {str(r.get('tid')) for r in results}
+                results.extend([r for r in more.get('results') or [] if str(r.get('tid')) not in seen])
+            except Exception:
+                pass
+        result['results'] = results[:40]
+        return result
+
+    out = {'success': True, 'keyword': keyword}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {
+            'local': pool.submit(_search_local),
+            'bt0': pool.submit(_search_bt0),
+            'remote': pool.submit(_search_remote),
+        }
+        for key, fut in futures.items():
+            try:
+                out[key] = fut.result(timeout=60)
+            except Exception as e:
+                logger.warning(f'[搜索] {key} 来源失败: {e}')
+                out[key] = {'results': [], 'total_count': 0, 'source': key, 'error': str(e)}
+    logger.info(
+        f"[搜索] 关键词:{keyword} 本地:{out['local'].get('total_count', 0)} "
+        f"2bt0:{out['bt0'].get('total_count', 0)} 论坛:{out['remote'].get('total_count', 0)}")
+    return jsonify(out)
 
 
 @app.route('/baidu/search', methods=['POST'])

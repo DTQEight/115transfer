@@ -2348,6 +2348,13 @@ def baidu_search_all():
     if not keyword:
         return jsonify({'success': False, 'message': '请输入搜索关键词'})
 
+    # 只查询前端勾选的来源；未传时默认全部（兼容旧调用）
+    all_sources = ('local', 'bt0', 'remote')
+    raw_sources = (request.form.get('sources') or '').strip()
+    selected = [s for s in all_sources if s in raw_sources.split(',')] if raw_sources else list(all_sources)
+    if not selected:
+        return jsonify({'success': False, 'message': '请至少选择一个搜索来源'})
+
     def _search_local():
         return forum_monitor.search_local_magnets(keyword, page=1, page_size=60)
 
@@ -2387,13 +2394,18 @@ def baidu_search_all():
         result['results'] = results[:40]
         return result
 
-    out = {'success': True, 'keyword': keyword}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        futures = {
-            'local': pool.submit(_search_local),
-            'bt0': pool.submit(_search_bt0),
-            'remote': pool.submit(_search_remote),
-        }
+    out = {'success': True, 'keyword': keyword, 'sources': selected}
+    for key in all_sources:
+        if key not in selected:
+            out[key] = {'results': [], 'total_count': 0, 'source': key, 'skipped': True}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected)) as pool:
+        futures = {}
+        if 'local' in selected:
+            futures['local'] = pool.submit(_search_local)
+        if 'bt0' in selected:
+            futures['bt0'] = pool.submit(_search_bt0)
+        if 'remote' in selected:
+            futures['remote'] = pool.submit(_search_remote)
         for key, fut in futures.items():
             try:
                 out[key] = fut.result(timeout=60)
@@ -2401,7 +2413,7 @@ def baidu_search_all():
                 logger.warning(f'[搜索] {key} 来源失败: {e}')
                 out[key] = {'results': [], 'total_count': 0, 'source': key, 'error': str(e)}
     logger.info(
-        f"[搜索] 关键词:{keyword} 本地:{out['local'].get('total_count', 0)} "
+        f"[搜索] 关键词:{keyword} 来源:{','.join(selected)} 本地:{out['local'].get('total_count', 0)} "
         f"2bt0:{out['bt0'].get('total_count', 0)} 论坛:{out['remote'].get('total_count', 0)}")
     return jsonify(out)
 

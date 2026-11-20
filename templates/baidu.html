@@ -86,6 +86,21 @@
                         <i class="bi bi-search me-1"></i>搜索
                     </button>
                 </div>
+                <div class="d-flex flex-wrap gap-3 mb-3" id="searchSourceSelector">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" value="local" id="searchSrcLocal" checked>
+                        <label class="form-check-label" for="searchSrcLocal"><i class="bi bi-hdd-network me-1"></i>本地数据库</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" value="bt0" id="searchSrcBt0" checked>
+                        <label class="form-check-label" for="searchSrcBt0"><i class="bi bi-database me-1"></i>2bt0 资源库</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" value="remote" id="searchSrcRemote" checked>
+                        <label class="form-check-label" for="searchSrcRemote"><i class="bi bi-globe2 me-1"></i>论坛实时</label>
+                    </div>
+                    <span class="form-text align-self-center">勾选要搜索的来源，可多选；未勾选的不查询</span>
+                </div>
                 <div id="searchResult"></div>
             </div>
         </div>
@@ -612,13 +627,22 @@ async function searchMovies() {
         return;
     }
     searchKeyword = keyword;
+    // 只查询勾选的来源
+    var sources = [];
+    document.querySelectorAll('#searchSourceSelector input[type=checkbox]').forEach(function(b) {
+        if (b.checked) sources.push(b.value);
+    });
+    if (sources.length === 0) {
+        el.innerHTML = '<div class="alert alert-warning">请至少勾选一个搜索来源</div>';
+        return;
+    }
     var t0 = Date.now();
-    el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>正在并行查询本地数据库 / 2bt0 资源库 / 论坛…</p>';
+    el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>正在查询勾选的搜索来源…</p>';
     var timer = setInterval(function() {
         var s = ((Date.now() - t0) / 1000).toFixed(1);
         var tip = parseFloat(s) < 0.8
-            ? '正在并行查询本地数据库 / 2bt0 资源库 / 论坛…'
-            : '论坛实时搜索较慢，多个来源并行查询中…';
+            ? '正在查询勾选的搜索来源…'
+            : '多个来源并行查询中…';
         el.innerHTML = '<p class="text-muted text-center"><i class="bi bi-arrow-repeat me-1"></i>' + tip +
             ' <span class="text-secondary">已用时 ' + s + 's</span></p>';
     }, 200);
@@ -626,7 +650,7 @@ async function searchMovies() {
         var resp = await apiFetch('/baidu/search_all', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'keyword=' + encodeURIComponent(keyword)
+            body: 'keyword=' + encodeURIComponent(keyword) + '&sources=' + encodeURIComponent(sources.join(','))
         });
         var result = await resp.json();
         if (!result.success) {
@@ -637,7 +661,7 @@ async function searchMovies() {
                        ((result.bt0 && result.bt0.total_count) || 0) +
                        ((result.remote && result.remote.total_count) || 0);
         if (totalAll === 0) {
-            el.innerHTML = '<div class="alert alert-info">未找到结果（本地数据库、2bt0 资源库、论坛均无匹配）</div>';
+            el.innerHTML = '<div class="alert alert-info">未找到结果（已搜索勾选的来源）</div>';
             return;
         }
         searchTabTotals = {
@@ -663,15 +687,16 @@ async function searchMovies() {
             bt0: {label: '2bt0 资源库', icon: 'bi-database', badge: 'info'},
             remote: {label: '论坛实时', icon: 'bi-globe2', badge: 'warning'}
         };
-        var order = ['local', 'bt0', 'remote'];
-        searchActiveTab = 'local';
+        // 只展示勾选来源的 tab
+        var order = ['local', 'bt0', 'remote'].filter(function(k) { return sources.indexOf(k) >= 0; });
+        searchActiveTab = order[0] || 'local';
         for (var oi = 0; oi < order.length; oi++) {
             if (searchTabResults[order[oi]].length > 0) { searchActiveTab = order[oi]; break; }
         }
         var cost = ((Date.now() - t0) / 1000).toFixed(2);
-        var html = '<p class="text-muted small mb-2">耗时 ' + cost + 's · 本地 ' + searchTabTotals.local +
-            ' 条 / 2bt0 ' + searchTabTotals.bt0 + ' 条 / 论坛 ' + searchTabTotals.remote +
-            ' 条 <span class="text-secondary">（点 tab 切换来源，列表内滚动查看）</span></p>';
+        var summaryParts = order.map(function(k) { return meta[k].label + ' ' + searchTabTotals[k] + ' 条'; });
+        var html = '<p class="text-muted small mb-2">耗时 ' + cost + 's · ' + summaryParts.join(' / ') +
+            ' <span class="text-secondary">（点 tab 切换来源，列表内滚动查看）</span></p>';
         html += '<div class="d-flex gap-1 mb-2 flex-wrap">';
         order.forEach(function(k) {
             var active = (k === searchActiveTab);

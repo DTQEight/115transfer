@@ -16,9 +16,12 @@ jobs:
 
     - name: Set version from git hash
       run: |
-        VERSION=$(cat VERSION)
+        BASE=$(tr -d '\r\n' < VERSION)
         HASH=$(git rev-parse --short HEAD)
-        echo "version=${VERSION}-${HASH}" >> $GITHUB_ENV
+        BUILD_VER="${BASE}-${HASH}"
+        # 每次构建自动写入带提交号的版本，容器 /health 与页面版本号随之更新
+        echo "${BUILD_VER}" > VERSION
+        echo "version=${BUILD_VER}" >> $GITHUB_ENV
 
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v4

@@ -1723,6 +1723,8 @@
         var magnetTabResults = {local: [], bt0: [], remote: []};
         var magnetTabTotals = {local: 0, bt0: 0, remote: 0};
         var magnetActiveTab = 'local';
+        // 每个 tab 独立的清晰度筛选状态（'' 表示全部）
+        var magnetTabFilter = {local: '', bt0: '', remote: ''};
 
         function copyText(text) {
             if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1761,6 +1763,50 @@
         function getFormatBadgeColor(fmt) {
             var colors = {'4K蓝光':'danger','4K蓝光原盘':'danger','杜比视界':'warning text-dark','1080P蓝光':'primary','1080P-Remux':'info text-dark','WEB-4K':'success','WEB-1080P':'success','蓝光原盘':'secondary','3D':'dark','其他':'light text-dark'};
             return colors[fmt] || 'light text-dark';
+        }
+
+        // 生成某个来源 tab 的清晰度分类按钮（只统计该 tab 自己的结果）
+        function buildMagnetFormatFilterHtml(key) {
+            var list = magnetTabResults[key] || [];
+            var counts = {};
+            var order = ['4K蓝光','4K蓝光原盘','1080P蓝光','1080P-Remux','WEB-4K','WEB-1080P','杜比视界','蓝光原盘','3D','其他'];
+            list.forEach(function(r) {
+                var fmt = r._format || '其他';
+                counts[fmt] = (counts[fmt] || 0) + 1;
+            });
+            var active = magnetTabFilter[key] || '';
+            var html = '<div class="d-flex flex-wrap gap-1 mb-2">';
+            html += '<button type="button" class="btn btn-sm ' + (!active ? 'btn-dark' : 'btn-outline-dark') +
+                '" onclick="filterMagnetFormatForTab(\'' + key + '\', \'\')">全部 (' + list.length + ')</button>';
+            order.forEach(function(fmt) {
+                if (!counts[fmt]) return;
+                var color = getFormatBadgeColor(fmt);
+                var cls = active === fmt ? 'btn-' + color : 'btn-outline-' + color;
+                html += '<button type="button" class="btn btn-sm ' + cls +
+                    '" onclick="filterMagnetFormatForTab(\'' + key + '\', \'' + fmt + '\')">' +
+                    fmt + ' (' + counts[fmt] + ')</button>';
+            });
+            html += '</div>';
+            return html;
+        }
+
+        // 按清晰度筛选指定 tab 的列表（只影响当前 tab，不重新发起搜索）
+        function filterMagnetFormatForTab(key, fmt) {
+            magnetTabFilter[key] = fmt || '';
+            var box = document.getElementById('magnet-format-filter-' + key);
+            if (box) box.innerHTML = buildMagnetFormatFilterHtml(key);
+            var pane = document.querySelector('[data-magnet-tab-pane="' + key + '"]');
+            if (!pane) return;
+            var shown = 0;
+            pane.querySelectorAll('.magnet-search-item').forEach(function(el) {
+                var visible = !fmt || el.dataset.format === fmt;
+                el.style.display = visible ? '' : 'none';
+                if (visible) shown++;
+            });
+            var statusEl = document.getElementById('magnet-filter-status-' + key);
+            if (statusEl) {
+                statusEl.textContent = fmt ? ('已筛选 ' + fmt + '：' + shown + ' 条') : '';
+            }
         }
 
         function showMagnetTab(key) {
@@ -1822,6 +1868,9 @@
                 '<i class="bi bi-lightning-charge me-1"></i>批量获取本 tab 磁力</button>';
             html += '<span class="text-muted small" id="magnet-batch-status-' + key + '"></span>';
             html += '</div>';
+            // 清晰度分类：按本 tab 结果统计，点击只筛选当前 tab
+            html += '<div id="magnet-format-filter-' + key + '">' + buildMagnetFormatFilterHtml(key) + '</div>';
+            html += '<div class="text-muted small mb-1" id="magnet-filter-status-' + key + '"></div>';
             html += '<div class="list-group" style="max-height:340px;overflow-y:auto;">';
             list.forEach(function(r) {
                 var title = escapeHtml(r.title || '');
@@ -1915,6 +1964,8 @@
                         r._format = detectFormat(r.title || '');
                     });
                 });
+                // 新一次搜索重置各 tab 的清晰度筛选
+                magnetTabFilter = {local: '', bt0: '', remote: ''};
                 var order = ['local', 'bt0', 'remote'];
                 magnetActiveTab = 'local';
                 for (var oi = 0; oi < order.length; oi++) {

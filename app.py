@@ -4124,7 +4124,8 @@ def save_movie_tmdb_id(movie_id: int):
 
     Body:
         page: 页码（int，因为每页序号从1重新编号，必传）
-        douban_url: 豆瓣链接（首选定位键，同名电影独立区分，必传）
+        douban_url: 豆瓣链接（可选：有值时优先作为定位键；手动添加的电影没有豆瓣链接，
+                    此时按 序号+页码 定位）
         tmdb_id: 新的 TMDB ID（纯数字或空字符串清除）
         tmdb_type: 可选 'movie' | 'tv'；有值时拼成 "movie:xxx" / "tv:xxx" 前缀，
                    彻底解决 TMDB 电影/剧集同 ID 命名空间冲突。
@@ -4139,8 +4140,8 @@ def save_movie_tmdb_id(movie_id: int):
         tmdb_type = (payload.get('tmdb_type') or '').strip() or None
         if tmdb_type not in ('movie', 'tv'):
             tmdb_type = None
-        if page is None or not douban_url:
-            return jsonify({'success': False, 'message': '缺少定位参数（page + douban_url）'}), 400
+        if page is None:
+            return jsonify({'success': False, 'message': '缺少定位参数（page）'}), 400
         try:
             page = int(page)
         except (ValueError, TypeError):

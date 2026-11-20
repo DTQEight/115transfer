@@ -589,13 +589,25 @@ def _jellyfin_match_and_write() -> int:
         df = load_movies()
     if df.empty:
         return 0
+    def _row_key(r, url: str, pos: int) -> str:
+        """行唯一标识：豆瓣链接优先；手动条目无链接，用 页码+序号（跨两次读取稳定）"""
+        if url:
+            return url
+        try:
+            return f'__seq_{int(r["页码"])}_{int(r["序号"])}__'
+        except (KeyError, ValueError, TypeError):
+            return f'__row_{pos}__'
+
     movies = []
-    for _, r in df.iterrows():
+    for pos, (_, r) in enumerate(df.iterrows()):
         tmdb_tid, tmdb_mt = parse_tmdb_id(r['TMDB_ID']) if ('TMDB_ID' in r.index and pd.notna(r['TMDB_ID'])) else ('', None)
         imdb_raw = str(r['IMDB_ID']) if 'IMDB_ID' in r.index and pd.notna(r['IMDB_ID']) else ''
+        url = str(r['豆瓣链接']) if pd.notna(r['豆瓣链接']) else ''
         movies.append({
             'title': str(r['电影名']) if pd.notna(r['电影名']) else '',
-            'url': str(r['豆瓣链接']) if pd.notna(r['豆瓣链接']) else '',
+            'url': url,
+            # 唯一命中标识：手动添加的电影没有豆瓣链接，用行位置兜底，避免全部折叠成 ''
+            'key': _row_key(r, url, pos),
             'year': '',
             'imdb_id': imdb_raw.strip() if imdb_raw and imdb_raw != 'N/A' else '',
             # TMDB ID 纯数字 + 独立的类型字段 → jellyfin 可做同类型精准确认
@@ -606,9 +618,10 @@ def _jellyfin_match_and_write() -> int:
     count = 0
     with data_lock:
         df = load_movies()
-        for idx, row in df.iterrows():
+        for pos, (idx, row) in enumerate(df.iterrows()):
             url = str(row['豆瓣链接']) if pd.notna(row['豆瓣链接']) else ''
-            val = '是' if (url and url in in_lib) else '否'
+            key = _row_key(row, url, pos)
+            val = '是' if key in in_lib else '否'
             if val == '是':
                 count += 1
             df.at[idx, '已入库'] = val

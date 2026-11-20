@@ -245,7 +245,7 @@ def build_in_library_set(movies, jellyfin_items):
                   'tmdb_id'(可选), 'tmdb_media_type'(可选, 'movie'/'tv')}, ...]
         jellyfin_items: get_library_items 的返回（含 media_type）
     Returns:
-        set of 豆瓣URL
+        set of 命中标识（优先 movie['key']，没有时用豆瓣URL）
     """
     # 按 (id, media_type) 建桶 + 全局无类型桶（空字符串 type）
     def _build_id_sets(field):
@@ -292,13 +292,16 @@ def build_in_library_set(movies, jellyfin_items):
         # 本地的类型提示（可选），来自 tv:/movie: 前缀解析
         m_imdb_type = m.get('imdb_media_type') or ''
         m_tmdb_type = m.get('tmdb_media_type') or ''
+        # 命中标识：优先用调用方给的唯一 key（手动添加的电影没有豆瓣链接，
+        # 若直接用 url 会全部折叠成空字符串，导致命中数与入库数对不上）
+        m_key = m.get('key') or m.get('url', '')
         hit = False
         if m_imdb and _hit(jf_imdb_typed, jf_imdb_global, m_imdb, m_imdb_type):
-            in_lib.add(m.get('url', ''))
+            in_lib.add(m_key)
             imdb_n += 1
             hit = True
         elif m_tmdb and _hit(jf_tmdb_typed, jf_tmdb_global, m_tmdb, m_tmdb_type):
-            in_lib.add(m.get('url', ''))
+            in_lib.add(m_key)
             tmdb_n += 1
             hit = True
         if not hit:

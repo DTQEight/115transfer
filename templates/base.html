@@ -2285,8 +2285,6 @@
 
             var html = '';
             var posterUrl = (tmdb && tmdb.url) ? tmdb.url : '';
-            var hasEitherId = !!(ids.imdb_id || ids.tmdb_id);
-            var needManualTmdb = !hasEitherId;  // 两个ID都空 → 提示手动识别
 
             html += '<div class="detail-hero">';
             if (posterUrl) {
@@ -2308,7 +2306,8 @@
             html += '<span class="meta-chip">第' + escapeHtml(m.page) + '页 #' + escapeHtml(m.id) + '</span>';
             html += '</div>';
 
-            // ID 显示区：IMDb / TMDB 已填显示编号；都没填显示"手动识别TMDB"按钮
+            // ID 显示区：IMDb / TMDB 已填显示编号；TMDB 缺失时始终提供"手动识别TMDB"按钮
+            // （即使已有 IMDb 也可手动补/改 TMDB，不再要求两个编号都为空）
             html += '<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">';
             if (ids.imdb_id) {
                 html += '<span class="meta-chip" style="background:#e0f2fe;color:#075985" title="IMDb编号（豆瓣自动回填）">IMDb ' + escapeHtml(ids.imdb_id) + '</span>';
@@ -2319,7 +2318,7 @@
                 else if (ids.tmdb_media_type === 'movie') tmdbTypeLabel = '（电影）';
                 html += '<span class="meta-chip" style="background:#ede9fe;color:#5b21b6" title="TMDB编号（手动识别）">TMDB ' + escapeHtml(ids.tmdb_id) + tmdbTypeLabel + '</span>';
                 html += '<button class="btn btn-sm btn-outline-warning" style="padding:2px 8px;font-size:11px" onclick="openTmdbPicker(true)">重识别</button>';
-            } else if (needManualTmdb) {
+            } else {
                 html += '<button class="btn btn-sm btn-info text-white" style="padding:4px 10px;font-size:12px" onclick="openTmdbPicker(false)">' +
                         '<i class="bi bi-search me-1"></i>手动识别 TMDB</button>';
                 if (!ids.imdb_id) {

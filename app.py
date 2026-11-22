@@ -4344,7 +4344,7 @@ def movies_detail(movie_id: int):
         ids_info = {'imdb_id': '', 'tmdb_id': ''}
         try:
             from media.tmdb import identify_media, get_tmdb_api_key, find_by_imdb_id, get_media_by_id
-            # 先取本机编号（前端"手动识别TMDB"按钮显隐要用：都没有才提示手动识别）
+            # 先取本机编号（前端"手动识别TMDB"按钮显隐要用：TMDB 缺失即显示，不再要求两个都为空）
             imdb_id = ''
             tmdb_id = ''
             tmdb_media_type: Optional[str] = None

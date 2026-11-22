@@ -280,6 +280,25 @@ def find_by_imdb_id(imdb_id, language='zh-CN'):
     # 优先电影结果，其次剧集
     candidates = (data.get('movie_results') or []) + (data.get('tv_results') or [])
     if not candidates:
+        # 季/集级 IMDb：豆瓣按季分条目，IMDB_ID 常是「某季第1集」的编号，
+        # /find 只返回 tv_season_results / tv_episode_results，两者都带 show_id。
+        # Jellyfin 侧记录的是剧集级 TMDB ID，因此这里取所属剧集的 ID（按季校验交给入库匹配）。
+        season_hits = data.get('tv_season_results') or []
+        episode_hits = data.get('tv_episode_results') or []
+        hit = season_hits[0] if season_hits else (episode_hits[0] if episode_hits else None)
+        show_id = (hit or {}).get('show_id')
+        season_no = (hit or {}).get('season_number')
+        if show_id:
+            detail, _ = get_media_by_id(show_id, media_type='tv', language=language)
+            if detail:
+                result = dict(detail)
+                result['media_type'] = 'tv'
+                result['season_number'] = season_no
+                result['source'] = 'imdb_season'
+                with _FIND_CACHE_LOCK:
+                    _FIND_CACHE[cache_key] = (result, None)
+                return result, None
+
         with _FIND_CACHE_LOCK:
             _FIND_CACHE[cache_key] = (None, '未找到匹配结果')
         return None, '未找到匹配结果'

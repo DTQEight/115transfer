@@ -428,6 +428,38 @@ def build_in_library_set(movies, jellyfin_items, series_seasons=None):
         else:
             unmatched_local.append((m_title, m_imdb, m_tmdb, m_tmdb_type))
 
+    # 季覆盖诊断：Jellyfin 有、但本地 Excel 没有对应季记录的剧集
+    # 例：爱，死亡和机器人 Jellyfin 有 1/2/3 季，本地只有第一季 → 日志提示缺第2、3季
+    if series_seasons:
+        jf_seasons_by_base = {}
+        for it in jellyfin_items:
+            if (it.get('media_type') or '') != 'tv':
+                continue
+            bt = _base_title(it.get('title', ''))
+            if not bt:
+                continue
+            entry = jf_seasons_by_base.setdefault(bt, [it.get('title', '') or bt, set()])
+            entry[1].update(series_seasons.get(it.get('id') or '') or set())
+        local_seasons_by_base = {}
+        for m in movies:
+            s = _season_no(m.get('title', ''))
+            if s is None:
+                continue
+            local_seasons_by_base.setdefault(_base_title(m.get('title', '')), set()).add(s)
+        missing_seasons = []
+        for bt, (disp, jf_seasons) in jf_seasons_by_base.items():
+            local_seasons = local_seasons_by_base.get(bt)
+            if local_seasons is None:
+                continue  # 本地完全没有这部剧，交由「未匹配」诊断提示
+            lack = sorted(jf_seasons - local_seasons)
+            if lack:
+                missing_seasons.append((disp, lack))
+        if missing_seasons:
+            preview = '；'.join(f'{t} 缺第{",".join(str(x) for x in lack)}季'
+                                for t, lack in missing_seasons[:10])
+            more = ' ...' if len(missing_seasons) > 10 else ''
+            logger.warning(f'[Jellyfin] 有{len(missing_seasons)}部剧存在本地未记录的季: {preview}{more}')
+
     # 诊断：Jellyfin 侧未对应任何本地电影的条目
     # 判定必须镜像上面的核心匹配语义（任一权威 ID 命中即算对应），
     # 注意不能用 AND：那会要求 IMDb 和 TMDB "两个都缺失"才记一条，

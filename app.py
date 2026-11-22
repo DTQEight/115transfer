@@ -584,7 +584,8 @@ def _jellyfin_match_and_write() -> int:
     """用 IMDB_ID + TMDB_ID 两个权威编号比对 Jellyfin 并写回"已入库"列。
 
     优先级：IMDb（豆瓣自动回填）→ TMDB（用户手动识别，国产片无IMDb时兜底）。
-    两者都是 ID 精确匹配，零歧义，不做标题模糊。
+    两者都是 ID 精确匹配；剧集再按「剧名 + 季号」校验实际存在的季，
+    避免豆瓣按季分条目时出现「第一季误标、第二季漏标」。
     """
     with data_lock:
         df = load_movies()
